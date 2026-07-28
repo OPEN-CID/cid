@@ -698,19 +698,22 @@ impl SandboxManager {
             .canonicalize()
             .unwrap_or_else(|_| worktree_path.to_path_buf());
 
-        // Build a mount --bind + chroot wrapper
+        // Build a mount --bind + chroot wrapper.
+        // Use "$@" to preserve argument boundaries (avoids the shell
+        // treating `echo hello` as `echo` with $0=hello).
         let sandbox_command = format!(
-            "mount --bind {} {} && cd {} && {} {}",
+            "mount --bind {} {} 2>/dev/null || true; cd {} && exec \"$@\"",
             worktree_abs.display(),
             worktree_abs.display(),
             workdir,
-            command,
-            args.join(" "),
         );
 
         cmd.arg("sh")
             .arg("-c")
             .arg(&sandbox_command)
+            .arg("--")
+            .arg(command)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

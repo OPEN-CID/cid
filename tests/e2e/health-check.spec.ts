@@ -1,6 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import WebSocket from "ws";
+
+// Make WebSocket globally available for Node.js < 21 (the `ws` package
+// is a transitive dependency; this polyfill ensures E2E tests work
+// without --experimental-websocket or Node 22+).
+if (typeof globalThis.WebSocket === "undefined") {
+  (globalThis as any).WebSocket = WebSocket;
+}
 
 /**
  * Health & API coverage E2E test — validates that ALL REST endpoints respond correctly.
