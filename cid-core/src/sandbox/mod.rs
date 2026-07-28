@@ -1186,7 +1186,9 @@ mod tests {
                 // be unavailable, blocking everything including legitimate
                 // worktree writes. That's infrastructure, not a violation.
                 if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
-                    eprintln!("Sandbox blocked (acceptable on CI without sandbox tooling): {reason}");
+                    eprintln!(
+                        "Sandbox blocked (acceptable on CI without sandbox tooling): {reason}"
+                    );
                 } else {
                     panic!("ordinary work inside the worktree must not be blocked: {reason}")
                 }
