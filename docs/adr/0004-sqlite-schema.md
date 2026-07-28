@@ -1,0 +1,26 @@
+# ADR 0004: SQLite schema for Phase 0
+
+- **Date**: 2026-07-26
+- **Status**: Accepted
+- **Context**: Need local persistence for missions, messages, settings per Build Prompt Phase0 scope. Earlier draft proposed SQLite+RocksDB+Tantivy+petgraph+HNSW day-one. v3.0 cuts to SQLite only Phase0-1, revisit only if profiling shows gap. Build Prompt elevated testing/docs bar and open-source requirements.
+- **Decision**: Single SQLite DB via `rusqlite` 0.32 bundled (no external dependency). Tables:
+  - `workspaces` (id, name, root_path, created_at)
+  - `repo_channels` (id, workspace_id, name, path unique, remote_url, agents_md_content, created_at) — path unique prevents duplicate channels
+  - `missions` (id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at) — status as snake_case string from MessageRole serialization
+  - `messages` (id, mission_id, role, content, tool_calls JSON, created_at, is_streaming)
+  - `skills` (id, name, content, scope enum workspace/repo, scope_id, created_at, updated_at)
+  - `mcp_servers` (id, name, transport_type, transport_config JSON, status, enabled_for_repos JSON, created_at)
+  - `settings` (single row id=1: anthropic_api_key, anthropic_model default claude-3-5-sonnet-20241022, worktree_root, theme)
+  - Indexes on missions.repo_channel_id, messages.mission_id, messages.created_at
+  - In-memory variant `new_in_memory()` for tests
+- **Alternatives**:
+  - RocksDB for vectors: no Phase0 workload needs LSM, adds second storage engine complexity
+  - PostgreSQL+Redis: overhead, not local-first
+  - JSON files per mission: no ACID, harder querying for UI search
+- **Consequences**:
+  - Simple file in OS data dir (`dirs::data_dir()/cid/cid.db`) or custom `--db` path — works for Tauri and standalone Core
+  - Blocking API wrapped in Mutex<Connection> — Phase0 single-threaded access is fine, but high concurrency Phase2 may need connection pool or async wrapper (tokio-rusqlite)
+  - Tool calls stored as JSON string in messages table — allows History panel to render inline cards without extra join
+  - Worktree registry not separate table Phase0; worktree_path stored in mission plus `git.worktree.list` reads live from repo via git2 — avoids stale state, but Phase1 may want explicit worktree table with auto-prune N days after close/merge
+  - Schema migrations: Phase0 uses `CREATE IF NOT EXISTS` + `INSERT OR IGNORE` for seed data; Phase1 should add proper migration system (e.g., `refinery` or manual version table)
+- **References**: Build Prompt Parts 18, 22 Phase0 scope, Part 21 testing bar.

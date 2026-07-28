@@ -1,0 +1,65 @@
+name: Release
+
+# Builds and (when the secrets below are configured) signs the Tauri desktop
+# app for Windows and macOS, then attaches the installers to a draft GitHub
+# Release. Separate from ci.yml on purpose — a full Tauri build+sign is heavy
+# and only makes sense on a version tag, not every push/PR.
+#
+# Trigger: push a tag matching v*.*.* (e.g. `git tag v1.0.0 && git push --tags`).
+#
+# Signing is OFF by default — this workflow runs and produces UNSIGNED
+# installers if the secrets below aren't set (tauri-action skips signing
+# silently when its signing env vars are empty; it does not fail the build).
+# See the "Manual setup" note in CONTRIBUTING.md for what to add and where.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+          - platform: macos-latest
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Build and sign
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # --- Windows Authenticode signing (windows-latest only) ---
+          # Base64 of a .pfx certificate file. Empty => unsigned build, not a
+          # failure. See CONTRIBUTING.md for how to obtain/encode this.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+
+          # --- macOS signing + notarization (macos-latest only) ---
+          # Base64 of a Developer ID Application .p12 certificate.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "CID ${{ github.ref_name }}"
+          releaseBody: "See CHANGELOG.md. Installers below are unsigned until code-signing secrets are configured — see CONTRIBUTING.md."
+          releaseDraft: true
+          prerelease: false

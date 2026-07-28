@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json.schemastore.org/theme-schema",
+  "name": "CID Theme",
+  "version": "1.0.0",
+  "description": "Design tokens for CID - Collaborative Intelligent Development platform",
+  "author": "CID Team",
+  "tokens": {
+    "color": {
+      "background": {
+        "value": "{color.background.default.value}",
+        "description": "Background color of the application"
+      },
+      "foreground": {
+        "value": "{color.foreground.default.value}",
+        "description": "Primary text color"
+      },
+      "card": {
+        "value": "{color.card.default.value}",
+        "description": "Background color for cards, panels, and elevated surfaces"
+      },
+      "card-foreground": {
+        "value": "{color.card.foreground.value}",
+        "description": "Text color on card surfaces"
+      },
+      "popover": {
+        "value": "{color.popover.default.value}",
+        "description": "Background color for popovers and dropdowns"
+      },
+      "popover-foreground": {
+        "value": "{color.popover.foreground.value}",
+        "description": "Text color in popovers"
+      },
+      "primary": {
+        "value": "{color.primary.default.value}",
+        "description": "Primary brand color for actions and emphasis"
+      },
+      "primary-foreground": {
+        "value": "{color.primary.foreground.value}",
+        "description": "Text color on primary backgrounds"
+      },
+      "secondary": {
+        "value": "{color.secondary.default.value}",
+        "description": "Secondary color for less prominent elements"
+      },
+      "secondary-foreground": {
+        "value": "{color.secondary.foreground.value}",
+        "description": "Text color on secondary backgrounds"
+      },
+      "muted": {
+        "value": "{color.muted.default.value}",
+        "description": "Muted color for subdued elements"
+      },
+      "muted-foreground": {
+        "value": "{color.muted.foreground.value}",
+        "description": "Text color on muted backgrounds"
+      },
+      "accent": {
+        "value": "{color.accent.default.value}",
+        "description": "Accent color for highlights and interactive elements"
+      },
+      "accent-foreground": {
+        "value": "{color.accent.foreground.value}",
+        "description": "Text color on accent backgrounds"
+      },
+      "destructive": {
+        "value": "{color.destructive.default.value}",
+        "description": "Color for destructive actions (delete, remove)"
+      },
+      "destructive-foreground": {
+        "value": "{color.destructive.foreground.value}",
+        "description": "Text color on destructive backgrounds"
+      },
+      "border": {
+        "value": "{color.border.default.value}",
+        "description": "Default border color"
+      },
+      "input": {
+        "value": "{color.input.default.value}",
+        "description": "Input field border color"
+      },
+      "ring": {
+        "value": "{color.ring.default.value}",
+        "description": "Focus ring color"
+      }
+    },
+    "radius": {
+      "value": "{radius.default.value}",
+      "description": "Default border radius"
+    }
+  }
+}

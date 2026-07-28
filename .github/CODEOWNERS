@@ -1,0 +1,16 @@
+# Default owners for everything in the repo.
+# Replace @OWNER with a real GitHub username/team before relying on this file —
+# this is a template, not a claim that a review team is already staffed.
+
+* @OWNER
+
+# Security-critical paths get an explicit line so GitHub always requests
+# review from someone accountable for them specifically, even if the default
+# owner above changes later.
+/cid-core/src/sandbox/ @OWNER
+/cid-core/src/access/ @OWNER
+/cid-core/src/auth/ @OWNER
+/cid-core/src/governance/ @OWNER
+
+/docs/ @OWNER
+/.github/ @OWNER
