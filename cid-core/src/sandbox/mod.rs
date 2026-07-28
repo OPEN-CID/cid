@@ -499,11 +499,13 @@ impl SandboxManager {
     }
 
     #[cfg(not(windows))]
+    #[allow(dead_code)]
     fn create_restricted_job() -> Option<*mut std::ffi::c_void> {
         None
     }
 
     #[cfg(not(windows))]
+    #[allow(dead_code)]
     fn assign_process_to_job(_job: &*mut std::ffi::c_void, _pid: u32) -> bool {
         false
     }
@@ -576,6 +578,7 @@ impl SandboxManager {
     }
 
     #[cfg(not(target_os = "macos"))]
+    #[allow(dead_code)]
     fn macos_sandbox_exec(
         &self,
         _config: &SandboxConfig,
@@ -740,6 +743,7 @@ impl SandboxManager {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
     fn linux_namespace_sandbox(
         &self,
         _config: &SandboxConfig,
@@ -900,6 +904,7 @@ impl SandboxManager {
         target_path.starts_with(&boundary_path)
     }
 
+    #[allow(dead_code)]
     fn output_references_escape(stdout: &str, stderr: &str, worktree: &str) -> bool {
         // Simple heuristic: check if output mentions writing to paths outside worktree
         // This catches common escape patterns like `cd /etc` or writing to /tmp
