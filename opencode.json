@@ -1,0 +1,21 @@
+﻿{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "openrouter/qwen/qwen3-coder:free",
+
+  "small_model": "openrouter/deepseek-v4-flash:free",
+
+  "provider": {
+    "openrouter": {
+      "options": {
+        "apiKey": "{env:OPENROUTER_API_KEY}"
+      }
+    }
+  },
+
+  "permission": "allow",
+
+  "instructions": [
+    "CLAUDE.md"
+  ]
+}

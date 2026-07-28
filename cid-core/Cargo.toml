@@ -1,0 +1,82 @@
+[package]
+name = "cid-core"
+version = "0.1.0"
+edition = "2021"
+description = "CID Core - Rust daemon for CID platform (git, pty, mcp, model routing, persistence)"
+authors = ["CID Team"]
+license = "MIT"
+
+[lib]
+name = "cid_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cid-core"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+
+# Web / transport
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Git
+git2 = { version = "0.19", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+
+# PTY
+portable-pty = "0.8"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# MCP / HTTP
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+
+# Misc
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
+uuid7 = { version = "0.2", features = ["serde"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+regex = "1.10"
+sysinfo = "0.30"
+dirs = "5.0"
+keyring = "3.5"
+walkdir = "2.5"
+glob = "0.3"
+globset = "0.4"
+notify = "6.1"
+which = "7.0"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-json = "0.24"
+tantivy = "0.22"
+argon2 = "0.5"
+candle-core = { version = "0.11.0", default-features = false }
+candle-nn = { version = "0.11.0", default-features = false }
+candle-transformers = { version = "0.11.0", default-features = false }
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+# Integration tests build real git repos as fixtures; features must match the
+# main dependency above so cargo does not resolve two libgit2 configurations.
+git2 = { version = "0.19", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+proptest = "1"
+tempfile = "3.10"
+tokio-test = "0.4"

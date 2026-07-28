@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CID - Collaborative Intelligent Development</title>
+    <script>
+      // review_prompt.md §7: set data-theme before first paint so switching
+      // to light doesn't flash dark first — src/theme/useTheme.ts is the
+      // single source of truth for this value afterward; this inline copy
+      // exists only because it must run before React (or even the CSS)
+      // loads. Defaults to dark (CID's existing behavior) unless the user
+      // has explicitly chosen light before.
+      (function () {
+        var stored = localStorage.getItem("cid-theme");
+        document.documentElement.setAttribute("data-theme", stored === "light" ? "light" : "dark");
+      })();
+    </script>
+  </head>
+  <body class="bg-background text-foreground antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
