@@ -7,6 +7,7 @@ import WebSocket from "ws";
 // is a transitive dependency; this polyfill ensures E2E tests work
 // without --experimental-websocket or Node 22+).
 if (typeof globalThis.WebSocket === "undefined") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).WebSocket = WebSocket;
 }
 
