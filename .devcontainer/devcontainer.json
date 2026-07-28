@@ -1,0 +1,25 @@
+{
+  "name": "CID (browser + standalone Core loop)",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "forwardPorts": [1420, 5919],
+  "portsAttributes": {
+    "1420": { "label": "Vite dev server" },
+    "5919": { "label": "CID Core (JSON-RPC)" }
+  },
+  "postCreateCommand": "npm install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}

@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Proves the Justfile stays a truthful mirror of what CI actually checks —
+  # if a recipe drifts from reality (references a script that moved, a
+  # command whose flags changed), this fails here rather than only being
+  # discovered by a developer running `just check-all` locally and being
+  # confused when it disagrees with the individual jobs below.
+  just-check-all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: extractions/setup-just@v2
+      - run: npm ci
+      - run: just check-all
+
+  lint-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy -p cid-core -p cid-tui --all-targets -- -D warnings
+
+  # Runs the full local `cargo test --workspace` surface — cid-core's unit
+  # tests plus its integration/fuzz/property/performance suites in
+  # cid-core/tests/*.rs, plus cid-tui. An earlier version of this job ran
+  # `cargo test -p cid-core --lib` only, silently excluding 81 real tests;
+  # see docs/036-CI-CD.md for that history.
+  test-rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      # cid-core/src/mcp/mod.rs's stdio-transport tests spawn a real Node.js
+      # mock MCP server over stdio (Node, not Python, since it's already a
+      # hard dependency of this whole repo) — without it, those tests skip
+      # themselves rather than fail, but running them for real in CI is the
+      # entire point of review_prompt.md §2.1's fix.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install sys deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
+      - name: cargo test
+        run: cargo test --workspace --exclude cid --all-features
+
+  test-rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: cargo test
+        run: cargo test --workspace --exclude cid --all-features
+
+  test-rust-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: cargo test
+        run: cargo test --workspace --exclude cid --all-features
+
+  # Non-blocking by design (continue-on-error): a new advisory in a transitive
+  # dependency shouldn't fail every PR the day it's published — it should be
+  # visible. Reviewed as part of release prep alongside docs/045-Dependency-Audit.md.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=moderate
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
+
+  lint-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      # review_prompt.md §7: fails if src/index.css's generated block has
+      # drifted from src/theme/tokens.json — see scripts/generate-theme-css.mjs.
+      - run: npm run theme:check
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test
+
+  typecheck-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+      - name: Build core
+        run: cargo build -p cid-core --bins
+      - name: Start core in background
+        run: |
+          ./target/debug/cid-core --port 5919 &
+          echo $! > /tmp/core.pid
+          sleep 2
+      - name: Run Playwright E2E (Flow 1)
+        run: npm run test:e2e
+      - name: Stop core
+        if: always()
+        run: kill $(cat /tmp/core.pid) || true
+
+  build-tauri-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install sys deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
+      - run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: cargo check Tauri
+        run: cargo check -p cid
+
+  build-tauri-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install Tauri deps (Windows)
+        run: npm run build
+      - name: Build Tauri (check only in CI, full build is heavy)
+        run: cargo check -p cid
+
+  build-tauri-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: cargo check Tauri
+        run: cargo check -p cid

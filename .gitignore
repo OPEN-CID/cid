@@ -1,0 +1,73 @@
+# Rust / Cargo
+/target/
+**/target/
+Cargo.lock
+# Keep Cargo.lock for binary crates, but workspace root includes it (Tauri convention keeps it)
+# We'll explicitly include root Cargo.lock later via git add -f if needed, but ignore for now
+# Uncomment if you want to keep lock:
+# !Cargo.lock
+
+# Node / frontend
+/node_modules/
+/dist/
+/build/
+.pnpm-store/
+.yarn/
+
+# Vite
+/.vite/
+
+# Tauri
+/src-tauri/target/
+
+# Env / secrets
+.env
+.env.*
+*.env
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.iml
+
+# SQLite DBs (local dev)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+cid-*.db
+
+# Worktrees (managed)
+.cid/
+cid-worktrees/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+blob-report/
+# health-check.spec.ts's file.write/file.read round-trip test writes here —
+# a real test artifact, regenerated every run, never meant to be committed.
+/tests/_e2e_test_temp.txt
+
+# Coverage
+/coverage/
+
+# Temp
+tmp/
+temp/

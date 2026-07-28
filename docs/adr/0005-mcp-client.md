@@ -1,0 +1,22 @@
+# ADR 0005: MCP client targeting 2026-07-28 spec
+
+- **Date**: 2026-07-26
+- **Status**: Accepted
+- **Context**: Protocol note in Build Prompt Part 2: MCP just had biggest revision ever, finalizing July 28, 2026 (3 days after brief). Largest revision since launch: stateless protocol core (no more session IDs, scales on ordinary load balancers), MCP Apps (servers render interactive HTML UI inside client), Tasks extension for long-running async work, OAuth/OIDC auth. Anthropic donated MCP to Linux Foundation Agentic AI Foundation Dec 9 2025. CID must be MCP client targeting 2026-07-28 shape from start rather than superseded 2025-11-25.
+- **Decision**: Implement basic MCP client in `cid-core/src/mcp/mod.rs` with:
+  - Transport types: stdio (spawns child process with piped stdin/stdout/stderr via tokio::process) and HTTP (reqwest POST JSON-RPC)
+  - Registry scoped by level: Workspace holds full list, Repo Channel enables subset — least-privilege by default (per Part 8,14)
+  - Phase0 functions: `add_server` (name, transport_type, config JSON), `list_servers`, `remove_server`, `list_tools` (tools/list), `call_tool` (tools/call)
+  - Stdio tool call currently simulated with placeholder result noting framing is stubbed — full duplex JSON-RPC framing over stdin/stdout is Phase1 work; HTTP path does real POST
+  - Persistence via `mcp_servers` table
+  - UI: per-Repo Channel picker with enable toggles, plus "add server" flow (stdio command or HTTP URL), in-thread tool tray `@mention` support, inline cards rendering tool name/args/result, History logging
+  - Target spec shape: JSON-RPC 2.0 envelopes, no session IDs, ready for Tasks extension (kick off long job, get handle, poll/subscribe) and MCP Apps (server renders HTML UI inline) in Phase2+
+- **Alternatives**:
+  - Use existing `mcp-client` crate: at time of writing, crates target 2024-2025 spec, not 2026-07-28 stateless core; also adds dependency we would need to fork anyway for Tasks/MCP Apps
+  - Build only HTTP transport: misses local filesystem/database servers that are primarily stdio in ecosystem
+- **Consequences**:
+  - Phase0 covers basic MCP client exit criteria: add server via UI, agent can call its tools, calls render as inline cards and log to History (Parts 8,13)
+  - Simulated stdio response is honest stub per Part 0 rule 2 — must be stated in checkpoint as stubbed, belonging to Phase1 for full implementation
+  - Security: MCP servers are enabled per Repo Channel, not globally; secrets used by MCP servers should be stored in OS credential storage (Keychain/Credential Manager) Phase2+, not SQLite plaintext per Part 14 — Phase0 stores config JSON as-is, so user should avoid putting secrets in config and use env vars instead
+  - Long-running calls via Tasks extension maps naturally onto async Missions — a long tool call gets handle, thread shows "running", human can navigate away — Phase2+
+- **References**: Build Prompt Parts 2 (protocol notes), 8 (MCP integration), 13 (History), 14 (security), 22 Phase0 scope.
