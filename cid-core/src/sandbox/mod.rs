@@ -122,13 +122,40 @@ impl SandboxManager {
         }
 
         // Layer 2 — kernel isolation, where the OS provides it.
-        if cfg!(windows) {
-            self.windows_job_object_sandbox(config, command, args, workdir)
-        } else if cfg!(target_os = "macos") {
-            self.macos_sandbox_exec(config, command, args, workdir)
-        } else {
-            self.linux_namespace_sandbox(config, command, args, workdir)
-        }
+        self.platform_sandbox(config, command, args, workdir)
+    }
+
+    #[cfg(windows)]
+    fn platform_sandbox(
+        &self,
+        config: &SandboxConfig,
+        command: &str,
+        args: &[&str],
+        workdir: &str,
+    ) -> anyhow::Result<SandboxResult> {
+        self.windows_job_object_sandbox(config, command, args, workdir)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_sandbox(
+        &self,
+        config: &SandboxConfig,
+        command: &str,
+        args: &[&str],
+        workdir: &str,
+    ) -> anyhow::Result<SandboxResult> {
+        self.macos_sandbox_exec(config, command, args, workdir)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    fn platform_sandbox(
+        &self,
+        config: &SandboxConfig,
+        command: &str,
+        args: &[&str],
+        workdir: &str,
+    ) -> anyhow::Result<SandboxResult> {
+        self.linux_namespace_sandbox(config, command, args, workdir)
     }
 
     /// Reject a command before it runs if any path it names resolves outside the
