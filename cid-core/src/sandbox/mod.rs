@@ -738,6 +738,20 @@ impl SandboxManager {
             output.status.code().unwrap_or(-1)
         };
 
+        // If the sandbox tool (unshare) itself failed (e.g. user namespaces
+        // disabled in a container), stdout will be empty and the command did
+        // not actually run. Report this as Blocked rather than Allowed with
+        // empty output, so callers don't mistake a silent sandbox failure
+        // for a successfully isolated command.
+        if exit_code != 0 && stdout.is_empty() {
+            let reason = if stderr.is_empty() {
+                "Linux sandbox (unshare) exited with an unknown error".to_string()
+            } else {
+                format!("Linux sandbox (unshare) failed: {}", stderr.trim())
+            };
+            return Ok(SandboxResult::Blocked { reason });
+        }
+
         Ok(SandboxResult::Allowed {
             exit_code,
             stdout,
@@ -825,6 +839,17 @@ impl SandboxManager {
         } else {
             output.status.code().unwrap_or(-1)
         };
+
+        // If bwrap itself failed (e.g. user namespaces disabled), report
+        // Blocked rather than Allowed with empty output.
+        if exit_code != 0 && stdout.is_empty() {
+            let reason = if stderr.is_empty() {
+                "Linux sandbox (bwrap) exited with an unknown error".to_string()
+            } else {
+                format!("Linux sandbox (bwrap) failed: {}", stderr.trim())
+            };
+            return Ok(SandboxResult::Blocked { reason });
+        }
 
         Ok(SandboxResult::Allowed {
             exit_code,
