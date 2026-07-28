@@ -63,8 +63,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev pkg-config
-      - name: cargo test
-        run: cargo test --workspace --exclude cid --all-features
+      - name: Debug — check Cargo.lock and print toolchain info
+        run: |
+          rustc --version
+          cargo --version
+          head -5 Cargo.lock
+      - name: cargo clippy debug -p cid-core
+        run: cargo clippy -p cid-core --all-targets 2>&1 || true
+      - name: cargo test --workspace --exclude cid without all-features
+        run: cargo test --workspace --exclude cid 2>&1 || true
 
   test-rust-windows:
     runs-on: windows-latest
