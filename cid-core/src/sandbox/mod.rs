@@ -147,7 +147,7 @@ impl SandboxManager {
         self.macos_sandbox_exec(config, command, args, workdir)
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     fn platform_sandbox(
         &self,
         config: &SandboxConfig,
@@ -156,6 +156,27 @@ impl SandboxManager {
         workdir: &str,
     ) -> anyhow::Result<SandboxResult> {
         self.linux_namespace_sandbox(config, command, args, workdir)
+    }
+
+    /// Any other Unix (FreeBSD, illumos, …). Layer 1's path-policy check has
+    /// already run and still applies; what is missing here is Layer 2 kernel
+    /// isolation, for which this build carries no implementation. Refuse rather
+    /// than run the command unconfined while reporting it as sandboxed.
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    fn platform_sandbox(
+        &self,
+        _config: &SandboxConfig,
+        _command: &str,
+        _args: &[&str],
+        _workdir: &str,
+    ) -> anyhow::Result<SandboxResult> {
+        Ok(SandboxResult::Blocked {
+            reason: format!(
+                "No kernel-level sandbox implementation for this platform ({}); \
+                 refusing to execute unconfined",
+                std::env::consts::OS
+            ),
+        })
     }
 
     /// Reject a command before it runs if any path it names resolves outside the
@@ -280,13 +301,20 @@ impl SandboxManager {
                 available,
                 "macOS sandbox-exec profile with (deny default) and worktree-scoped write allows",
             )
-        } else {
+        } else if cfg!(target_os = "linux") {
             let available = which::which("bwrap").is_ok();
             (
                 "linux_namespace",
                 available,
                 "Linux bubblewrap (bwrap) bind-mount isolation; without bwrap the unshare \
                  fallback does not confine the filesystem and policy alone applies",
+            )
+        } else {
+            (
+                "unsupported",
+                false,
+                "No kernel-level sandbox implementation exists for this platform; \
+                 sandboxed execution is refused rather than run unconfined",
             )
         };
 
@@ -498,18 +526,6 @@ impl SandboxManager {
         }
     }
 
-    #[cfg(not(windows))]
-    #[allow(dead_code)]
-    fn create_restricted_job() -> Option<*mut std::ffi::c_void> {
-        None
-    }
-
-    #[cfg(not(windows))]
-    #[allow(dead_code)]
-    fn assign_process_to_job(_job: &*mut std::ffi::c_void, _pid: u32) -> bool {
-        false
-    }
-
     #[cfg(target_os = "macos")]
     fn macos_sandbox_exec(
         &self,
@@ -585,20 +601,6 @@ impl SandboxManager {
             exit_code,
             stdout,
             stderr,
-        })
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[allow(dead_code)]
-    fn macos_sandbox_exec(
-        &self,
-        _config: &SandboxConfig,
-        _command: &str,
-        _args: &[&str],
-        _workdir: &str,
-    ) -> anyhow::Result<SandboxResult> {
-        Ok(SandboxResult::Blocked {
-            reason: "macOS sandbox-exec is not available on this platform".to_string(),
         })
     }
 
@@ -770,20 +772,6 @@ impl SandboxManager {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[allow(dead_code)]
-    fn linux_namespace_sandbox(
-        &self,
-        _config: &SandboxConfig,
-        _command: &str,
-        _args: &[&str],
-        _workdir: &str,
-    ) -> anyhow::Result<SandboxResult> {
-        Ok(SandboxResult::Blocked {
-            reason: "Linux namespace sandboxing is only available on Linux".to_string(),
-        })
-    }
-
     #[cfg(target_os = "linux")]
     fn linux_bwrap_sandbox(
         &self,
@@ -943,7 +931,12 @@ impl SandboxManager {
         target_path.starts_with(&boundary_path)
     }
 
-    #[allow(dead_code)]
+    // Windows-only by design, not by oversight: Job Objects constrain process
+    // and resource limits but provide no filesystem confinement, so this coarse
+    // output-text heuristic is the compensating control on that platform.
+    // Linux (unshare/bwrap) and macOS (sandbox-exec) get real kernel-enforced
+    // filesystem isolation instead and do not need — or rely on — it.
+    #[cfg(windows)]
     fn output_references_escape(stdout: &str, stderr: &str, worktree: &str) -> bool {
         // Simple heuristic: check if output mentions writing to paths outside worktree
         // This catches common escape patterns like `cd /etc` or writing to /tmp
@@ -980,6 +973,49 @@ impl Default for SandboxManager {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Probes whether this machine's sandbox tooling can actually isolate a
+    /// trivial command — CI containers routinely ship `unshare`/`bwrap` while
+    /// having user namespaces disabled, and macOS runners can reject profiles.
+    ///
+    /// This exists so a test can assert the *correct* outcome for the machine
+    /// it runs on rather than accepting either one. An earlier version of
+    /// `writes_inside_the_worktree_are_allowed` tolerated both `Allowed` and
+    /// `Blocked` on Linux/macOS, which made it pass whether the sandbox worked
+    /// or was entirely broken. Probe the tool, never the wrapper under test.
+    #[cfg(target_os = "linux")]
+    fn sandbox_tooling_works() -> bool {
+        if which::which("unshare").is_err() {
+            return false;
+        }
+        let (tool, args): (&str, &[&str]) = if which::which("bwrap").is_ok() {
+            ("bwrap", &["--unshare-all", "--ro-bind", "/", "/", "true"])
+        } else {
+            ("unshare", &["--mount", "--map-root-user", "true"])
+        };
+        let probe = Command::new(tool).args(args).output();
+        matches!(probe, Ok(out) if out.status.success())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sandbox_tooling_works() -> bool {
+        let args: &[&str] = &["-p", "(version 1)(allow default)", "/usr/bin/true"];
+        let probe = Command::new("sandbox-exec").args(args).output();
+        matches!(probe, Ok(out) if out.status.success())
+    }
+
+    /// Job Objects are part of the Windows kernel — there is no optional
+    /// userspace tool that can be missing.
+    #[cfg(windows)]
+    fn sandbox_tooling_works() -> bool {
+        true
+    }
+
+    /// Platforms with no Layer 2 implementation always block, by design.
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    fn sandbox_tooling_works() -> bool {
+        false
+    }
 
     #[test]
     fn test_sandbox_manager_creation() {
@@ -1179,19 +1215,25 @@ mod tests {
             )
             .unwrap();
 
+        // Assert the outcome the machine's actual capabilities demand, in both
+        // directions — a working sandbox must allow legitimate worktree writes,
+        // and an unusable one must surface as Blocked rather than as an
+        // Allowed-with-empty-output false success.
+        let tooling_works = sandbox_tooling_works();
         match result {
-            SandboxResult::Allowed { .. } => {}
+            SandboxResult::Allowed { .. } => {
+                assert!(
+                    tooling_works,
+                    "sandbox returned Allowed although this platform's sandbox tooling probe \
+                     failed - a silent sandbox failure must be reported as Blocked"
+                );
+            }
             SandboxResult::Blocked { reason } => {
-                // On CI the sandbox tool (bwrap/unshare/sandbox-exec) may
-                // be unavailable, blocking everything including legitimate
-                // worktree writes. That's infrastructure, not a violation.
-                if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
-                    eprintln!(
-                        "Sandbox blocked (acceptable on CI without sandbox tooling): {reason}"
-                    );
-                } else {
-                    panic!("ordinary work inside the worktree must not be blocked: {reason}")
-                }
+                assert!(
+                    !tooling_works,
+                    "ordinary work inside the worktree must not be blocked when this \
+                     platform's sandbox tooling is working: {reason}"
+                );
             }
         }
     }

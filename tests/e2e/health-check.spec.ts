@@ -3,12 +3,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import WebSocket from "ws";
 
-// Make WebSocket globally available for Node.js < 21 (the `ws` package
-// is a transitive dependency; this polyfill ensures E2E tests work
-// without --experimental-websocket or Node 22+).
+// Node exposes a global WebSocket only from 22 onwards (21 needs
+// --experimental-websocket), and CI pins Node 20 — so polyfill it from `ws`,
+// which is declared in devDependencies rather than relied on transitively.
 if (typeof globalThis.WebSocket === "undefined") {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).WebSocket = WebSocket;
+  (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket =
+    WebSocket;
 }
 
 /**

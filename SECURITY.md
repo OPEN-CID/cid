@@ -37,6 +37,12 @@ program computes at runtime.**
 | Linux, with `bwrap` installed | bubblewrap bind mounts | **Yes** |
 | Linux, without `bwrap` | `unshare` fallback | **No** — policy only |
 | Windows | Job Object | **No** — policy only |
+| Any other OS (FreeBSD, illumos, …) | None — execution is refused | n/a — nothing runs |
+
+On a platform CID carries no Layer 2 implementation for, `execute_sandboxed` returns
+`Blocked` rather than running the command unconfined. Layer 1's path policy has already
+been applied at that point, but policy alone was judged too weak to present as a sandbox,
+so the command does not run at all.
 
 **Windows is the important caveat.** A Windows Job Object constrains process lifetime,
 CPU, and memory. It does **not** restrict file access. A process in a restricted job
@@ -49,6 +55,14 @@ the worktree. That was wrong, and the test that was supposed to catch it asserte
 tautology (`passed || !passed`). Both have been corrected. See
 [ADR 0011](docs/adr/0011-windows-sandbox-boundary.md) for the full analysis and the
 AppContainer work that would close the gap.
+
+The same class of bug recurred once while making CI green across three runners:
+`writes_inside_the_worktree_are_allowed` was changed to accept *either* `Allowed` or
+`Blocked` on Linux/macOS, to tolerate CI runners without usable sandbox tooling — which
+left it passing whether the sandbox worked or was entirely broken. It now probes the
+platform's sandbox tool directly and asserts the outcome that probe demands, in both
+directions. When adapting a security test to a CI environment, assert the *correct*
+result for that environment; never widen it to accept every result.
 
 ### What is not covered on any platform
 
