@@ -665,6 +665,16 @@ impl SandboxManager {
         // Allow basic system files
         profile.push_str("(allow file-read*\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/etc\")\n  (subpath \"/tmp\")\n  (subpath \"/private/tmp\")\n  (subpath \"/dev\")\n  (subpath \"/var\")\n  (subpath \"/Library\")\n  (subpath \"/System/Library\"))\n");
 
+        // file-read* does not cover mapping a binary or shared library as
+        // executable memory - that is the separate file-map-executable
+        // operation. Without it, dyld's mmap of /bin/sh (or of libSystem and
+        // the dyld shared cache it links against) is denied at the Mach VM
+        // layer, which the kernel enforces by killing the process outright
+        // rather than returning EPERM - so the failure shows up as
+        // sandbox-exec exiting with no stdout/stderr at all, not as a
+        // legible permission error.
+        profile.push_str("(allow file-map-executable\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/Library\")\n  (subpath \"/System/Library\"))\n");
+
         profile
     }
 
