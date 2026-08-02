@@ -622,6 +622,16 @@ impl SandboxManager {
         profile.push_str("(allow sysctl-read)\n");
         profile.push_str("(allow signal)\n");
 
+        // getcwd()/realpath() implementations walk up to the filesystem root
+        // via `..` to resolve the current directory, which requires reading
+        // the root directory's own listing - confirmed as the actual denied
+        // operation (`sh(...) deny(1) file-read-data /`) via the real CI
+        // macOS runner's unified log after `file-map-executable` and a
+        // whole-tree /System and /private allow still weren't enough. This
+        // is `(literal "/")`, not `(subpath "/")`: it permits listing what
+        // names exist directly under root, not reading inside any of them.
+        profile.push_str("(allow file-read-metadata file-read-data (literal \"/\"))\n");
+
         // Allow reading in the worktree
         let worktree = &config.worktree_path;
         let workdir_full = std::path::Path::new(workdir)
