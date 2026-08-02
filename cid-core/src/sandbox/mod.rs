@@ -662,8 +662,18 @@ impl SandboxManager {
         profile.push_str("(allow network-outbound)\n");
         profile.push_str("(allow network-inbound)\n");
 
-        // Allow basic system files
-        profile.push_str("(allow file-read*\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/etc\")\n  (subpath \"/tmp\")\n  (subpath \"/private/tmp\")\n  (subpath \"/dev\")\n  (subpath \"/var\")\n  (subpath \"/Library\")\n  (subpath \"/System/Library\"))\n");
+        // Allow basic system files. `/System` and `/private` are allowed as whole
+        // trees, not just their traditionally-documented subdirectories
+        // (`/System/Library`, `/var`) - since macOS 13 the dyld shared cache and
+        // other boot-critical files that every process (even /bin/sh) needs to
+        // read live under paths like `/System/Volumes/Preboot/Cryptexes/...`
+        // and `/private/var/db/dyld/...` that don't match a narrower prefix, and
+        // that prefix keeps moving across macOS releases. This still excludes
+        // /Users, /Applications, and /Volumes (other than what's under /private) -
+        // the actual secrets (SSH keys, cloud credentials, other repos) this
+        // sandbox exists to protect live under the user's home directory, not
+        // under OS-owned, world-readable-by-design system paths.
+        profile.push_str("(allow file-read*\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/dev\")\n  (subpath \"/Library\")\n  (subpath \"/System\")\n  (subpath \"/private\"))\n");
 
         // file-read* does not cover mapping a binary or shared library as
         // executable memory - that is the separate file-map-executable
@@ -672,8 +682,9 @@ impl SandboxManager {
         // layer, which the kernel enforces by killing the process outright
         // rather than returning EPERM - so the failure shows up as
         // sandbox-exec exiting with no stdout/stderr at all, not as a
-        // legible permission error.
-        profile.push_str("(allow file-map-executable\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/Library\")\n  (subpath \"/System/Library\"))\n");
+        // legible permission error. Same path-tree reasoning as the file-read*
+        // allow above applies here.
+        profile.push_str("(allow file-map-executable\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\")\n  (subpath \"/Library\")\n  (subpath \"/System\")\n  (subpath \"/private\"))\n");
 
         profile
     }
