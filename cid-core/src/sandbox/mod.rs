@@ -610,8 +610,15 @@ impl SandboxManager {
         profile.push_str("(version 1)\n");
         profile.push_str("(deny default)\n");
 
-        // Allow basic operations
+        // Allow basic operations. process-fork and mach-lookup are not optional
+        // extras: under a (deny default) profile, dyld/libSystem process startup
+        // (even for something as small as `/bin/sh -c echo`) talks to system
+        // mach services during init, and a shell forks before it execs the
+        // command it's running. Without both, sandbox-exec silently fails
+        // *every* command, not just genuinely disallowed ones.
         profile.push_str("(allow process-exec)\n");
+        profile.push_str("(allow process-fork)\n");
+        profile.push_str("(allow mach-lookup)\n");
         profile.push_str("(allow sysctl-read)\n");
         profile.push_str("(allow signal)\n");
 
