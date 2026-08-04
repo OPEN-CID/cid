@@ -63,7 +63,9 @@ yarn-error.log*
 blob-report/
 # health-check.spec.ts's file.write/file.read round-trip test writes here —
 # a real test artifact, regenerated every run, never meant to be committed.
-/tests/_e2e_test_temp.txt
+# The path must match the spec's own `${__dirname}/_e2e_test_temp.txt`; an
+# earlier /tests/ rule missed the e2e/ segment and so never matched anything.
+/tests/e2e/_e2e_test_temp.txt
 
 # Coverage
 /coverage/

@@ -1,6 +1,15 @@
 import { test, expect } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import WebSocket from "ws";
+
+// Node exposes a global WebSocket only from 22 onwards (21 needs
+// --experimental-websocket), and CI pins Node 20 — so polyfill it from `ws`,
+// which is declared in devDependencies rather than relied on transitively.
+if (typeof globalThis.WebSocket === "undefined") {
+  (globalThis as unknown as { WebSocket: typeof WebSocket }).WebSocket =
+    WebSocket;
+}
 
 /**
  * Health & API coverage E2E test — validates that ALL REST endpoints respond correctly.

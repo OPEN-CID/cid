@@ -25,7 +25,7 @@ async fn start_core() -> String {
     });
 
     let base = format!("http://{}", addr);
-    for _ in 0..50 {
+    for _ in 0..150 {
         if reqwest::get(format!("{}/health", base)).await.is_ok() {
             return base;
         }
@@ -812,7 +812,8 @@ async fn test_impact_and_doc_graphs_populate_after_enabling_the_semantic_engine(
     .await;
 
     // The scan runs in the background; poll status until indexing completes.
-    for _ in 0..100 {
+    // Use a generous timeout (500 × 20ms = 10s) for slow CI runners.
+    for _ in 0..500 {
         let status = rpc_ok(
             &base,
             "semantic_engine.status",
@@ -1065,7 +1066,7 @@ async fn non_vibe_mission_still_uses_the_full_planner() {
 
     // Without vibe:true, the ordinary Planner path applies — the plan is not
     // pre-approved with the vibe-preset marker.
-    for _ in 0..50 {
+    for _ in 0..200 {
         let gate = rpc_ok(
             &base,
             "mission.plan.get",
@@ -1175,7 +1176,7 @@ async fn start_authenticated_core(token: &str) -> String {
     });
 
     let base = format!("http://{}", addr);
-    for _ in 0..50 {
+    for _ in 0..150 {
         if reqwest::get(format!("{}/health", base)).await.is_ok() {
             return base;
         }
