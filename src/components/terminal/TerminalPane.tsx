@@ -4,9 +4,27 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { useCid } from "@/hooks/useCid";
 import { api } from "@/lib/api";
+import { useTheme } from "@/theme/useTheme";
+
+// xterm's canvas renderer needs a resolved color, not a `var(--x)` reference —
+// tokens.json stores HSL triplets (e.g. "222 47% 4%") consumed elsewhere via
+// `hsl(var(--x))`, so read the live custom property and wrap it the same way.
+function readThemeColor(varName: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value ? `hsl(${value})` : fallback;
+}
+
+function xtermTheme() {
+  return {
+    background: readThemeColor("--background", "#0a0e13"),
+    foreground: readThemeColor("--foreground", "#e2e8f0"),
+  };
+}
 
 export function TerminalPane() {
   const { selectedMissionId } = useCid();
+  const theme = useTheme((s) => s.theme);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -20,10 +38,7 @@ export function TerminalPane() {
       cursorBlink: true,
       fontSize: 13,
       fontFamily: "Menlo, Monaco, 'Courier New', monospace",
-      theme: {
-        background: "#0a0e13",
-        foreground: "#e2e8f0",
-      },
+      theme: xtermTheme(),
     });
 
     const fitAddon = new FitAddon();
@@ -98,13 +113,19 @@ export function TerminalPane() {
     return () => clearInterval(interval);
   }, [handleResize]);
 
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = xtermTheme();
+    }
+  }, [theme]);
+
   if (!selectedMissionId) {
     return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a mission to open terminal</div>;
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0e13]">
-      <div className="h-8 border-b border-white/10 flex items-center px-3 text-xs text-white/60">
+    <div className="h-full flex flex-col bg-background">
+      <div className="h-8 border-b border-border flex items-center px-3 text-xs text-muted-foreground">
         <span>PTY: {ptyId ? ptyId.slice(0, 8) : "connecting..."}</span>
         <span className="ml-auto flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-yellow-500"}`} />

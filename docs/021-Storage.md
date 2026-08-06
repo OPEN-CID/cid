@@ -66,7 +66,10 @@ higher concurrency, not yet needed.
 
 A corrupted or locked SQLite file surfaces as a `rusqlite` error propagated through
 `anyhow::Result` to the RPC caller — no automatic recovery or backup/restore mechanism
-exists.
+exists **in Core itself**. The operational answer (an external, WAL-safe backup script
+using `sqlite3 .backup`, plus a restore procedure) lives in
+`docs/052-Production-Deployment.md` §5 — this remains a real gap in Core's own
+capabilities, just not an undocumented one.
 
 ## Security
 

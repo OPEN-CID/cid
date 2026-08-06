@@ -155,7 +155,7 @@ export function DiffViewer() {
                   </div>
                 </div>
                 {selectedMissionId && <ConfidenceCard missionId={selectedMissionId} filePath={file.path} />}
-                <div className="bg-[#0a0e13] rounded border overflow-hidden mt-2">
+                <div className="bg-background rounded border overflow-hidden mt-2">
                   {file.hunks.map((hunk) => (
                     <div key={hunk.id} className="border-b last:border-0">
                       <div className="bg-accent/50 px-3 py-1 text-[11px] font-mono text-muted-foreground flex items-center gap-2">

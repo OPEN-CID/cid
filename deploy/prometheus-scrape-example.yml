@@ -1,0 +1,14 @@
+# Example scrape config for a Prometheus server pointed at cid-core's real
+# /metrics endpoint (docs/033-Observability.md). CID does not bundle or run
+# Prometheus itself — this is what to add to your own prometheus.yml.
+
+scrape_configs:
+  - job_name: cid-core
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["cid-core-host:5919"]
+    # If /metrics sits behind the same reverse proxy as the rest of Core and
+    # is not separately exempted, Prometheus needs network access to it —
+    # either scrape it directly on the loopback/internal interface (simplest)
+    # or add bearer_token auth here matching CID_AUTH_TOKEN if scraping
+    # through a proxy that enforces it.

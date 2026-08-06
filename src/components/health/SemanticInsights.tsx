@@ -24,6 +24,8 @@ export function TestImpactTab({ repoPath }: { repoPath: string }) {
   const [lookup, setLookup] = useState<TestImpactEntry | null>(null);
   const [entries, setEntries] = useState<TestImpactEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [batchSymbols, setBatchSymbols] = useState("");
+  const [batchResult, setBatchResult] = useState<string[] | null>(null);
 
   const runLookup = async () => {
     if (!symbol.trim()) return;
@@ -33,6 +35,23 @@ export function TestImpactTab({ repoPath }: { repoPath: string }) {
       setLookup({ symbol: res.symbol, covering_tests: res.covering_tests || [] });
     } catch (e) {
       toast.error(`Test-impact lookup failed: ${e}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runBatchLookup = async () => {
+    const symbols = batchSymbols
+      .split(/[,\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (symbols.length === 0) return;
+    setLoading(true);
+    try {
+      const res = await api.semanticEngine.testImpactForSymbols(repoPath, symbols);
+      setBatchResult(res.covering_tests || []);
+    } catch (e) {
+      toast.error(`Batch test-impact lookup failed: ${e}`);
     } finally {
       setLoading(false);
     }
@@ -82,6 +101,35 @@ export function TestImpactTab({ repoPath }: { repoPath: string }) {
           )}
         </div>
       )}
+
+      <div className="pt-2 border-t space-y-1.5">
+        <div className="text-[10px] text-muted-foreground">
+          Tests covering any of several symbols at once — e.g. every symbol touched by a patch.
+        </div>
+        <textarea
+          className="w-full bg-background border rounded px-2 py-1 text-[11px] font-mono"
+          placeholder={"One symbol per line, or comma-separated"}
+          rows={2}
+          value={batchSymbols}
+          onChange={(e) => setBatchSymbols(e.target.value)}
+        />
+        <button onClick={runBatchLookup} disabled={loading} className="px-2 py-1 rounded bg-secondary disabled:opacity-50">
+          Look up covering tests for all
+        </button>
+        {batchResult && (
+          <div className="p-2 border rounded bg-background">
+            {batchResult.length === 0 ? (
+              <div className="text-muted-foreground">No known covering tests.</div>
+            ) : (
+              batchResult.map((t) => (
+                <div key={t} className="font-mono text-[10px]">
+                  {t}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
       <button onClick={loadAll} disabled={loading} className="px-2 py-1 rounded bg-secondary disabled:opacity-50">
         {entries ? "Refresh full table" : "Load full table"}

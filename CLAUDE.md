@@ -241,6 +241,68 @@ agent with that same restriction, not just subagents, would be safer for
 read-only/validation delegation than the default `build` agent `--auto` uses) rather than
 trusting `--auto` + instructions alone.
 
+## Production-readiness verification pass — 2026-08-05
+
+A full re-verification of the 2026-07-27 snapshot above, against real code rather than
+this file's own prior claims (the standing rule at the top of this file, applied to
+itself). Most claims held up. What didn't, now fixed:
+
+- **Light theme was incomplete, not fully "shipped."** `TerminalPane.tsx`'s xterm.js
+  instance and one `DiffViewer.tsx` hunk panel had hardcoded dark hex colors
+  (`#0a0e13`/`#e2e8f0`) independent of the token system — they stayed dark in light mode.
+  Fixed: `TerminalPane` now reads `--background`/`--foreground` from the live CSS custom
+  properties (re-applied on theme toggle via `useTheme`), and both panels use the
+  `bg-background`/`border-border` token classes like the rest of the app.
+- **This file's own "two deliberately unwired RPCs" claim undercounted.** `docs/051`'s
+  §5.1 table itself already documented four more (`deployment.webhook`,
+  `slack.trigger_mission`, `teams.trigger_mission`, `code.analyze_directory`) — this file
+  just phrased it as if `mcp.task.subscribe`/`workspace.get` were the only two. Separately,
+  a genuinely new, undocumented orphan turned up on re-running §4's `comm` check:
+  `semantic_engine.test_impact.for_symbols` (the batch/union variant of the already-wired
+  `.for_symbol`) had no frontend caller at all. Closed for real — a "look up covering
+  tests for several symbols at once" affordance added to `SemanticInsights.tsx`'s
+  existing Test Impact tab (not a new panel), with a component test
+  (`RepoHealthPanel.test.tsx`) and `docs/051`'s table corrected to match.
+- **`docs/033-Observability.md` was stale, not just incomplete.** It stated Prometheus
+  metrics export and crash reporting were unbuilt Non-Goals. Both are real and shipped
+  (`observability/mod.rs`: `Metrics::render_prometheus` backing a real `/metrics`
+  endpoint, `install_panic_hook` + `CrashLog` backing `observability.crashes.list`) — the
+  doc just never got reconciled after that work landed. Rewritten from the actual code.
+  This is exactly the doc/code drift failure mode this file warns about elsewhere,
+  caught by re-reading the implementation instead of trusting the doc.
+- **Editor `file.*` RPC path-confinement had thinner test coverage than the model-tool
+  side of the same fix.** The underlying guard (`path_confine::resolve_confined_path_in_any`)
+  was already shared and correct, but `router.rs`'s `handle_file_read/write/list` had no
+  RPC-layer regression test of their own — only the primitive's unit tests plus a fuzz
+  test that asserted "no HTTP 500," not "the write was actually refused." Added six real
+  tests against a spawned Core (`cid-core/tests/api_integration.rs`'s
+  `file_rpc_confinement` module): absolute-path escape, `..` traversal, a `.git/hooks`
+  target, a symlink escape, an out-of-repo `file.list`, and a legitimate in-repo path
+  still working.
+- **No production deployment documentation existed as a single, complete artifact.** The
+  manual steps to run `cid-core` for a real team (TLS, a persistent service, backups,
+  upgrades, monitoring, containerization) were scattered and, for several steps, entirely
+  undocumented — no TLS example config, no backup procedure, no service-supervision
+  guidance, no container image. Closed: `docs/052-Production-Deployment.md` (the runbook)
+  plus real artifacts to back it — `Dockerfile`/`docker-compose.yml`/`.dockerignore` at
+  the repo root, and `deploy/` (`Caddyfile`, `nginx.conf.example`, `cid-core.service`,
+  `backup-cid-db.sh`, `prometheus-scrape-example.yml`). **The `Dockerfile` was written
+  correctly against `cid-core/Cargo.toml`'s real dependencies but has not been
+  build-verified — no Docker daemon was available in this session.** Say so plainly
+  rather than claiming it works; verify it before relying on it.
+
+Verified and left as-is (real, not stubs, on direct re-reading of the code): §1.1 sandbox
+path confinement (model-tool side), §2.1 real MCP stdio transport (SEP-2322 multi-round-trip
+still genuinely absent, correctly low-priority), §1.3 governance merge/spend wiring, §6
+per-hunk reverse-apply, §2.2 ESLint config, §3.1 context compaction, §3.2 checkpoint/rewind.
+
+Full Rust workspace suite (`cargo test --workspace --exclude cid --all-features`),
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`npx tsc --noEmit`, `npm run lint`, and `npx vitest run` (156 passed, up from 155 — the
+new batch-lookup test is additive, plus 6 new Rust integration tests for the RPC-layer
+confinement gap) all run clean after every change in this pass, on this machine, not
+"should pass."
+
 ## Website
 
 `WEBSITE-BUILD-PROMPT.md` (repo root) is a complete, ready-to-hand-to-an-agent build

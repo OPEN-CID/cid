@@ -1,0 +1,15 @@
+# Example reverse proxy for a production cid-core, terminating TLS with an
+# automatically-obtained Let's Encrypt certificate. Replace cid.example.com
+# with your real hostname (Caddy needs a real DNS name to issue a cert for —
+# use the `internal` directive instead for a private CA / self-signed setup).
+#
+# Usage: see docker-compose.yml, or run standalone with
+#   caddy run --config Caddyfile
+#
+# /ws needs the Connection/Upgrade headers forwarded for the WebSocket
+# upgrade to succeed — Caddy's reverse_proxy does this automatically, unlike
+# some nginx configs (see nginx.conf.example's explicit headers for that case).
+
+cid.example.com {
+    reverse_proxy cid-core:5919
+}
