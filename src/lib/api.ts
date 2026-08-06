@@ -409,6 +409,8 @@ class CidApiClient {
       this.call("semantic_engine.index_file", { repo_path, file_path, content }),
     testImpactForSymbol: (repo_path: string, symbol: string) =>
       this.call("semantic_engine.test_impact.for_symbol", { repo_path, symbol }),
+    testImpactForSymbols: (repo_path: string, symbols: string[]) =>
+      this.call("semantic_engine.test_impact.for_symbols", { repo_path, symbols }),
     testImpactEntries: (repo_path: string) => this.call("semantic_engine.test_impact.entries", { repo_path }),
     docsForSymbol: (repo_path: string, symbol: string) =>
       this.call("semantic_engine.docs.for_symbol", { repo_path, symbol }),

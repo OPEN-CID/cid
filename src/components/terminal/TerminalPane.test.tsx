@@ -17,6 +17,7 @@ let disposeCalled = false;
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => ({
+    options: {},
     open: vi.fn(),
     loadAddon: vi.fn(),
     writeln: vi.fn((s: string) => writelnCalls.push(s)),

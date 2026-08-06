@@ -12,6 +12,7 @@ vi.mock("@/lib/api", () => ({
     repoHealth: { scan: vi.fn() },
     semanticEngine: {
       testImpactForSymbol: vi.fn(),
+      testImpactForSymbols: vi.fn(),
       testImpactEntries: vi.fn(),
       docsForSymbol: vi.fn(),
       docsStale: vi.fn(),
@@ -42,6 +43,7 @@ describe("RepoHealthPanel", () => {
   beforeEach(() => {
     vi.mocked(api.repoHealth.scan).mockReset();
     vi.mocked(api.semanticEngine.testImpactForSymbol).mockReset();
+    vi.mocked(api.semanticEngine.testImpactForSymbols).mockReset();
     vi.mocked(api.semanticEngine.testImpactEntries).mockReset();
     vi.mocked(api.semanticEngine.docsForSymbol).mockReset();
     vi.mocked(api.semanticEngine.docsStale).mockReset();
@@ -70,6 +72,23 @@ describe("RepoHealthPanel", () => {
 
     await waitFor(() => expect(api.semanticEngine.testImpactForSymbol).toHaveBeenCalledWith("/tmp/repo", "run_migrations"));
     expect(await screen.findByText("a_fresh_database_is_stamped_at_the_latest_migration_version")).toBeInTheDocument();
+  });
+
+  it("Test Impact tab looks up covering tests for several symbols at once", async () => {
+    vi.mocked(api.semanticEngine.testImpactForSymbols).mockResolvedValueOnce({
+      symbols: ["fn_a", "fn_b"],
+      covering_tests: ["a_test", "b_test"],
+    });
+    render(<RepoHealthPanel />);
+    await screen.findByText("No untested modules or duplicate tests found.");
+
+    fireEvent.click(screen.getByText("test impact"));
+    fireEvent.change(screen.getByPlaceholderText(/One symbol per line/), { target: { value: "fn_a, fn_b" } });
+    fireEvent.click(screen.getByText("Look up covering tests for all"));
+
+    await waitFor(() => expect(api.semanticEngine.testImpactForSymbols).toHaveBeenCalledWith("/tmp/repo", ["fn_a", "fn_b"]));
+    expect(await screen.findByText("a_test")).toBeInTheDocument();
+    expect(await screen.findByText("b_test")).toBeInTheDocument();
   });
 
   it("Docs tab finds stale docs", async () => {
