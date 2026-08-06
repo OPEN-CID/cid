@@ -1,0 +1,43 @@
+# Example production layout: cid-core behind a TLS-terminating reverse proxy
+# (Caddy, for automatic Let's Encrypt certs). See docs/052-Production-Deployment.md
+# before using this — in particular, generate a real CID_AUTH_TOKEN and put it
+# in a .env file (or your secret manager) rather than committing one.
+#
+#   cid-core --generate-token   # one-time, then put the result in .env as CID_AUTH_TOKEN
+#   docker compose up -d
+#
+# This does not include the web frontend — build it separately
+# (`npm run build`) and either serve `dist/` from the same Caddy instance
+# (see the commented block below) or from any static host, pointed at this
+# proxy's public URL via VITE_CID_CORE_HOST.
+
+services:
+  cid-core:
+    build: .
+    restart: unless-stopped
+    environment:
+      CID_AUTH_TOKEN: ${CID_AUTH_TOKEN:?set CID_AUTH_TOKEN in .env — see docs/052-Production-Deployment.md}
+    volumes:
+      - cid-data:/home/cid/data
+    # Not published to the host directly — only the proxy is internet-facing.
+    expose:
+      - "5919"
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # - ./dist:/srv/web:ro   # uncomment if also serving the built frontend from here
+    depends_on:
+      - cid-core
+
+volumes:
+  cid-data:
+  caddy-data:
+  caddy-config:

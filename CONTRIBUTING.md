@@ -165,6 +165,14 @@ Reserve this for genuinely simple, well-scoped work. Anything requiring judgment
 architecture, security, or cross-cutting design should stay with the primary agent. See
 `CLAUDE.md` for the enforced version of this rule.
 
+## Running cid-core in production
+
+This section and the one below it cover *shipping a signed desktop release*. If you're
+instead standing up a `cid-core` instance for a team to actually use day to day (TLS,
+a persistent service, backups, upgrades, monitoring), see
+`docs/052-Production-Deployment.md` — that's the operational runbook; this file stays
+focused on contributing to and releasing the project itself.
+
 ## Release Signing Setup (manual, one-time, maintainer-only)
 
 `.github/workflows/release.yml` builds and, if these secrets exist, signs the desktop

@@ -1,0 +1,43 @@
+# Example nginx site config terminating TLS in front of cid-core.
+# Unlike Caddy, nginx needs the WebSocket upgrade headers spelled out
+# explicitly (the `map` block + `Connection $connection_upgrade`) or the
+# `/ws` JSON-RPC subscription used by every CID frontend will fail to
+# connect while plain HTTP `/api/rpc` calls keep working — an easy thing to
+# miss since the app will look "mostly fine" (RPCs work) with only
+# notifications/streaming silently broken.
+#
+# Get a real certificate first, e.g. via certbot:
+#   certbot certonly --nginx -d cid.example.com
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name cid.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name cid.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/cid.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/cid.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5919;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Required for the /ws JSON-RPC WebSocket upgrade.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;   # WebSocket connections are long-lived
+    }
+}

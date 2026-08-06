@@ -1,0 +1,39 @@
+# Example systemd unit for running cid-core as a persistent Linux service —
+# closes the gap docs/033-Observability.md's Failure Modes section names: a
+# crash is captured and logged, but nothing restarts the process without
+# something like this watching it. `Restart=on-failure` is that something.
+#
+# Install:
+#   sudo useradd --system --home /var/lib/cid-core --create-home cid
+#   sudo cp cid-core /usr/local/bin/cid-core   # a release build, see docs/052
+#   sudo cp deploy/cid-core.service /etc/systemd/system/cid-core.service
+#   sudo systemctl edit cid-core        # paste in your real CID_AUTH_TOKEN
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cid-core
+#
+# `systemctl edit` (not editing this file directly) is the deliberate way to
+# add the real token — it writes a drop-in override so the secret never lives
+# in this checked-in-adjacent example file.
+
+[Unit]
+Description=CID Core daemon
+After=network.target
+
+[Service]
+Type=simple
+User=cid
+Group=cid
+WorkingDirectory=/var/lib/cid-core
+ExecStart=/usr/local/bin/cid-core --host 127.0.0.1 --port 5919 --db /var/lib/cid-core/cid.db
+# Environment=CID_AUTH_TOKEN=replace-me   # set via `systemctl edit`, not here
+Restart=on-failure
+RestartSec=2
+# Defense in depth alongside the app-level sandbox/path-confinement guards —
+# this unit's own filesystem access is restricted to its data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cid-core
+
+[Install]
+WantedBy=multi-user.target

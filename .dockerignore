@@ -1,0 +1,11 @@
+target
+node_modules
+dist
+test-results
+.git
+.cid
+.agent_logs
+.devcontainer
+*.db
+*.db-wal
+*.db-shm

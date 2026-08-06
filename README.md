@@ -131,6 +131,13 @@ why it doesn't cover the Tauri desktop build).
 See `CONTRIBUTING.md` for the full contributor setup path, verified end-to-end on a
 clean checkout.
 
+### Running in production
+
+The steps above are for local development. For running `cid-core` for a real team —
+TLS, a persistent service, database backups, upgrades, monitoring — see
+`docs/052-Production-Deployment.md`. A `Dockerfile`/`docker-compose.yml` are provided
+as one path to a running instance; building from source is the other.
+
 ## API contract
 
 `cid-core/src/api/types.rs` and `cid-core/src/api/router.rs` are the authoritative
