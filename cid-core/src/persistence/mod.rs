@@ -1049,6 +1049,13 @@ impl Persistence {
     }
 
     pub fn get_repo_channel_by_path(&self, path: &str) -> Result<RepoChannel> {
+        // `connect_repo` stores the normalized spelling (see its own comment on
+        // why); callers here often pass a path straight from an RPC param or a
+        // raw string a test built by hand, which won't match a `\\?\`-prefixed
+        // or 8.3-short-name variant of the same directory on Windows unless
+        // normalized the same way before the lookup — the same seam that broke
+        // `repo.connect` deduplication before that fix, now at the read side.
+        let path = &crate::path_confine::normalize_stored_path(path);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, workspace_id, name, path, remote_url, agents_md_content, created_at, agents_md_approved FROM repo_channels WHERE path = ?1")?;
         let repo = stmt.query_row(params![path], |row| {
