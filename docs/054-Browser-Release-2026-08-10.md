@@ -6,6 +6,30 @@ have to do?** Everything below was run for real on this machine this session —
 last session (`docs/053-Production-Readiness-Review.md` §3a/§5) and re-verifies the
 whole stack on top of it.
 
+**Update, same day, opened as PR #4**: committing this work and pushing it through real
+CI (rather than only this machine) caught two things neither local testing nor the
+sections below originally covered, both fixed before merge:
+
+- `test-rust-windows`/`test-rust-macos` failed in CI on two pre-existing governance/PR
+  tests — a real regression the model-catalog path-normalization work introduced at its
+  *read* side (`get_repo_channel_by_path`, `governance::paths_match` compared a
+  caller-supplied raw path against the now-normalized stored column and silently lost
+  a session/governance check when they didn't match). Invisible on this machine because
+  both sides happened to agree here; exposed by GitHub's Windows runner resolving the
+  same temp directory to a different-looking path (8.3 short name) than this machine
+  does. Fixed at both read boundaries with the same normalization function already used
+  at the write boundary — see the commit for detail.
+- Deciding the actual deployment target for Option C below (a real `https://` origin)
+  surfaced that `src/lib/api.ts` hardcoded `ws://`/`http://` unconditionally, which a
+  hosted TLS deployment would hit as a browser mixed-content block. Fixed with an
+  explicit `VITE_CID_CORE_SECURE` build flag — see §3 Option C.
+
+Both are folded into PR #4 as follow-up commits rather than a fresh PR, and CI was
+re-verified green after each. §2's gate numbers below are this session's *first* local
+run, before either fix — still accurate for what they measured (nothing they check
+regressed), but the CI-only bug they couldn't have caught is the reason this update
+exists.
+
 ## 1. What was pending from last session, and its status now
 
 The only uncommitted work sitting in the tree was the live model-catalog feature
@@ -96,7 +120,100 @@ are the minimum to get a browser pointed at a real Core today, not the whole ops
 CID has no multi-tenant hosted backend — there's nothing to deploy to a public URL you
 don't control. "Release on browser" is: build once, run your own Core, open the browser
 tab. That's the actual shape of the product (`CLAUDE.md`'s Website section, `docs/052`
-§0).
+§0). Option C below is *your own* private deployment on infrastructure you already run
+for other projects — not a public multi-tenant CID, same distinction `docs/052` §0 draws.
+
+### Option C — same Coolify/Oracle/Cloudflare flow as `houses`, on a subdomain
+
+You already run Cloudflare DNS + an Oracle Cloud Always Free ARM box + Coolify for the
+`houses` project (`nilaami.opencid.dev`, see that repo's `docs/08-operations.md` §A). CID
+reuses the same box and the same Coolify instance rather than standing up new
+infrastructure — two more Coolify resources, two more DNS records.
+
+**Domain decision** (resolved this session — `WEBSITE-BUILD-PROMPT.md`'s original plan
+put CID at the `opencid.dev` root, which conflicts with `houses` already using that root
+for its own subdomain): CID gets **`cid.opencid.dev`** for the web client, consistent with
+`nilaami.opencid.dev`'s pattern. `opencid.dev` root stays free for a future umbrella page.
+`WEBSITE-BUILD-PROMPT.md` §0 still says "root" — update it to `cid.opencid.dev` next time
+that file is touched, so it doesn't drift from the decision actually made here.
+
+**A real fix this required, made in this session**: `src/lib/api.ts` hardcoded `ws://`
+and `http://` unconditionally. A browser page served over `https://cid.opencid.dev`
+cannot open a plain `ws://` connection to anything — browsers block it as mixed content,
+silently, with nothing more diagnostic than a closed socket. This was invisible in every
+environment tested so far (local dev, Tauri, the E2E suite) because both sides were
+always plain HTTP there. Fixed with an explicit opt-in build-time flag,
+`VITE_CID_CORE_SECURE=true`, rather than inferring it from `window.location.protocol` —
+Core and the page can legitimately sit on different origins with different schemes, so
+guessing from the page's own scheme would be wrong exactly when it matters. `.env`/build
+vars for a hosted deploy: `VITE_CID_CORE_HOST=cid-core.opencid.dev`,
+`VITE_CID_CORE_PORT=` (empty — Traefik terminates on 443, not 5919),
+`VITE_CID_CORE_SECURE=true`.
+
+**DNS** (Cloudflare, same zone `houses` already manages):
+
+| Type | Name | Target | Purpose |
+|---|---|---|---|
+| A | `cid` | `<Oracle VM public IP>` | Web client |
+| A | `cid-core` | `<Oracle VM public IP>` | cid-core JSON-RPC/WS |
+
+**Coolify resource 1 — cid-core**:
+
+1. Projects → New Resource → Public Repository → `https://github.com/OPEN-CID/cid`.
+2. Build Pack: **Dockerfile** (the repo-root `Dockerfile`, headless-core-only per its own
+   header comment). Base directory `/`.
+3. Port: `5919`.
+4. **Start Command override** (Coolify → resource → General): the image's default `CMD`
+   has no `--allow-origin`, and that flag has no env-var form (`cid-core --help`) —
+   ```
+   cid-core --host 0.0.0.0 --port 5919 --db /home/cid/data/cid.db --allow-origin https://cid.opencid.dev
+   ```
+5. Environment Variables (runtime, not build): `CID_AUTH_TOKEN` — generate with
+   `docker run --rm ghcr.io/open-cid/cid --generate-token` (or any built image) once, then
+   paste the value in; Core refuses to start non-loopback without it (`SECURITY.md` §2).
+6. Storage: persistent volume mounted at `/home/cid/data` (Coolify's volume UI, matching
+   the image's own `VOLUME` declaration — already fixed this pass, see `docs/053` §4, to
+   actually be owned by the unprivileged `cid` user instead of failing on first write).
+7. Domain: `https://cid-core.opencid.dev`. Traefik issues the Let's Encrypt cert
+   automatically, same as `houses`.
+8. **This Dockerfile has still never been build-verified anywhere** (§4 below) — the
+   first real build happens on Coolify itself. Watch the build log on first deploy;
+   if it fails, that's the first real signal on this image, not a config mistake.
+
+**Coolify resource 2 — the web client**:
+
+1. Projects → New Resource → Public Repository → same repo.
+2. Build Pack: **Nixpacks** (static site), Build Command `npm run build`, Publish
+   Directory `dist`. No new Dockerfile needed — Vite's output is static assets, and this
+   avoids inventing a second container image this session couldn't build-verify either.
+3. **Build Variables** (tick "Build Variable", not runtime — `vite build` inlines these
+   into the client bundle the same way `houses`' `NEXT_PUBLIC_*` are inlined into its
+   Next.js bundle, §A4 step 4 of that project's runbook, same reasoning here):
+   ```
+   VITE_CID_CORE_HOST=cid-core.opencid.dev
+   VITE_CID_CORE_PORT=
+   VITE_CID_CORE_SECURE=true
+   ```
+4. Domain: `https://cid.opencid.dev`.
+5. Deploy resource 1 first, resource 2 second — the frontend's build only matters once
+   there's a Core at the host it's being told to bake in.
+
+**Verify** (same shape as `houses` §C4 — check the server-rendered-equivalent claim and
+the actual client bundle separately, since a build-variable mistake shows up in the
+bundle, not the server):
+
+1. `https://cid-core.opencid.dev/health` returns `200`.
+2. Open `https://cid.opencid.dev`, open the browser console: `[CID] Connected to core at
+   wss://cid-core.opencid.dev/ws` — if it instead says `ws://` (not `wss://`) or shows a
+   host of `127.0.0.1`, the Build Variables weren't set as *build* variables and the
+   bundle needs rebuilding, not just redeploying.
+3. Connect a repo, create a Mission, confirm a message round-trips — the real golden
+   path, not just a reachable socket.
+
+This Option C was **not verified end-to-end this session** — it depends on Coolify/Oracle
+infrastructure this environment doesn't have access to, and on the Dockerfile's
+first-ever real build (§4). Options A/B above were. Do §4's Dockerfile build-verification
+before trusting resource 1 to come up clean on the first try.
 
 ## 4. Known, honestly-stated gaps (unchanged by this pass, not release blockers)
 

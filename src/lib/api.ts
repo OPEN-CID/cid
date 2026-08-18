@@ -70,10 +70,20 @@ class CidApiClient {
   private isTauri = false;
 
   constructor() {
-    const port = import.meta.env.VITE_CID_CORE_PORT || "5919";
+    const port = import.meta.env.VITE_CID_CORE_PORT ?? "5919";
     const host = import.meta.env.VITE_CID_CORE_HOST || "127.0.0.1";
-    this.wsUrl = `ws://${host}:${port}/ws`;
-    this.httpBase = `http://${host}:${port}`;
+    // A hosted deployment (e.g. the web client served over https://cid.opencid.dev
+    // by a reverse proxy that terminates TLS) must speak wss/https to Core, or the
+    // browser silently blocks the WebSocket as mixed content on an https page —
+    // this was never reachable from localhost dev/Tauri, where both sides are
+    // plain http, so it went unnoticed until an actual TLS-fronted deployment.
+    // VITE_CID_CORE_SECURE is an explicit opt-in (a build-time Coolify/CI variable,
+    // not runtime-detected) since Core and the page can legitimately be on
+    // different origins with different schemes.
+    const secure = import.meta.env.VITE_CID_CORE_SECURE === "true";
+    const portSuffix = port ? `:${port}` : "";
+    this.wsUrl = `${secure ? "wss" : "ws"}://${host}${portSuffix}/ws`;
+    this.httpBase = `${secure ? "https" : "http"}://${host}${portSuffix}`;
     this.isTauri = !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
   }
 
