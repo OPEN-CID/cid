@@ -102,6 +102,28 @@ pub fn resolve_confined_path_in_any(roots: &[PathBuf], requested: &str) -> Resul
     );
 }
 
+/// One canonical spelling for a path that is about to be **stored** — most
+/// importantly in `repo_channels.path`, which carries a `UNIQUE` constraint.
+///
+/// On Windows `std::fs::canonicalize` returns the extended-length form
+/// (`\\?\C:\Projects\cid`). That is a different string from the `C:\Projects\cid`
+/// a user types by hand, so the same directory connected two ways would take
+/// two rows on a `UNIQUE` column, each with its own missions and worktrees.
+/// `CLAUDE.md` documents a long-misdiagnosed FK-corruption incident on this
+/// exact column; `fs.list_dirs` (which feeds the folder picker straight from
+/// `canonicalize`) would have quietly reintroduced that class of bug.
+///
+/// Best-effort by design: a path that doesn't exist yet can't be canonicalized,
+/// and callers legitimately pass those (tests, a repo on a disconnected drive),
+/// so an unresolvable path is returned as given rather than rejected. That
+/// leaves one gap worth naming: the same directory can still take two rows if
+/// it is first connected while missing and again once it exists.
+pub fn normalize_stored_path(path: &str) -> String {
+    dunce::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
 /// Resolve `.`/`..` components against the raw path text, without touching
 /// the filesystem — used to confinement-check a path whose deepest segments
 /// don't exist yet (`Path::canonicalize` requires the target to exist).
@@ -191,5 +213,58 @@ mod tests {
     fn resolve_in_any_with_no_roots_is_denied() {
         let err = resolve_confined_path_in_any(&[], "anything.txt").unwrap_err();
         assert!(err.to_string().contains("no connected repo"));
+    }
+
+    #[test]
+    fn both_spellings_of_one_directory_normalize_to_the_same_string() {
+        let dir = TempDir::new().unwrap();
+        let plain = dir.path().to_string_lossy().to_string();
+        let extended = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        assert_eq!(
+            normalize_stored_path(&plain),
+            normalize_stored_path(&extended),
+            "a UNIQUE column can only hold one of these"
+        );
+        assert!(!normalize_stored_path(&extended).starts_with(r"\\?\"));
+    }
+
+    #[test]
+    fn a_nonexistent_path_normalizes_to_itself_rather_than_erroring() {
+        // Callers legitimately pass paths that don't exist yet; the documented
+        // tradeoff is pass-through, not rejection.
+        let missing = "/definitely/not/a/real/path/xyzzy";
+        assert_eq!(normalize_stored_path(missing), missing);
+    }
+
+    #[test]
+    fn confinement_holds_whichever_spelling_the_root_is_stored_in() {
+        // Normalizing stored repo paths must not knock a leg out from under
+        // path confinement: `resolve_confined_path` canonicalizes the root it
+        // is given, so a simplified root and an extended-length one have to
+        // behave identically — both for a legitimate in-repo file and for an
+        // escape attempt.
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("in.txt"), "hi").unwrap();
+        let extended_root = std::fs::canonicalize(root.path()).unwrap();
+        let simplified_root = std::path::PathBuf::from(normalize_stored_path(
+            root.path().to_string_lossy().as_ref(),
+        ));
+
+        for candidate_root in [&extended_root, &simplified_root] {
+            assert!(
+                resolve_confined_path(candidate_root, "in.txt").is_ok(),
+                "an in-repo file must resolve with root {}",
+                candidate_root.display()
+            );
+            assert!(
+                resolve_confined_path(candidate_root, "../../outside.txt").is_err(),
+                "traversal must still be denied with root {}",
+                candidate_root.display()
+            );
+        }
     }
 }

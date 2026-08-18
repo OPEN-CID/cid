@@ -33,7 +33,19 @@ export default defineConfig({
       timeout: 60000,
     },
     {
-      command: "npm run dev:core",
+      // `dev:core:e2e`, not `dev:core`: with no `--db`, Core falls back to the
+      // OS data dir (`%APPDATA%/cid/cid.db` on Windows) — the developer's real
+      // database. Every past E2E run therefore left `test-repo` channels,
+      // missions and git worktrees behind in it; 13 such rows were found in a
+      // real install, cluttering the repo list of the actual app. The suite
+      // now writes to a disposable `.cid-e2e/` database instead.
+      //
+      // Caveat, stated rather than papered over: `reuseExistingServer: true`
+      // is kept so the manually-started Core documented in CLAUDE.md is still
+      // honored — which means that if you already have your *real* Core
+      // running on 5919, the suite reuses it and this isolation does not
+      // apply. Stop it first for a fully isolated run.
+      command: "npm run dev:core:e2e",
       url: "http://127.0.0.1:5919/health",
       reuseExistingServer: true,
       timeout: 120000,

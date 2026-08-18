@@ -30,11 +30,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --shell /usr/sbin/nologin cid
+# `data/` must exist AND be owned by `cid` in the image itself. Docker creates
+# a declared VOLUME's mount point as root:root when the path is absent from the
+# image — so with the container running as the unprivileged `cid` user, the
+# `--db /home/cid/data/cid.db` in CMD below would fail with a permission error
+# on the very first start. Creating it here is what makes the default CMD work.
+RUN useradd --create-home --shell /usr/sbin/nologin cid \
+    && mkdir -p /home/cid/data \
+    && chown -R cid:cid /home/cid
+
+# Before USER, so this lands in /usr/local/bin as root rather than depending on
+# the unprivileged user having write access there.
+COPY --from=builder /build/target/release/cid-core /usr/local/bin/cid-core
+
 USER cid
 WORKDIR /home/cid
-
-COPY --from=builder /build/target/release/cid-core /usr/local/bin/cid-core
 
 ENV RUST_LOG=info
 VOLUME ["/home/cid/data"]

@@ -1,11 +1,10 @@
 # Rust / Cargo
 /target/
 **/target/
-Cargo.lock
-# Keep Cargo.lock for binary crates, but workspace root includes it (Tauri convention keeps it)
-# We'll explicitly include root Cargo.lock later via git add -f if needed, but ignore for now
-# Uncomment if you want to keep lock:
-# !Cargo.lock
+# Cargo.lock is committed, not ignored: this workspace ships binaries
+# (cid-core, cid-tui, the Tauri shell), and the Dockerfile's
+# `COPY Cargo.toml Cargo.lock ./` builds from a fresh clone — ignoring it made
+# that COPY fail and let every build resolve its own dependency versions.
 
 # Node / frontend
 /node_modules/
@@ -48,6 +47,10 @@ cid-*.db
 # Worktrees (managed)
 .cid/
 cid-worktrees/
+
+# Disposable database for the Playwright suite (see playwright.config.ts) —
+# kept out of the OS data dir so E2E runs never touch a real install.
+.cid-e2e/
 
 # Logs
 logs/

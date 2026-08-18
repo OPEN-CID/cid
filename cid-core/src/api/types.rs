@@ -206,6 +206,13 @@ pub struct Mission {
     pub base_branch: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Per-mission model override (task 3): when set, takes precedence over
+    /// the matching role's global provider/model setting for every turn this
+    /// Mission runs — see `ModelManager::apply_mission_model_override`.
+    #[serde(default)]
+    pub model_provider: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -643,6 +650,10 @@ pub struct ConnectRepoParams {
 pub struct CreateMissionParams {
     pub repo_channel_id: String,
     pub title: String,
+    /// Optional (task 2): a Mission must never actually run with an empty
+    /// task — the Planner prompt depends on it — so an absent/blank value
+    /// falls back to `title` in `handle_mission_create`, not here.
+    #[serde(default)]
     pub task: String,
     pub session_mode: Option<SessionMode>,
     pub autonomy_level: Option<AutonomyLevel>,
@@ -653,6 +664,11 @@ pub struct CreateMissionParams {
     /// unaffected: this shortens the Planner ceremony, not code review.
     #[serde(default)]
     pub vibe: bool,
+    /// Per-mission model override (task 3) — see `Mission::model_provider`.
+    #[serde(default)]
+    pub model_provider: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

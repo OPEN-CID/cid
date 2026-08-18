@@ -10,6 +10,15 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: "127.0.0.1",
+    watch: {
+      // A worktree-mode Mission run against CID's own repo materializes a full
+      // copy of it under `.cid/worktrees/<id>/` — including an `index.html` and
+      // a `tsconfig.json`. Vite treats the latter as a changed tsconfig and
+      // forces a full page reload, which wipes the in-memory store and
+      // deselects the repo mid-Mission. Observed live, not theorized.
+      // `.cid` is CID's own runtime state, never app source.
+      ignored: ["**/.cid/**"],
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

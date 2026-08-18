@@ -187,7 +187,11 @@ jobs:
         run: cargo build -p cid-core --bins
       - name: Start core in background
         run: |
-          ./target/debug/cid-core --port 5919 &
+          # --db keeps the run off the OS data dir, matching
+          # playwright.config.ts's dev:core:e2e. A fresh runner makes this
+          # harmless today, but it keeps the two startup paths honest about
+          # writing to a disposable database rather than a real install's.
+          ./target/debug/cid-core --port 5919 --db .cid-e2e/cid-e2e.db &
           echo $! > /tmp/core.pid
           sleep 2
       - name: Run Playwright E2E (Flow 1)

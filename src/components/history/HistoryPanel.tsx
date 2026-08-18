@@ -3,38 +3,134 @@ import { useCid } from "@/hooks/useCid";
 import { api, type JsonRpcNotification } from "@/lib/api";
 import { toast } from "@/lib/dialog";
 
+// There is no dedicated audit-log table in cid-core — history here is
+// derived from what actually persists: `message.list`'s messages and each
+// message's real `tool_calls` (id/name/arguments/status/result), plus
+// notifications broadcast while this panel is open. Anything not
+// recoverable from those two sources (e.g. which specific sub-role issued a
+// live tool-call notification, once its `mission.tool_call.complete` no
+// longer carries `tool_name`) is labeled "unknown" rather than guessed.
+type HistoryStatus = "pending_approval" | "approved" | "denied" | "running" | "completed" | "failed" | "unknown";
+
 type HistoryEvent = {
   id: string;
   timestamp: string;
   actor: string;
   action: string;
   target: string;
-  status: "success" | "failed" | "pending";
+  status: HistoryStatus;
   details?: unknown;
+};
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
+function describeTarget(args: unknown): string {
+  if (args && typeof args === "object") {
+    const a = args as Record<string, unknown>;
+    const candidate = a.path ?? a.file_path ?? a.repo_path ?? a.dir_path ?? a.command ?? a.query ?? a.symbol;
+    if (typeof candidate === "string") return candidate;
+  }
+  return "";
+}
+
+function eventsFromMessages(messages: RpcMessage[]): HistoryEvent[] {
+  const events: HistoryEvent[] = [];
+  for (const msg of messages) {
+    for (const tc of msg.tool_calls ?? []) {
+      events.push({
+        id: tc.id,
+        timestamp: msg.created_at,
+        actor: capitalize(msg.role),
+        action: tc.name,
+        target: describeTarget(tc.arguments),
+        status: (tc.status as HistoryStatus) ?? "unknown",
+        details: { arguments: tc.arguments, result: tc.result },
+      });
+    }
+  }
+  // message.list returns oldest-first; newest-first matches how live events
+  // get prepended below.
+  return events.reverse();
+}
+
+type RpcToolCall = { id: string; name: string; arguments: unknown; status: string; result?: unknown };
+type RpcMessage = { role: string; created_at: string; tool_calls?: RpcToolCall[] };
+
+// Tool calls are always issued by the model executing a mission turn — there
+// is no persisted Planner/Implementer/Reviewer distinction at the
+// notification layer, so "assistant" is the most specific honest label.
+// Everything else broadcast on this socket (diff updates, pty output, plan
+// changes, ...) isn't attributable to a role at all.
+function actorForNotification(method: string): string {
+  return method.startsWith("mission.tool_call") ? "Assistant" : "System";
+}
+
+function statusForNotification(method: string): HistoryStatus {
+  if (method === "mission.tool_call.request") return "pending_approval";
+  if (method === "mission.tool_call.complete") return "completed";
+  return "unknown";
+}
+
+const STATUS_COLOR: Record<HistoryStatus, string> = {
+  completed: "bg-green-500",
+  approved: "bg-green-500",
+  failed: "bg-red-500",
+  denied: "bg-red-500",
+  running: "bg-yellow-500",
+  pending_approval: "bg-yellow-500",
+  unknown: "bg-muted-foreground/40",
 };
 
 export function HistoryPanel() {
   const { selectedMissionId } = useCid();
   const [events, setEvents] = useState<HistoryEvent[]>([]);
+  const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<"all" | "file" | "terminal" | "mcp" | "git">("all");
 
   useEffect(() => {
-    // In Phase 0, history is derived from messages and tool calls
-    // For now simulate with some events from notifications
+    if (!selectedMissionId) {
+      setEvents([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    api.message
+      .list(selectedMissionId)
+      .then((messages: RpcMessage[]) => {
+        if (!cancelled) setEvents(eventsFromMessages(messages ?? []));
+      })
+      .catch((e) => {
+        if (!cancelled) toast.error(`Failed to load history: ${e}`);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMissionId]);
+
+  useEffect(() => {
     const handleNotif = (notif: JsonRpcNotification) => {
       if (notif.params?.mission_id !== selectedMissionId) return;
+      if (["pty.output", "mission.message.delta"].includes(notif.method)) return; // noisy
 
+      const toolName = typeof notif.params?.tool_name === "string" ? notif.params.tool_name : null;
       const event: HistoryEvent = {
         id: `${Date.now()}-${Math.random()}`,
         timestamp: new Date().toISOString(),
-        actor: "Implementer",
-        action: notif.method,
-        target: notif.params.tool_name || notif.params.pty_id || "mission",
-        status: "success",
+        actor: actorForNotification(notif.method),
+        // Prefer the real tool name when the notification carries one (it
+        // matches the historical `action` values below and keeps the file/
+        // terminal/git/mcp filters meaningful); otherwise the raw method
+        // name is the most specific honest label available.
+        action: toolName ?? notif.method,
+        target: describeTarget(notif.params?.arguments) || notif.params?.pty_id || "",
+        status: statusForNotification(notif.method),
         details: notif.params,
       };
-
-      if (["pty.output", "mission.message.delta"].includes(notif.method)) return; // noisy
 
       setEvents((prev) => [event, ...prev].slice(0, 100));
     };
@@ -93,7 +189,9 @@ export function HistoryPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto divide-y">
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="p-4 text-xs text-muted-foreground">Loading history…</div>
+        ) : filtered.length === 0 ? (
           <div className="p-4 text-xs text-muted-foreground">
             No history yet. History logs every tool call, terminal command, file edit, and MCP call.
             <div className="mt-2 p-2 bg-card rounded border text-[11px]">
@@ -111,13 +209,14 @@ export function HistoryPanel() {
           filtered.map((ev) => (
             <div key={ev.id} className="p-2.5 flex gap-2 text-xs hover:bg-accent/30">
               <div className="shrink-0 mt-0.5">
-                <div className={`w-2 h-2 rounded-full ${ev.status === "success" ? "bg-green-500" : ev.status === "failed" ? "bg-red-500" : "bg-yellow-500"}`} />
+                <div className={`w-2 h-2 rounded-full ${STATUS_COLOR[ev.status]}`} title={ev.status} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex gap-1.5 items-center">
                   <span className="font-medium">{ev.actor}</span>
                   <span className="text-muted-foreground">{ev.action}</span>
                   <span className="truncate">{ev.target}</span>
+                  <span className="text-[10px] text-muted-foreground">{ev.status.replace(/_/g, " ")}</span>
                   <span className="ml-auto text-[10px] text-muted-foreground">{new Date(ev.timestamp).toLocaleTimeString()}</span>
                 </div>
                 {Boolean(ev.details) && (

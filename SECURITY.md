@@ -241,3 +241,42 @@ carries today.
   which tools are "more" untrusted than others. A confirmation like `write_file`'s
   `{"ok": true}` gets the same delimiter as a file read; this trades a little noise for
   not having to maintain a special-case list.
+
+---
+
+## 6. The `file.*` and `fs.list_dirs` filesystem RPCs
+
+These are network-facing RPCs the Editor and the repo-connect picker call directly over
+`/api/rpc` — a different trust boundary from the model's own tool calls (§1), since a
+caller here has no Mission worktree to confine to.
+
+- **`file.read`/`file.write`/`file.list` are confined to connected repos.** Every path is
+  resolved via `path_confine::resolve_confined_path_in_any` against the list of every
+  currently-connected repo channel's own path — the same primitive (not a second,
+  possibly-drifting implementation of it) the model's own file tools use for their
+  worktree confinement. A path outside every connected repo (absolute escape, `..`
+  traversal, a symlink that resolves outside) is refused. See
+  `cid-core/src/path_confine.rs` and the `file_rpc_confinement` test module in
+  `cid-core/tests/api_integration.rs`.
+- **`fs.list_dirs` is deliberately *not* confined the same way** — its entire purpose is
+  letting the repo-connect picker browse the filesystem *before* any repo is connected, so
+  there is no connected-repo allow-list to confine it to. Its boundary is narrower in a
+  different dimension instead: it returns **directory names only** — never a file name,
+  never file contents, never anything from inside a directory other than the names and
+  git-repo-ness of its immediate subdirectories. It enumerates whatever directories the
+  Core process's OS user can read, anywhere on the filesystem (all local drives on
+  Windows, the whole tree from `/` on Unix) — the same reach the Core process already has
+  for every other purpose, just exposed as a browse affordance instead of implicitly
+  assumed.
+- **Both are protected the same way every other state-reading RPC on this surface is: by
+  §2's loopback bind, not by a per-call session check.** Neither calls `require_session`,
+  matching the existing pattern on `repo.list` and the other `file.*` handlers — Core's
+  default posture is "anyone who can reach `127.0.0.1:<port>` already has full API access"
+  (§2), and `fs.list_dirs` does not raise that bar or lower it. If Core is exposed beyond
+  loopback (`--host 0.0.0.0`), the `--auth-token` requirement in §2 covers this RPC exactly
+  as it covers every other one — there is no separate opt-out.
+- **What this does not do:** `fs.list_dirs` does not check the requested path against any
+  allow-list, so it will happily walk into a directory the user did not intend to expose
+  (a mounted network share, another user's home directory the OS permits reading) — the
+  only filter is directory-vs-file and dot-hidden-vs-visible. Treat it as exactly as
+  sensitive as shell access to `ls` on the same machine, because that is what it is.

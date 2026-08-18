@@ -3,13 +3,24 @@ import { useCid } from "@/hooks/useCid";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/dialog";
 import { cn } from "@/lib/utils";
-import { FolderGit2, Plus, Settings, Box, Zap, FileText, Search, Loader2 } from "lucide-react";
+import { FolderGit2, Plus, Settings, Box, Zap, FileText, Search, Loader2, FolderOpen } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
+import { RepoBrowserDialog } from "./RepoBrowserDialog";
+
+// Tauri v2's injected marker on `window` — checked at runtime, not build
+// time, since the same bundle serves both the browser (npm run dev) and the
+// desktop shell (tauri dev/build) and native file dialogs only work in the
+// latter.
+function isTauriDesktop(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 export function LeftRail() {
-  const { repos, selectedRepoId, missions, selectedMissionId, selectRepo, selectMission, loadRepos } = useCid();
+  const { repos, selectedRepoId, missions, selectedMissionId, selectRepo, selectMission, loadRepos, connected } = useCid();
   const [newRepoPath, setNewRepoPath] = useState("");
   const [showAddRepo, setShowAddRepo] = useState(false);
+  const [showBrowser, setShowBrowser] = useState(false);
+  const openTab = (tab: string) => window.dispatchEvent(new CustomEvent("cid:open-tab", { detail: tab }));
   // Context Engine (Part 7): off by default per repo, the same mental model
   // as enabling a VS Code extension — this toggle is the RPC surface's only
   // real UI entry point (review_prompt.md §4: it existed, tested, with a
@@ -58,17 +69,38 @@ export function LeftRail() {
     }
   };
 
-  const handleConnectRepo = async () => {
-    if (!newRepoPath.trim()) return;
+  const connectAndSelect = async (path: string) => {
     try {
-      const repo = await api.repo.connect(newRepoPath.trim());
+      const repo = await api.repo.connect(path);
       setNewRepoPath("");
       setShowAddRepo(false);
+      setShowBrowser(false);
       await loadRepos();
       selectRepo(repo.id);
     } catch (e) {
       toast.error(`Failed to connect repo: ${e}`);
     }
+  };
+
+  const handleConnectRepo = () => {
+    if (!newRepoPath.trim()) return;
+    connectAndSelect(newRepoPath.trim());
+  };
+
+  const handleNativeBrowse = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected || Array.isArray(selected)) return;
+      await connectAndSelect(selected);
+    } catch (e) {
+      toast.error(`Failed to open native folder picker: ${e}`);
+    }
+  };
+
+  const handleReselect = (repoId: string) => {
+    selectRepo(repoId);
+    setShowAddRepo(false);
   };
 
   return (
@@ -115,7 +147,51 @@ export function LeftRail() {
                   Cancel
                 </button>
               </div>
+              <button
+                onClick={() => setShowBrowser(true)}
+                className="w-full flex items-center justify-center gap-1.5 bg-secondary text-xs py-1 rounded"
+              >
+                <FolderOpen className="w-3 h-3" /> Browse…
+              </button>
+              {isTauriDesktop() && (
+                <button
+                  onClick={handleNativeBrowse}
+                  className="w-full flex items-center justify-center gap-1.5 bg-secondary text-xs py-1 rounded"
+                >
+                  <FolderOpen className="w-3 h-3" /> Browse (native)…
+                </button>
+              )}
+              {repos.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mt-1 mb-1">
+                    Recents
+                  </div>
+                  <div className="space-y-0.5 max-h-28 overflow-y-auto">
+                    {repos.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => handleReselect(r.id)}
+                        className="w-full text-left text-xs px-2 py-1 rounded hover:bg-accent truncate"
+                        title={r.path}
+                      >
+                        {r.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
+          )}
+          {showBrowser && (
+            <RepoBrowserDialog
+              onClose={() => setShowBrowser(false)}
+              onConnected={async (repo) => {
+                setShowBrowser(false);
+                setShowAddRepo(false);
+                await loadRepos();
+                selectRepo(repo.id);
+              }}
+            />
           )}
 
           <div className="space-y-1">
@@ -182,14 +258,20 @@ export function LeftRail() {
                 <span>AGENTS.md</span>
                 <span className="ml-auto text-[10px] bg-green-500/20 text-green-400 px-1 rounded">auto</span>
               </div>
-              <div className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-accent/50 cursor-pointer">
+              <button
+                onClick={() => openTab("skills")}
+                className="w-full flex items-center gap-2 text-xs p-1.5 rounded hover:bg-accent/50"
+              >
                 <Box className="w-3 h-3" />
                 <span>Skills</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-accent/50 cursor-pointer">
+              </button>
+              <button
+                onClick={() => openTab("mcp")}
+                className="w-full flex items-center gap-2 text-xs p-1.5 rounded hover:bg-accent/50"
+              >
                 <Zap className="w-3 h-3" />
                 <span>MCP Servers</span>
-              </div>
+              </button>
               <button
                 onClick={toggleContextEngine}
                 disabled={contextEngineBusy}
@@ -219,13 +301,13 @@ export function LeftRail() {
       {/* Footer */}
       <div className="p-3 border-t flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span>Core</span>
+          <div className={cn("w-2 h-2 rounded-full", connected ? "bg-green-500 animate-pulse" : "bg-yellow-500")} />
+          <span>Core{connected ? "" : " (offline)"}</span>
         </div>
         <div className="flex items-center gap-1">
           <ThemeToggle />
           <button
-            onClick={() => window.dispatchEvent(new CustomEvent("cid:open-settings"))}
+            onClick={() => openTab("models")}
             className="p-1 hover:bg-accent rounded"
             aria-label="Open settings"
           >

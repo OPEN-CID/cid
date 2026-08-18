@@ -303,6 +303,87 @@ new batch-lookup test is additive, plus 6 new Rust integration tests for the RPC
 confinement gap) all run clean after every change in this pass, on this machine, not
 "should pass."
 
+## Product-review pass — 2026-08-10
+
+Driven by a UX review rather than a code audit (Mission description should be optional,
+no repo folder picker, no model selection, stale model catalog, clean up dummy data).
+The features were built by delegated agents; **this pass was the verification on top,
+and it found seven real defects — several in the brand-new code — none of which the
+707 passing tests caught.** Full write-up, including the per-defect "why the suite
+missed it", is `docs/053-Production-Readiness-Review.md`. Read it before touching this
+area; do not re-derive.
+
+The short version, because these are all instances of failure modes this file already
+warns about:
+
+- **Schema defaults don't migrate existing rows.** The model-catalog refresh changed
+  the `CREATE TABLE` `DEFAULT`, the seed `INSERT`, and an in-memory fallback — so every
+  *existing* install kept the retired `claude-3-5-sonnet-20241022` and 404'd. Now four
+  real `UPDATE` migrations, verified against the actual `cid.db` on this machine. **If
+  you change a default, ask what happens to databases that already exist.**
+- **Bugs live in seams.** `fs.list_dirs` returned `\\?\C:\Projects\cid`; `repo.connect`
+  stored paths verbatim onto a `UNIQUE` column. Two correct, individually-tested
+  components; one duplicate-row bug on the exact column CLAUDE.md's FK-corruption
+  incident was traced to. Fixed at the single storage boundary
+  (`path_confine::normalize_stored_path`, `dunce`).
+- **A fixture that invents a field can't fail.** The frontend read `m.enabled`; the RPC
+  sends `available`. Every model option rendered disabled — the feature was
+  100% broken — while its tests passed, because the mocks encoded the invented name.
+  **Check new frontend types against a real RPC response, not against the code that
+  consumes them.** `call()` returns an asserted type; TypeScript cannot save you here.
+- **Use the feature before believing it.** `repo.disconnect` failed for *any* repo with
+  a Mission (bare `DELETE` vs. a live FK) — found by trying to click it.
+- **Tests were writing to the real database.** `playwright.config.ts` started Core with
+  no `--db`, so E2E runs polluted `%APPDATA%/cid/cid.db`; 15 dead channels had piled up
+  in the real install and (because of the bug above) could not be removed. Now
+  `npm run dev:core:e2e` → disposable `.cid-e2e/`.
+- **The last simulated implementation on the user path is gone.** With no API key, Core
+  used to write an *Assistant* message — "here's a simulated response… I would have:
+  1. Analyzed the repo…" — and set the Mission to `Review`, as if work were awaiting
+  inspection. Now a `System` notice stating only what is true, and `Failed`.
+- **`.cid/` is excluded from Vite's watcher** — a worktree Mission on CID's own repo
+  copies a `tsconfig.json` into `.cid/worktrees/`, which forced a full page reload and
+  wiped the store mid-Mission.
+
+Verified live end-to-end (real Core, real `cid.db`, real browser: 11/11 Playwright
+checks, console-clean), not just green tests. Gates after the final change: 541 Rust
+tests, 181 frontend tests, fmt/clippy/tsc/lint all clean.
+
+**Follow-up in the same pass — the model catalog is no longer hand-maintained.**
+Verifying `OPENAI_MODELS`/`GOOGLE_MODELS` against the [models.dev](https://models.dev)
+registry (the open catalog `opencode` uses) and OpenRouter found all three arrays wrong at
+once: Google offered four `gemini-1.5-*` ids that **no longer exist** (one flagged
+`default`, so the headline Google option was a guaranteed 404), OpenAI had nothing newer
+than `gpt-4o`/`o1`, and `claude-sonnet-5` was priced $3/$15 instead of $2/$10 — 50% high on
+the model the §1 migration had just made the default, which is a governance-cap input.
+`context_window_tokens` also returned a flat 200k for every Anthropic model, so compaction
+fired at 140k on a 1M window.
+
+Replaced by `cid-core/src/model/catalog.rs`: live registry fetch → disk cache (24h TTL) →
+a generated bundled snapshot, so any layer failing degrades instead of breaking. The
+snapshot comes from `scripts/generate-model-catalog.mjs` (`npm run models:generate` /
+`models:check`), following the existing `generate-theme-css.mjs` convention. **Do not
+re-add a hand-written model array** — that is the thing that broke.
+
+- Selection uses the registry's own `tool_call` + text-output flags, not name matching.
+- `models:check` is intentionally *not* a blocking CI gate: the runtime prefers live data,
+  so snapshot drift ages only the offline fallback, and a check that fails whenever a
+  vendor ships a model is noise.
+- **The bug worth remembering:** the per-provider cap was applied when parsing the registry
+  but not when loading the disk cache, so a Core with an existing cache kept serving 37
+  OpenAI models *after* the fix. Caught by re-running the real binary, not by the parser's
+  own passing unit test. The cache is now `schema_version`-stamped and discarded on
+  mismatch. **A cache is a second code path — fix both.**
+
+**Still open, honestly:** the `Dockerfile` is *not* build-verified and cannot be on this
+machine — Docker Desktop is installed but `HypervisorPresent` is `False` and WSL is absent,
+which needs a BIOS/UEFI change plus an elevated `wsl --install` and a reboot. What was
+verified without a daemon: both base image tags resolve in the registry, every `COPY`
+source exists and covers all three workspace members, and one real defect was found and
+fixed by inspection — `VOLUME ["/home/cid/data"]` named a directory the image never
+created, so Docker would have made it `root:root` while the container runs as `cid`, and
+the default `CMD`'s `--db` write would have failed on first start.
+
 ## Website
 
 `WEBSITE-BUILD-PROMPT.md` (repo root) is a complete, ready-to-hand-to-an-agent build

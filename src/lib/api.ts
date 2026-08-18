@@ -29,6 +29,25 @@ export type JsonRpcResponse = {
   error?: { code: number; message: string; data?: RpcValue };
 };
 
+export type DirEntry = { name: string; path: string; is_git_repo: boolean };
+
+export type ListDirsResult = { path: string; parent: string | null; entries: DirEntry[] };
+
+/// Mirrors `cid_core::api::types::ModelInfo` on the wire. The field is
+/// `available` (a key/endpoint is configured for that provider), not
+/// `enabled` — an earlier version of this type invented the latter, which
+/// TypeScript could not catch because `call()` returns an asserted type
+/// rather than a validated one, so every model silently read as unavailable
+/// and every picker rendered every option disabled.
+export type ModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  context_length: number;
+  default: boolean;
+  available: boolean;
+};
+
 export type JsonRpcNotification = {
   jsonrpc: "2.0";
   method: string;
@@ -51,17 +70,28 @@ class CidApiClient {
   private isTauri = false;
 
   constructor() {
-    const port = import.meta.env.VITE_CID_CORE_PORT || "5919";
+    const port = import.meta.env.VITE_CID_CORE_PORT ?? "5919";
     const host = import.meta.env.VITE_CID_CORE_HOST || "127.0.0.1";
-    this.wsUrl = `ws://${host}:${port}/ws`;
-    this.httpBase = `http://${host}:${port}`;
+    // A hosted deployment (e.g. the web client served over https://cid.opencid.dev
+    // by a reverse proxy that terminates TLS) must speak wss/https to Core, or the
+    // browser silently blocks the WebSocket as mixed content on an https page —
+    // this was never reachable from localhost dev/Tauri, where both sides are
+    // plain http, so it went unnoticed until an actual TLS-fronted deployment.
+    // VITE_CID_CORE_SECURE is an explicit opt-in (a build-time Coolify/CI variable,
+    // not runtime-detected) since Core and the page can legitimately be on
+    // different origins with different schemes.
+    const secure = import.meta.env.VITE_CID_CORE_SECURE === "true";
+    const portSuffix = port ? `:${port}` : "";
+    this.wsUrl = `${secure ? "wss" : "ws"}://${host}${portSuffix}/ws`;
+    this.httpBase = `${secure ? "https" : "http"}://${host}${portSuffix}`;
     this.isTauri = !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
   }
 
   async connect(): Promise<void> {
     if (this.isTauri) {
-      // In Tauri, we will use direct core integration via Tauri invoke if available
-      // For now, still try WS as core runs as sidecar
+      // The desktop shell starts Core in-process (src-tauri/src/lib.rs) and
+      // talks to it over the same WebSocket the browser client uses, rather
+      // than through Tauri `invoke` — one transport, one code path to test.
       console.log("[CID] Running inside Tauri, using WS to core");
     }
 
@@ -215,8 +245,16 @@ class CidApiClient {
 
   mission = {
     list: (repoChannelId?: string) => this.call("mission.list", { repo_channel_id: repoChannelId }),
-    create: (params: { repo_channel_id: string; title: string; task: string; session_mode?: string; autonomy_level?: string; vibe?: boolean }) =>
-      this.call("mission.create", params),
+    create: (params: {
+      repo_channel_id: string;
+      title: string;
+      task?: string;
+      session_mode?: string;
+      autonomy_level?: string;
+      vibe?: boolean;
+      model_provider?: string | null;
+      model_id?: string | null;
+    }) => this.call("mission.create", params),
     get: (id: string) => this.call("mission.get", { id }),
     close: (id: string) => this.call("mission.close", { id }),
     sendMessage: (mission_id: string, content: string) => this.call("mission.send_message", { mission_id, content }),
@@ -281,6 +319,10 @@ class CidApiClient {
     list: (path: string) => this.call("file.list", { path }),
   };
 
+  fs = {
+    listDirs: (path?: string | null): Promise<ListDirsResult> => this.call("fs.list_dirs", { path: path ?? null }),
+  };
+
   code = {
     analyzeFile: (file_path: string) => this.call("code.analyze_file", { file_path }),
     analyzeDirectory: (dir_path: string) => this.call("code.analyze_directory", { dir_path }),
@@ -307,7 +349,7 @@ class CidApiClient {
   };
 
   model = {
-    list: () => this.call("model.list"),
+    list: (): Promise<ModelInfo[]> => this.call("model.list"),
     chat: (params: unknown) => this.call("model.chat", params),
   };
 

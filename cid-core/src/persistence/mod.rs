@@ -45,6 +45,58 @@ const MIGRATIONS: &[&str] = &[
     // SkillsManager::build_system_context, which refuses to load it into
     // the system prompt while this is 0.
     "ALTER TABLE repo_channels ADD COLUMN agents_md_approved INTEGER NOT NULL DEFAULT 0",
+    // Per-mission model override: lets a single Mission pin its own
+    // provider/model instead of inheriting the role's global setting — see
+    // `ModelManager::apply_mission_model_override`.
+    "ALTER TABLE missions ADD COLUMN model_provider TEXT",
+    "ALTER TABLE missions ADD COLUMN model_id TEXT",
+    // The 2026-08 catalog refresh (ModelManager's ANTHROPIC_MODELS) retired
+    // every `claude-3-*`/`claude-2*`/`claude-instant*` id. Changing the
+    // schema DEFAULT and the seed INSERT only affects *new* databases — an
+    // install that already had a settings row kept the retired id and got a
+    // 404 from the provider on its very next turn. Found by querying a real
+    // running Core's settings.get, not by any test: the whole suite builds
+    // fresh databases, so nobody exercised the upgrade path.
+    //
+    // Rewriting a value the user may have chosen deliberately is justified
+    // here only because these specific ids no longer resolve at all — the
+    // alternative is a hard 404. Ids from the 4.x generation onward are
+    // deliberately left alone: they may still be served, and guessing at a
+    // replacement would be the kind of silent, unverifiable behavior this
+    // project's own conventions warn against.
+    "UPDATE settings SET anthropic_model = CASE \
+        WHEN anthropic_model LIKE '%opus%' THEN 'claude-opus-5' \
+        WHEN anthropic_model LIKE '%haiku%' THEN 'claude-haiku-4-5' \
+        ELSE 'claude-sonnet-5' END \
+     WHERE anthropic_model LIKE 'claude-3-%' \
+        OR anthropic_model LIKE 'claude-2%' \
+        OR anthropic_model LIKE 'claude-instant%'",
+    // The same retired ids can also sit in a per-role override. These
+    // columns are provider-agnostic free text, so the predicate is
+    // deliberately narrow: only a value that is unmistakably one of the
+    // retired *Anthropic* ids is touched, whatever that role's provider
+    // column says (if it says something else, the pairing was already broken).
+    "UPDATE settings SET planner_model = CASE \
+        WHEN planner_model LIKE '%opus%' THEN 'claude-opus-5' \
+        WHEN planner_model LIKE '%haiku%' THEN 'claude-haiku-4-5' \
+        ELSE 'claude-sonnet-5' END \
+     WHERE planner_model LIKE 'claude-3-%' \
+        OR planner_model LIKE 'claude-2%' \
+        OR planner_model LIKE 'claude-instant%'",
+    "UPDATE settings SET implementer_model = CASE \
+        WHEN implementer_model LIKE '%opus%' THEN 'claude-opus-5' \
+        WHEN implementer_model LIKE '%haiku%' THEN 'claude-haiku-4-5' \
+        ELSE 'claude-sonnet-5' END \
+     WHERE implementer_model LIKE 'claude-3-%' \
+        OR implementer_model LIKE 'claude-2%' \
+        OR implementer_model LIKE 'claude-instant%'",
+    "UPDATE settings SET reviewer_model = CASE \
+        WHEN reviewer_model LIKE '%opus%' THEN 'claude-opus-5' \
+        WHEN reviewer_model LIKE '%haiku%' THEN 'claude-haiku-4-5' \
+        ELSE 'claude-sonnet-5' END \
+     WHERE reviewer_model LIKE 'claude-3-%' \
+        OR reviewer_model LIKE 'claude-2%' \
+        OR reviewer_model LIKE 'claude-instant%'",
 ];
 
 /// True for SQLite's error when an `ALTER TABLE ... ADD COLUMN` targets a
@@ -173,6 +225,8 @@ impl Persistence {
                 base_branch TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                model_provider TEXT,
+                model_id TEXT,
                 FOREIGN KEY (repo_channel_id) REFERENCES repo_channels(id)
             );
 
@@ -210,7 +264,7 @@ impl Persistence {
             CREATE TABLE IF NOT EXISTS settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 anthropic_api_key TEXT,
-                anthropic_model TEXT NOT NULL DEFAULT 'claude-3-5-sonnet-20241022',
+                anthropic_model TEXT NOT NULL DEFAULT 'claude-sonnet-5',
                 openai_api_key TEXT,
                 openai_model TEXT,
                 google_api_key TEXT,
@@ -229,7 +283,7 @@ impl Persistence {
                 github_token TEXT
             );
 
-            INSERT OR IGNORE INTO settings (id, anthropic_model, theme) VALUES (1, 'claude-3-5-sonnet-20241022', 'dark');
+            INSERT OR IGNORE INTO settings (id, anthropic_model, theme) VALUES (1, 'claude-sonnet-5', 'dark');
             INSERT OR IGNORE INTO workspaces (id, name, root_path, created_at) VALUES ('default', 'Default Workspace', '', datetime('now'));
 
             CREATE TABLE IF NOT EXISTS github_configs (
@@ -410,6 +464,12 @@ impl Persistence {
     /// reconnects the same repo (e.g. after restarting Core).
     pub fn connect_repo(&self, path: &str, workspace_id: Option<&str>) -> Result<RepoChannel> {
         let ws_id = workspace_id.unwrap_or("default");
+        // Normalized here, at the single storage boundary, rather than in
+        // `handle_repo_connect` — so the `UNIQUE(path)` invariant holds no
+        // matter which entry route supplied the path (typed by hand, the
+        // native Tauri folder dialog, or `fs.list_dirs`, which returns
+        // `canonicalize`'s `\\?\`-prefixed form on Windows).
+        let path = &crate::path_confine::normalize_stored_path(path);
         let name = std::path::Path::new(path)
             .file_name()
             .and_then(|n| n.to_str())
@@ -499,9 +559,53 @@ impl Persistence {
         Ok(repo)
     }
 
+    /// Removes a repo channel and everything scoped to it, in one transaction.
+    ///
+    /// This used to be a bare `DELETE FROM repo_channels`, which meant that as
+    /// soon as a channel had a single Mission, disconnecting it failed with
+    /// `FOREIGN KEY constraint failed` (`missions.repo_channel_id`) — so a repo
+    /// could never be removed once it had been used at all. Found by trying to
+    /// clear real channels out of a real install, not by any test: the repo
+    /// list had accumulated 15 dead entries that the UI had no way to remove.
+    ///
+    /// Only `messages` and `missions` have declared foreign keys, but the other
+    /// mission-scoped tables are cleared too — without this they would be
+    /// silently orphaned rows keyed to a mission id that no longer exists.
+    ///
+    /// Nothing on disk is touched: the working tree, and any worktrees created
+    /// under it, are deliberately left alone. Disconnecting is an act of
+    /// forgetting a repo, not of deleting the user's code.
     pub fn disconnect_repo(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM repo_channels WHERE id = ?", params![id])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        const MISSION_SCOPED_TABLES: &[&str] = &[
+            "messages",
+            "mission_plans",
+            "confidence_scores",
+            "mission_reviews",
+            "mission_checkpoints",
+            "tracker_links",
+            "deployment_records",
+        ];
+        for table in MISSION_SCOPED_TABLES {
+            tx.execute(
+                &format!(
+                    "DELETE FROM {table} WHERE mission_id IN \
+                     (SELECT id FROM missions WHERE repo_channel_id = ?1)"
+                ),
+                params![id],
+            )
+            .with_context(|| format!("failed clearing {table} for repo channel {id}"))?;
+        }
+
+        tx.execute(
+            "DELETE FROM missions WHERE repo_channel_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM repo_channels WHERE id = ?1", params![id])?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -536,9 +640,9 @@ impl Persistence {
     pub fn list_missions(&self, repo_channel_id: Option<&str>) -> Result<Vec<Mission>> {
         let conn = self.conn.lock().unwrap();
         let (sql, param): (String, Option<String>) = if let Some(rc_id) = repo_channel_id {
-            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at FROM missions WHERE repo_channel_id = ? ORDER BY created_at DESC".to_string(), Some(rc_id.to_string()))
+            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions WHERE repo_channel_id = ? ORDER BY created_at DESC".to_string(), Some(rc_id.to_string()))
         } else {
-            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at FROM missions ORDER BY created_at DESC".to_string(), None)
+            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions ORDER BY created_at DESC".to_string(), None)
         };
 
         let mut stmt = conn.prepare(&sql)?;
@@ -554,7 +658,7 @@ impl Persistence {
 
     pub fn get_mission(&self, id: &str) -> Result<Mission> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at FROM missions WHERE id = ?")?;
+        let mut stmt = conn.prepare("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions WHERE id = ?")?;
         let mission = stmt
             .query_row(params![id], |row| {
                 parse_mission_row(row).map(|opt| opt.expect("mission parse"))
@@ -574,6 +678,27 @@ impl Persistence {
         conn.execute(
             "UPDATE missions SET worktree_path = ?1, branch_name = ?2, updated_at = ?3 WHERE id = ?4",
             params![worktree_path, branch_name, now, id],
+        )?;
+        drop(conn);
+        self.get_mission(id)
+    }
+
+    /// Sets or clears this Mission's per-mission model override (task 3).
+    /// Called once, right after creation, when `CreateMissionParams` carried
+    /// `model_provider`/`model_id` — kept as a separate setter rather than a
+    /// `create_mission` parameter so the ~18 existing call sites across the
+    /// codebase don't all need updating for a feature most of them don't use.
+    pub fn update_mission_model(
+        &self,
+        id: &str,
+        model_provider: Option<String>,
+        model_id: Option<String>,
+    ) -> Result<Mission> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE missions SET model_provider = ?1, model_id = ?2, updated_at = ?3 WHERE id = ?4",
+            params![model_provider, model_id, now, id],
         )?;
         drop(conn);
         self.get_mission(id)
@@ -924,6 +1049,13 @@ impl Persistence {
     }
 
     pub fn get_repo_channel_by_path(&self, path: &str) -> Result<RepoChannel> {
+        // `connect_repo` stores the normalized spelling (see its own comment on
+        // why); callers here often pass a path straight from an RPC param or a
+        // raw string a test built by hand, which won't match a `\\?\`-prefixed
+        // or 8.3-short-name variant of the same directory on Windows unless
+        // normalized the same way before the lookup — the same seam that broke
+        // `repo.connect` deduplication before that fix, now at the read side.
+        let path = &crate::path_confine::normalize_stored_path(path);
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, workspace_id, name, path, remote_url, agents_md_content, created_at, agents_md_approved FROM repo_channels WHERE path = ?1")?;
         let repo = stmt.query_row(params![path], |row| {
@@ -1748,6 +1880,8 @@ fn parse_mission_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Mission>> {
     let base_branch: Option<String> = row.get(9)?;
     let created_at_str: String = row.get(10)?;
     let updated_at_str: String = row.get(11)?;
+    let model_provider: Option<String> = row.get(12)?;
+    let model_id: Option<String> = row.get(13)?;
 
     let session_mode = serde_json::from_str::<SessionMode>(&format!("\"{}\"", session_mode_str))
         .unwrap_or(SessionMode::Worktree);
@@ -1770,6 +1904,8 @@ fn parse_mission_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Mission>> {
         base_branch,
         created_at: created_at_str.parse().unwrap_or_else(|_| Utc::now()),
         updated_at: updated_at_str.parse().unwrap_or_else(|_| Utc::now()),
+        model_provider,
+        model_id,
     }))
 }
 
@@ -1798,11 +1934,15 @@ mod tests {
         // Mirrors the schema shape a database from before this migration
         // system existed would have: the base tables, but without the
         // columns MIGRATIONS adds, and no user_version stamp (defaults to 0).
+        // `anthropic_model` is present because it has been in the base
+        // `CREATE TABLE settings` since the very first schema — no migration
+        // adds it, so a fixture omitting it is a shape no real database has.
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             r#"
-            CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), anthropic_api_key TEXT);
+            CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), anthropic_api_key TEXT, anthropic_model TEXT);
             CREATE TABLE repo_channels (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE);
+            CREATE TABLE missions (id TEXT PRIMARY KEY, repo_channel_id TEXT NOT NULL);
             "#,
         )
         .unwrap();
@@ -1826,6 +1966,133 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    /// The version stamped on a database written just before the retired-model
+    /// UPDATE migrations were added. Derived rather than hardcoded so appending
+    /// a later migration can't silently move these tests off the case they pin.
+    fn version_before_model_id_migrations() -> i64 {
+        MIGRATIONS
+            .iter()
+            .position(|m| m.starts_with("UPDATE settings SET anthropic_model"))
+            .expect("the retired-model migration must still exist") as i64
+    }
+
+    /// Builds a settings row as an already-migrated install would have it,
+    /// stamped just before the retired-model rewrite so only those migrations
+    /// run.
+    fn db_with_settings(anthropic: &str, planner: Option<&str>) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                anthropic_model TEXT,
+                planner_model TEXT,
+                implementer_model TEXT,
+                reviewer_model TEXT
+            );
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (id, anthropic_model, planner_model) VALUES (1, ?1, ?2)",
+            params![anthropic, planner],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", version_before_model_id_migrations())
+            .unwrap();
+        conn
+    }
+
+    fn settings_model(conn: &Connection, column: &str) -> Option<String> {
+        conn.query_row(
+            &format!("SELECT {column} FROM settings WHERE id = 1"),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    // The bug these pin was found on a real running Core, not by any test:
+    // the 2026-08 catalog refresh changed the schema DEFAULT and the seed
+    // INSERT, neither of which touches an existing row, so every install that
+    // already had a settings row kept a retired id and 404'd on its next turn.
+    // The whole suite builds fresh databases, so the upgrade path had no
+    // coverage at all.
+
+    #[test]
+    fn an_existing_install_holding_the_retired_model_id_is_migrated_to_the_current_one() {
+        let mut conn = db_with_settings("claude-3-5-sonnet-20241022", None);
+
+        run_migrations(&mut conn).unwrap();
+
+        assert_eq!(
+            settings_model(&conn, "anthropic_model").as_deref(),
+            Some("claude-sonnet-5"),
+            "an existing row must be rewritten, not just the schema default"
+        );
+    }
+
+    #[test]
+    fn retired_ids_migrate_to_their_own_tier_not_all_to_sonnet() {
+        for (retired, expected) in [
+            ("claude-3-opus-20240229", "claude-opus-5"),
+            ("claude-3-5-haiku-20241022", "claude-haiku-4-5"),
+            ("claude-3-5-sonnet-latest", "claude-sonnet-5"),
+            ("claude-3-7-sonnet-20250219", "claude-sonnet-5"),
+            ("claude-2.1", "claude-sonnet-5"),
+            ("claude-instant-1.2", "claude-sonnet-5"),
+        ] {
+            let mut conn = db_with_settings(retired, None);
+            run_migrations(&mut conn).unwrap();
+            assert_eq!(
+                settings_model(&conn, "anthropic_model").as_deref(),
+                Some(expected),
+                "{retired} should migrate to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_still_current_model_id_is_left_untouched() {
+        // The migration must not churn a value that still resolves — including
+        // 4.x ids, which are deliberately out of its scope.
+        for keep in ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-4-6"] {
+            let mut conn = db_with_settings(keep, None);
+            run_migrations(&mut conn).unwrap();
+            assert_eq!(
+                settings_model(&conn, "anthropic_model").as_deref(),
+                Some(keep)
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_id_in_a_per_role_override_is_migrated_too() {
+        let mut conn = db_with_settings("claude-sonnet-5", Some("claude-3-opus-20240229"));
+
+        run_migrations(&mut conn).unwrap();
+
+        assert_eq!(
+            settings_model(&conn, "planner_model").as_deref(),
+            Some("claude-opus-5"),
+            "a role override holding a retired id 404s exactly like the global one"
+        );
+    }
+
+    #[test]
+    fn a_non_anthropic_role_override_is_not_rewritten() {
+        // The role columns are provider-agnostic free text — a model id that
+        // isn't one of the retired Anthropic ones must survive untouched.
+        let mut conn = db_with_settings("claude-sonnet-5", Some("gpt-4o"));
+
+        run_migrations(&mut conn).unwrap();
+
+        assert_eq!(
+            settings_model(&conn, "planner_model").as_deref(),
+            Some("gpt-4o")
+        );
     }
 
     #[test]
@@ -1941,6 +2208,147 @@ mod tests {
             all_repos.len(),
             1,
             "reconnecting must not leave a duplicate repo_channels row"
+        );
+    }
+
+    #[test]
+    fn a_repo_with_missions_can_actually_be_disconnected() {
+        // Reproduces the real failure: `disconnect_repo` was a bare DELETE on
+        // repo_channels, so `missions.repo_channel_id`'s foreign key rejected
+        // it with "FOREIGN KEY constraint failed" for any repo that had ever
+        // been used. A real install had 15 dead channels the UI could not
+        // remove because of this.
+        let p = Persistence::new_in_memory().unwrap();
+        let repo = p.connect_repo("/tmp/disconnect-me", None).unwrap();
+        let mission = p
+            .create_mission(
+                &repo.id,
+                "Has messages",
+                "task",
+                SessionMode::Worktree,
+                AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+        p.create_message(&mission.id, MessageRole::User, "hello", vec![])
+            .unwrap();
+
+        p.disconnect_repo(&repo.id)
+            .expect("disconnecting a repo that has missions must succeed");
+
+        assert!(
+            p.list_repo_channels().unwrap().is_empty(),
+            "the repo channel must be gone"
+        );
+        assert!(
+            p.list_missions(Some(&repo.id)).unwrap().is_empty(),
+            "its missions must be gone with it, not left dangling"
+        );
+        assert!(
+            p.list_messages(&mission.id).unwrap().is_empty(),
+            "mission-scoped rows must not be orphaned"
+        );
+    }
+
+    #[test]
+    fn disconnecting_one_repo_leaves_another_repos_missions_intact() {
+        // The delete is scoped by repo_channel_id; a `DELETE FROM messages`
+        // that forgot its subquery would still pass the test above.
+        let p = Persistence::new_in_memory().unwrap();
+        let gone = p.connect_repo("/tmp/disconnect-gone", None).unwrap();
+        let kept = p.connect_repo("/tmp/disconnect-kept", None).unwrap();
+        p.create_mission(
+            &gone.id,
+            "Doomed",
+            "t",
+            SessionMode::Shared,
+            AutonomyLevel::CoPilot,
+        )
+        .unwrap();
+        let survivor = p
+            .create_mission(
+                &kept.id,
+                "Survivor",
+                "t",
+                SessionMode::Shared,
+                AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+        p.create_message(&survivor.id, MessageRole::User, "keep me", vec![])
+            .unwrap();
+
+        p.disconnect_repo(&gone.id).unwrap();
+
+        assert_eq!(p.list_repo_channels().unwrap().len(), 1);
+        assert_eq!(p.list_missions(Some(&kept.id)).unwrap().len(), 1);
+        assert_eq!(
+            p.list_messages(&survivor.id).unwrap().len(),
+            1,
+            "the other repo's messages must survive"
+        );
+    }
+
+    #[test]
+    fn the_same_directory_spelled_two_ways_connects_to_one_repo_row() {
+        // Regression for a bug found by calling a live Core's `fs.list_dirs`,
+        // not by any test: it returns `canonicalize`'s `\\?\C:\Projects\cid`,
+        // while a hand-typed path is `C:\Projects\cid`. `connect_repo` stored
+        // whatever it was handed, so the folder picker and the text box would
+        // each take their own row on the UNIQUE `path` column — the same
+        // column the FK-corruption incident above was traced to.
+        //
+        // A real directory is required: normalization is best-effort and a
+        // nonexistent path is deliberately passed through untouched.
+        let dir = tempfile::TempDir::new().unwrap();
+        let plain = dir.path().to_string_lossy().to_string();
+        let extended = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        // Without this the test is vacuous wherever the two spellings already
+        // match (typically Linux, where `canonicalize` changes nothing about a
+        // temp dir) — it would pass on a build with the normalization removed.
+        // Windows is where the bug lives, so that is where the precondition is
+        // asserted rather than merely assumed.
+        #[cfg(windows)]
+        assert_ne!(
+            plain, extended,
+            "precondition: on Windows canonicalize must produce a different string"
+        );
+
+        let p = Persistence::new_in_memory().unwrap();
+        let first = p.connect_repo(&plain, None).unwrap();
+        let second = p.connect_repo(&extended, None).unwrap();
+
+        assert_eq!(
+            first.id, second.id,
+            "the folder picker's path spelling ({extended}) and the typed one \
+             ({plain}) are the same directory and must reuse one repo channel"
+        );
+        assert_eq!(
+            p.list_repo_channels().unwrap().len(),
+            1,
+            "two spellings of one directory must not create two repo rows"
+        );
+    }
+
+    #[test]
+    fn a_stored_repo_path_is_never_the_windows_extended_length_form() {
+        // The stored value is what the UI displays and what path confinement
+        // resolves against, so pin the actual spelling, not just uniqueness.
+        let dir = tempfile::TempDir::new().unwrap();
+        let extended = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let p = Persistence::new_in_memory().unwrap();
+        let repo = p.connect_repo(&extended, None).unwrap();
+
+        assert!(
+            !repo.path.starts_with(r"\\?\"),
+            "stored path should be simplified, got {}",
+            repo.path
         );
     }
 }

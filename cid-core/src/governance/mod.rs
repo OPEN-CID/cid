@@ -307,11 +307,17 @@ impl GovernanceManager {
     }
 }
 
-/// Compare repo paths tolerantly across separator style and trailing slashes,
-/// so a Windows path in the policy still matches the same repo at runtime.
+/// Compare repo paths tolerantly across separator style, trailing slashes,
+/// and OS-level path spelling (a policy entry typed by hand vs. a
+/// `\\?\`-prefixed or 8.3-short-name form of the same directory that Windows
+/// can hand back for the identical path) — same seam
+/// `path_confine::normalize_stored_path` closed for `repo_channels.path`
+/// itself; a policy's `autonomous_repos` list is compared against that
+/// already-normalized column, so it needs the same canonicalization or a
+/// hand-typed entry silently never matches.
 fn paths_match(a: &str, b: &str) -> bool {
     fn norm(p: &str) -> String {
-        p.trim()
+        crate::path_confine::normalize_stored_path(p)
             .trim_end_matches(['/', '\\'])
             .replace('\\', "/")
             .to_lowercase()
