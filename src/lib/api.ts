@@ -29,6 +29,25 @@ export type JsonRpcResponse = {
   error?: { code: number; message: string; data?: RpcValue };
 };
 
+export type DirEntry = { name: string; path: string; is_git_repo: boolean };
+
+export type ListDirsResult = { path: string; parent: string | null; entries: DirEntry[] };
+
+/// Mirrors `cid_core::api::types::ModelInfo` on the wire. The field is
+/// `available` (a key/endpoint is configured for that provider), not
+/// `enabled` — an earlier version of this type invented the latter, which
+/// TypeScript could not catch because `call()` returns an asserted type
+/// rather than a validated one, so every model silently read as unavailable
+/// and every picker rendered every option disabled.
+export type ModelInfo = {
+  id: string;
+  name: string;
+  provider: string;
+  context_length: number;
+  default: boolean;
+  available: boolean;
+};
+
 export type JsonRpcNotification = {
   jsonrpc: "2.0";
   method: string;
@@ -60,8 +79,9 @@ class CidApiClient {
 
   async connect(): Promise<void> {
     if (this.isTauri) {
-      // In Tauri, we will use direct core integration via Tauri invoke if available
-      // For now, still try WS as core runs as sidecar
+      // The desktop shell starts Core in-process (src-tauri/src/lib.rs) and
+      // talks to it over the same WebSocket the browser client uses, rather
+      // than through Tauri `invoke` — one transport, one code path to test.
       console.log("[CID] Running inside Tauri, using WS to core");
     }
 
@@ -215,8 +235,16 @@ class CidApiClient {
 
   mission = {
     list: (repoChannelId?: string) => this.call("mission.list", { repo_channel_id: repoChannelId }),
-    create: (params: { repo_channel_id: string; title: string; task: string; session_mode?: string; autonomy_level?: string; vibe?: boolean }) =>
-      this.call("mission.create", params),
+    create: (params: {
+      repo_channel_id: string;
+      title: string;
+      task?: string;
+      session_mode?: string;
+      autonomy_level?: string;
+      vibe?: boolean;
+      model_provider?: string | null;
+      model_id?: string | null;
+    }) => this.call("mission.create", params),
     get: (id: string) => this.call("mission.get", { id }),
     close: (id: string) => this.call("mission.close", { id }),
     sendMessage: (mission_id: string, content: string) => this.call("mission.send_message", { mission_id, content }),
@@ -281,6 +309,10 @@ class CidApiClient {
     list: (path: string) => this.call("file.list", { path }),
   };
 
+  fs = {
+    listDirs: (path?: string | null): Promise<ListDirsResult> => this.call("fs.list_dirs", { path: path ?? null }),
+  };
+
   code = {
     analyzeFile: (file_path: string) => this.call("code.analyze_file", { file_path }),
     analyzeDirectory: (dir_path: string) => this.call("code.analyze_directory", { dir_path }),
@@ -307,7 +339,7 @@ class CidApiClient {
   };
 
   model = {
-    list: () => this.call("model.list"),
+    list: (): Promise<ModelInfo[]> => this.call("model.list"),
     chat: (params: unknown) => this.call("model.chat", params),
   };
 

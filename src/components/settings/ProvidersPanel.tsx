@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type RpcValue } from "../../lib/api";
+import { api, type ModelInfo, type RpcValue } from "../../lib/api";
 import { RefreshCw, Save } from "lucide-react";
 import { TeamIntegrationsPanel } from "./TeamIntegrationsPanel";
 
@@ -41,6 +41,12 @@ function isRedacted(value: string | null | undefined): boolean {
 export function ProvidersPanel() {
   const [settings, setSettings] = useState<Settings>({});
   const [runtimes, setRuntimes] = useState<LocalRuntime[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  // Per-role override to show the free-text id input instead of the <select>
+  // — undefined defers to whether the stored value actually matches a known
+  // model, so a role someone already pointed at a custom id opens in custom
+  // mode without extra clicks.
+  const [customRole, setCustomRole] = useState<Record<string, boolean>>({});
   const [dirty, setDirty] = useState<Settings>({});
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -56,6 +62,13 @@ export function ProvidersPanel() {
       setStatus(String(e));
     } finally {
       setLoading(false);
+    }
+    try {
+      setModels((await api.model.list()) ?? []);
+    } catch {
+      // The per-role picker degrades to the plain text input below —
+      // model.list() is a convenience, not a prerequisite for routing.
+      setModels([]);
     }
   }, []);
 
@@ -154,31 +167,65 @@ export function ProvidersPanel() {
       <div className="mb-4">
         <div className="text-xs font-medium mb-1.5">Per-role routing</div>
         <div className="space-y-2">
-          {ROLES.map((role) => (
-            <div key={role.key} className="p-2 border rounded bg-background">
-              <div className="text-xs font-medium">{role.label}</div>
-              <div className="text-[10px] text-muted-foreground mb-1.5">{role.hint}</div>
-              <div className="grid grid-cols-2 gap-2">
-                <select
-                  className="bg-background border rounded px-2 py-1 text-xs"
-                  value={valueOf(`${role.key}_provider`)}
-                  onChange={(e) => set(`${role.key}_provider`, e.target.value)}
-                >
-                  {PROVIDERS.map((p) => (
-                    <option key={p.value} value={p.value}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className="bg-background border rounded px-2 py-1 text-xs"
-                  placeholder="model id"
-                  value={valueOf(`${role.key}_model`)}
-                  onChange={(e) => set(`${role.key}_model`, e.target.value)}
-                />
+          {ROLES.map((role) => {
+            const provider = valueOf(`${role.key}_provider`);
+            const filteredModels = provider ? models.filter((m) => m.provider === provider) : models;
+            const modelValue = valueOf(`${role.key}_model`);
+            const matchesKnownModel = filteredModels.some((m) => m.id === modelValue);
+            const isCustom = customRole[role.key] ?? (modelValue !== "" && !matchesKnownModel);
+            const showSelect = filteredModels.length > 0 && !isCustom;
+            return (
+              <div key={role.key} className="p-2 border rounded bg-background">
+                <div className="text-xs font-medium">{role.label}</div>
+                <div className="text-[10px] text-muted-foreground mb-1.5">{role.hint}</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    className="bg-background border rounded px-2 py-1 text-xs"
+                    value={provider}
+                    onChange={(e) => set(`${role.key}_provider`, e.target.value)}
+                  >
+                    {PROVIDERS.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                  {showSelect ? (
+                    <select
+                      className="bg-background border rounded px-2 py-1 text-xs"
+                      value={modelValue}
+                      onChange={(e) => set(`${role.key}_model`, e.target.value)}
+                    >
+                      <option value="">(default)</option>
+                      {filteredModels.map((m) => (
+                        <option key={m.id} value={m.id} disabled={!m.available}>
+                          {m.name} — {m.context_length.toLocaleString()} tok
+                          {m.default ? " (default)" : ""}
+                          {!m.available ? " (no API key)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="bg-background border rounded px-2 py-1 text-xs"
+                      placeholder="model id"
+                      value={modelValue}
+                      onChange={(e) => set(`${role.key}_model`, e.target.value)}
+                    />
+                  )}
+                </div>
+                {filteredModels.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomRole((c) => ({ ...c, [role.key]: !isCustom }))}
+                    className="text-[10px] text-muted-foreground underline mt-1"
+                  >
+                    {isCustom ? "Choose from list" : "custom model id…"}
+                  </button>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

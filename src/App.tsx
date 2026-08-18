@@ -13,7 +13,7 @@ import { AutonomyPanel } from "./components/autonomy/AutonomyPanel";
 import { DecisionsPanel } from "./components/chat/DecisionsPanel";
 import { useCid } from "./hooks/useCid";
 import { useTheme } from "./theme/useTheme";
-import { api } from "./lib/api";
+import { api, type ModelInfo } from "./lib/api";
 import { toast } from "./lib/dialog";
 import { useFocusTrap } from "./lib/useFocusTrap";
 import { t } from "./lib/i18n";
@@ -57,18 +57,43 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
   const [autonomy, setAutonomy] = useState<"manual" | "co_pilot" | "autonomous">("co_pilot");
   const [vibe, setVibe] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  // Value is "" for "use default" or `${provider}::${id}` — a select can only
+  // carry one string, and provider+id must travel together to mission.create.
+  const [modelChoice, setModelChoice] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.model
+      .list()
+      .then((list) => {
+        if (!cancelled) setModels(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        // Model picking is a convenience, not a prerequisite — mission
+        // creation must still work with just the "use default" option.
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedModel = models.find((m) => `${m.provider}::${m.id}` === modelChoice);
 
   const handleCreate = async () => {
-    if (!selectedRepoId || !title.trim() || !task.trim()) return;
+    if (!selectedRepoId || !title.trim()) return;
     setIsCreating(true);
     try {
       await api.mission.create({
         repo_channel_id: selectedRepoId,
         title: title.trim(),
-        task: task.trim(),
+        task: task.trim() || undefined,
         session_mode: sessionMode,
         autonomy_level: autonomy,
         vibe,
+        model_provider: selectedModel?.provider ?? null,
+        model_id: selectedModel?.id ?? null,
       });
       await loadMissions(selectedRepoId);
       onCreated();
@@ -104,13 +129,37 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Task Description</label>
+            <label className="text-xs text-muted-foreground">Task Description (optional)</label>
             <textarea
               className="w-full mt-1 bg-background border rounded px-3 py-2 text-sm min-h-[80px]"
               placeholder="Describe what you want CID to do..."
               value={task}
               onChange={(e) => setTask(e.target.value)}
             />
+            <div className="text-[11px] text-muted-foreground mt-1">
+              Leave blank to have the agent start from the title alone.
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Model</label>
+            <select
+              className="w-full mt-1 bg-background border rounded px-2 py-2 text-sm"
+              value={modelChoice}
+              onChange={(e) => setModelChoice(e.target.value)}
+            >
+              <option value="">Use default (from Settings)</option>
+              {models.map((m) => (
+                <option key={`${m.provider}::${m.id}`} value={`${m.provider}::${m.id}`} disabled={!m.available}>
+                  {m.name} ({m.provider}){m.default ? " — default" : ""}
+                  {!m.available ? " — no API key configured" : ""}
+                </option>
+              ))}
+            </select>
+            {selectedModel && (
+              <div className="text-[11px] text-muted-foreground mt-1">
+                {selectedModel.context_length.toLocaleString()} token context
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -170,7 +219,7 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
           </button>
           <button
             onClick={handleCreate}
-            disabled={isCreating || !title.trim() || !task.trim()}
+            disabled={isCreating || !title.trim()}
             className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded disabled:opacity-50"
           >
             {isCreating ? "Creating..." : "Create Mission"}
@@ -230,7 +279,7 @@ const MIN_RIGHT_PANEL_WIDTH = 320;
 const MAX_RIGHT_PANEL_WIDTH = 1200;
 
 export default function App() {
-  const { setConnected, selectedRepoId, selectedMissionId } = useCid();
+  const { setConnected, selectedRepoId, selectedMissionId, repos, missions } = useCid();
   const [rightTab, setRightTab] = useState<RightTab>("editor");
   const [showNewMission, setShowNewMission] = useState(false);
   // 051-Editor-Excellence-Roadmap.md Wave 4.6: the fixed 520px right panel
@@ -244,16 +293,20 @@ export default function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [maximized, setMaximized] = useState(false);
 
-  // LeftRail's settings button has no reach into this component's tab state
-  // otherwise — a lightweight DOM event rather than prop-drilling or a new
-  // store just for one button.
+  // LeftRail's settings/Skills/MCP Servers rows have no reach into this
+  // component's tab state otherwise — a lightweight DOM event rather than
+  // prop-drilling or a new store just for a handful of buttons. Generalized
+  // from a settings-only `cid:open-settings` event so every LeftRail row that
+  // wants to jump to a right-panel tab can reuse it.
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
+      const tab = (e as CustomEvent<RightTab>).detail;
+      if (!tab) return;
       setMaximized(false);
-      setRightTab("models");
+      setRightTab(tab);
     };
-    window.addEventListener("cid:open-settings", handler);
-    return () => window.removeEventListener("cid:open-settings", handler);
+    window.addEventListener("cid:open-tab", handler);
+    return () => window.removeEventListener("cid:open-tab", handler);
   }, []);
 
   useEffect(() => {
@@ -287,7 +340,10 @@ export default function App() {
         useTheme.getState().syncFromSettings();
       })
       .catch(() => {
-        console.warn("[CID] Core not available, running in offline mock mode");
+        // Not a "mock mode" — nothing is stubbed out and no placeholder data
+        // is served. The UI simply has no data until Core is reachable, and
+        // the interval below keeps retrying.
+        console.warn("[CID] Core not reachable — retrying every 3s");
         setConnected(false);
         // Retry periodically
         const interval = setInterval(() => {
@@ -374,8 +430,15 @@ export default function App() {
             <div className="h-10 border-b flex items-center px-3 gap-2 bg-card">
               {selectedRepoId ? (
                 <>
-                  <span className="text-sm font-medium">Mission Thread</span>
-                  {selectedMissionId && <span className="text-xs text-muted-foreground">• {selectedMissionId.slice(0, 8)}</span>}
+                  <span className="text-sm font-medium">
+                    {repos.find((r) => r.id === selectedRepoId)?.name ?? "Mission Thread"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    •{" "}
+                    {selectedMissionId
+                      ? missions.find((m) => m.id === selectedMissionId)?.title ?? selectedMissionId.slice(0, 8)
+                      : "no mission selected"}
+                  </span>
                   <button
                     onClick={() => setShowNewMission(true)}
                     className="ml-auto flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded"

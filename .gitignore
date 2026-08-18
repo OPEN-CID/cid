@@ -49,6 +49,10 @@ cid-*.db
 .cid/
 cid-worktrees/
 
+# Disposable database for the Playwright suite (see playwright.config.ts) —
+# kept out of the OS data dir so E2E runs never touch a real install.
+.cid-e2e/
+
 # Logs
 logs/
 *.log

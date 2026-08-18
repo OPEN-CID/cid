@@ -91,6 +91,104 @@ async fn mission_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) 
     (base, dir, mission_id)
 }
 
+// Task 2 regression: `task` is now optional on `mission.create` — an
+// absent field must not error, and must fall back to storing the title as
+// the task, because the Planner prompt (`build_system_context`) depends on
+// a non-empty task existing.
+#[tokio::test]
+async fn mission_create_with_no_task_field_falls_back_to_the_title() {
+    let base = start_core().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    git2::Repository::init(dir.path()).expect("git init");
+    let repo_path = dir.path().to_string_lossy().to_string();
+    let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+    let channel_id = channel["id"].as_str().expect("channel id").to_string();
+
+    // Deliberately no "task" key at all — not even an empty string.
+    let mission = rpc_ok(
+        &base,
+        "mission.create",
+        json!({
+            "repo_channel_id": channel_id,
+            "title": "Investigate the flaky test",
+            "session_mode": "shared",
+            "autonomy_level": "manual",
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        mission["task_description"], "Investigate the flaky test",
+        "an omitted task must fall back to the (required) title"
+    );
+}
+
+#[tokio::test]
+async fn mission_create_with_an_empty_title_is_rejected() {
+    let base = start_core().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    git2::Repository::init(dir.path()).expect("git init");
+    let repo_path = dir.path().to_string_lossy().to_string();
+    let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+    let channel_id = channel["id"].as_str().expect("channel id").to_string();
+
+    let body = rpc(
+        &base,
+        "mission.create",
+        json!({
+            "repo_channel_id": channel_id,
+            "title": "   ",
+            "task": "something",
+            "session_mode": "shared",
+            "autonomy_level": "manual",
+        }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "a blank title must be rejected outright, task fallback or not"
+    );
+}
+
+// Task 3 regression (RPC layer — the resolution-logic proof lives in
+// `model/mod.rs`'s `mission_model_override_tests`): the override fields
+// round-trip through `mission.create`/`mission.get`.
+#[tokio::test]
+async fn mission_create_persists_and_returns_the_model_override() {
+    let base = start_core().await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    git2::Repository::init(dir.path()).expect("git init");
+    let repo_path = dir.path().to_string_lossy().to_string();
+    let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+    let channel_id = channel["id"].as_str().expect("channel id").to_string();
+
+    let mission = rpc_ok(
+        &base,
+        "mission.create",
+        json!({
+            "repo_channel_id": channel_id,
+            "title": "Pinned model mission",
+            "task": "test",
+            "session_mode": "shared",
+            "autonomy_level": "manual",
+            "model_provider": "anthropic",
+            "model_id": "claude-opus-5",
+        }),
+    )
+    .await;
+    assert_eq!(mission["model_provider"], "anthropic");
+    assert_eq!(mission["model_id"], "claude-opus-5");
+
+    let fetched = rpc_ok(
+        &base,
+        "mission.get",
+        json!({ "id": mission["id"].as_str().unwrap() }),
+    )
+    .await;
+    assert_eq!(fetched["model_provider"], "anthropic");
+    assert_eq!(fetched["model_id"], "claude-opus-5");
+}
+
 #[tokio::test]
 async fn co_pilot_mission_is_gated_until_a_plan_is_approved() {
     let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
@@ -2442,6 +2540,187 @@ mod file_rpc_confinement {
         assert!(
             body.get("error").is_some(),
             "listing a directory outside every connected repo must be refused"
+        );
+    }
+}
+
+// New RPC: `fs.list_dirs`, the directory-only browser backing the repo-connect
+// picker. Unlike `file.*` above, it is deliberately *not* confined to a
+// connected repo (there's nothing to connect to yet) — its own boundary is
+// "directories only, never file names or contents" (see SECURITY.md §6).
+mod fs_list_dirs {
+    use super::*;
+
+    #[tokio::test]
+    async fn listing_a_known_temp_dir_returns_its_subdirectories() {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        std::fs::create_dir(dir.path().join("beta")).unwrap();
+        std::fs::write(dir.path().join("not-a-dir.txt"), "file contents").unwrap();
+
+        let result = rpc_ok(
+            &base,
+            "fs.list_dirs",
+            json!({ "path": dir.path().to_string_lossy() }),
+        )
+        .await;
+
+        let names: Vec<String> = result["entries"]
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha".to_string(), "beta".to_string()],
+            "must list only directories, sorted case-insensitively, never the file"
+        );
+        for entry in result["entries"].as_array().unwrap() {
+            assert!(
+                entry.get("path").is_some() && entry.get("is_git_repo").is_some(),
+                "each entry must carry path and is_git_repo"
+            );
+            assert!(
+                entry.get("content").is_none() && entry.get("size").is_none(),
+                "fs.list_dirs must never expose file contents or file metadata"
+            );
+        }
+        // The simplified spelling, not `canonicalize`'s raw `\\?\C:\...` — the
+        // picker feeds this straight into `repo.connect`, whose UNIQUE column
+        // must see the same string a hand-typed path produces.
+        assert_eq!(
+            result["path"].as_str().unwrap(),
+            cid_core::path_confine::normalize_stored_path(&dir.path().to_string_lossy())
+        );
+        assert!(
+            !result["path"].as_str().unwrap().starts_with(r"\\?\"),
+            "fs.list_dirs must not leak the Windows extended-length form"
+        );
+    }
+
+    /// The seam the two components' own tests each missed: `fs.list_dirs`
+    /// and `repo.connect` were individually correct, but the path handed
+    /// from one to the other took a second row on `repo_channels.path`'s
+    /// UNIQUE constraint. Walks the real RPC path both ways round.
+    #[tokio::test]
+    async fn connecting_a_repo_via_the_picker_path_and_the_typed_path_yields_one_channel() {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo_dir = dir.path().join("seam-repo");
+        git2::Repository::init(&repo_dir).expect("git init");
+
+        let listing = rpc_ok(
+            &base,
+            "fs.list_dirs",
+            json!({ "path": dir.path().to_string_lossy() }),
+        )
+        .await;
+        let picker_path = listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "seam-repo")
+            .expect("seam-repo entry")["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let typed_path = repo_dir.to_string_lossy().to_string();
+        let from_picker = rpc_ok(&base, "repo.connect", json!({ "path": picker_path })).await;
+        let from_typing = rpc_ok(&base, "repo.connect", json!({ "path": typed_path })).await;
+
+        assert_eq!(
+            from_picker["id"], from_typing["id"],
+            "the folder picker and the text box must reach the same repo channel"
+        );
+
+        let repos = rpc_ok(&base, "repo.list", json!({})).await;
+        let matching = repos
+            .as_array()
+            .expect("repo list")
+            .iter()
+            .filter(|r| r["name"] == "seam-repo")
+            .count();
+        assert_eq!(matching, 1, "one directory must not produce two repo rows");
+    }
+
+    #[tokio::test]
+    async fn a_file_path_is_rejected_rather_than_listed() {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("just-a-file.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let body = rpc(
+            &base,
+            "fs.list_dirs",
+            json!({ "path": file_path.to_string_lossy() }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "a file path must be rejected, not silently listed as an empty directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nonexistent_path_errors_cleanly() {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist-at-all");
+
+        let body = rpc(
+            &base,
+            "fs.list_dirs",
+            json!({ "path": missing.to_string_lossy() }),
+        )
+        .await;
+        assert!(
+            body.get("error").is_some(),
+            "a nonexistent path must return a clean RPC error, not a panic or a 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_git_repo_is_true_for_a_dir_containing_dot_git() {
+        let base = start_core().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo_dir = dir.path().join("my-repo");
+        git2::Repository::init(&repo_dir).expect("git init");
+        std::fs::create_dir(dir.path().join("plain-dir")).unwrap();
+
+        let result = rpc_ok(
+            &base,
+            "fs.list_dirs",
+            json!({ "path": dir.path().to_string_lossy() }),
+        )
+        .await;
+
+        let entries = result["entries"].as_array().unwrap();
+        let repo_entry = entries
+            .iter()
+            .find(|e| e["name"] == "my-repo")
+            .expect("my-repo entry present");
+        assert_eq!(repo_entry["is_git_repo"], true);
+        let plain_entry = entries
+            .iter()
+            .find(|e| e["name"] == "plain-dir")
+            .expect("plain-dir entry present");
+        assert_eq!(plain_entry["is_git_repo"], false);
+    }
+
+    #[tokio::test]
+    async fn listing_with_no_path_returns_filesystem_roots() {
+        let base = start_core().await;
+        let result = rpc_ok(&base, "fs.list_dirs", json!({})).await;
+        assert_eq!(result["path"], "");
+        assert!(result["parent"].is_null());
+        let entries = result["entries"].as_array().expect("entries array");
+        assert!(
+            !entries.is_empty(),
+            "listing roots must return at least one entry on any real machine"
         );
     }
 }

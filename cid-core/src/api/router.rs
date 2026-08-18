@@ -330,6 +330,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "file.read" => handle_file_read(params, state).await,
         "file.write" => handle_file_write(params, state).await,
         "file.list" => handle_file_list(params, state).await,
+        "fs.list_dirs" => handle_fs_list_dirs(params, state).await,
 
         // Skills
         "skills.list" => handle_skills_list(params, state).await,
@@ -735,6 +736,10 @@ async fn handle_mission_create(
 ) -> anyhow::Result<serde_json::Value> {
     let p: crate::api::types::CreateMissionParams = serde_json::from_value(params.clone())?;
 
+    if p.title.trim().is_empty() {
+        anyhow::bail!("Mission title must not be empty");
+    }
+
     // Governance gate: Autonomous mode is a Workspace policy decision, not a
     // per-Mission preference. Enforced here so no shell can bypass it.
     if p.autonomy_level == Some(crate::api::types::AutonomyLevel::Autonomous) {
@@ -749,15 +754,36 @@ async fn handle_mission_create(
         }
     }
 
+    // task 2: a Mission must never be created with an empty task, because
+    // the Planner prompt (`ModelManager::process_message_with_role` ->
+    // `SkillsManager::build_system_context`) depends on it — falling back to
+    // the (already-validated non-empty) title is the intended behavior for
+    // an omitted/blank task, not an error.
+    let task = if p.task.trim().is_empty() {
+        p.title.clone()
+    } else {
+        p.task.clone()
+    };
+
     let mission = state.persistence.create_mission(
         &p.repo_channel_id,
         &p.title,
-        &p.task,
+        &task,
         p.session_mode
             .unwrap_or(crate::api::types::SessionMode::Worktree),
         p.autonomy_level
             .unwrap_or(crate::api::types::AutonomyLevel::CoPilot),
     )?;
+
+    let mission = if p.model_provider.is_some() || p.model_id.is_some() {
+        state.persistence.update_mission_model(
+            &mission.id,
+            p.model_provider.clone(),
+            p.model_id.clone(),
+        )?
+    } else {
+        mission
+    };
 
     // If worktree mode, create worktree via git manager
     let mission = if mission.session_mode == crate::api::types::SessionMode::Worktree {
@@ -1392,6 +1418,140 @@ async fn handle_file_list(
         }));
     }
     Ok(serde_json::Value::Array(entries))
+}
+
+/// `fs.list_dirs` — a directory-only browser for the repo-connect picker,
+/// deliberately *not* confined to a connected repo the way `file.*` above is
+/// (its whole job is finding the repo to connect in the first place). This
+/// is the security boundary the tests in `api_integration.rs`'s
+/// `fs_list_dirs` module exist to pin down: directory names only, anywhere
+/// the Core process can read — never file names, never file contents. No
+/// `require_session` here, matching `repo.list`/`file.*`'s existing pattern
+/// of leaving this RPC surface gated by the loopback bind rather than a
+/// per-call session check — see SECURITY.md.
+async fn handle_fs_list_dirs(
+    params: serde_json::Value,
+    _state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let requested_path: Option<String> = params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let Some(raw_path) = requested_path else {
+        return Ok(serde_json::json!({
+            "path": "",
+            "parent": serde_json::Value::Null,
+            "entries": fs_list_roots().await,
+        }));
+    };
+
+    // `canonicalize` hands back Windows' extended-length form
+    // (`\\?\C:\Projects\cid`). `simplified` is the string-only counterpart to
+    // `path_confine::normalize_stored_path` (no second filesystem round-trip
+    // needed — we just canonicalized), so the paths this RPC feeds the folder
+    // picker are the same spelling `repo.connect` will store. Every child
+    // below inherits it, since `fs_list_subdirs` joins onto this value.
+    let canonical = tokio::fs::canonicalize(&raw_path)
+        .await
+        .with_context(|| format!("cannot access '{raw_path}'"))?;
+    let canonical = dunce::simplified(&canonical).to_path_buf();
+    let meta = tokio::fs::metadata(&canonical)
+        .await
+        .with_context(|| format!("cannot stat '{raw_path}'"))?;
+    if !meta.is_dir() {
+        anyhow::bail!("'{raw_path}' is not a directory");
+    }
+
+    let entries = fs_list_subdirs(&canonical).await;
+    let parent = canonical.parent().map(|p| p.to_string_lossy().to_string());
+    Ok(serde_json::json!({
+        "path": canonical.to_string_lossy(),
+        "parent": parent,
+        "entries": entries,
+    }))
+}
+
+/// True when `dir` contains a `.git` entry (directory for a normal repo, or
+/// file for a worktree/submodule) — the only signal `fs.list_dirs` gives the
+/// picker about repo-ness, no file contents read.
+async fn is_git_repo_dir(dir: &std::path::Path) -> bool {
+    tokio::fs::metadata(dir.join(".git")).await.is_ok()
+}
+
+/// Filesystem roots for a null/absent `path` — logical drives on Windows,
+/// a single "/" entry elsewhere.
+#[cfg(windows)]
+async fn fs_list_roots() -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", letter as char);
+        let drive_path = std::path::PathBuf::from(&drive);
+        if tokio::fs::metadata(&drive_path).await.is_ok() {
+            let is_git_repo = is_git_repo_dir(&drive_path).await;
+            entries.push(serde_json::json!({
+                "name": drive,
+                "path": drive_path.to_string_lossy(),
+                "is_git_repo": is_git_repo,
+            }));
+        }
+    }
+    entries
+}
+
+#[cfg(not(windows))]
+async fn fs_list_roots() -> Vec<serde_json::Value> {
+    let root = std::path::PathBuf::from("/");
+    let is_git_repo = is_git_repo_dir(&root).await;
+    vec![serde_json::json!({
+        "name": "/",
+        "path": "/",
+        "is_git_repo": is_git_repo,
+    })]
+}
+
+/// Lists the directory-only, non-hidden children of `dir`, sorted
+/// case-insensitively by name. An entry that errors when stat'd (permission
+/// denied) is skipped rather than failing the whole listing; a broken
+/// directory stream stops the listing with whatever was gathered so far
+/// instead of retrying indefinitely against the same error.
+async fn fs_list_subdirs(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
+    let mut read_dir = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(_) => return entries,
+    };
+    loop {
+        let entry = match read_dir.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let full_path = entry.path();
+        let is_git_repo = is_git_repo_dir(&full_path).await;
+        entries.push(serde_json::json!({
+            "name": name,
+            "path": full_path.to_string_lossy(),
+            "is_git_repo": is_git_repo,
+        }));
+    }
+    entries.sort_by(|a, b| {
+        let an = a["name"].as_str().unwrap_or("").to_lowercase();
+        let bn = b["name"].as_str().unwrap_or("").to_lowercase();
+        an.cmp(&bn)
+    });
+    entries
 }
 
 // Skills

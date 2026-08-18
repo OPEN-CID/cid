@@ -14,6 +14,22 @@ use crate::{
     },
 };
 
+pub mod catalog;
+mod catalog_bundled;
+
+/// The models.dev provider key for one of CID's first-party providers.
+/// OpenAI-compatible routes (OpenRouter, Groq, Ollama, LM Studio, llama.cpp)
+/// have no single catalog — they proxy whatever the endpoint serves — so they
+/// deliberately have no key and fall through to heuristics everywhere below.
+fn catalog_key(provider: &ModelProvider) -> Option<&'static str> {
+    match provider {
+        ModelProvider::Anthropic => Some(catalog::ANTHROPIC),
+        ModelProvider::OpenAI => Some(catalog::OPENAI),
+        ModelProvider::Google => Some(catalog::GOOGLE),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingToolCall {
     pub id: String,
@@ -152,33 +168,53 @@ pub struct ContextUsage {
 /// not estimated here — spend from that provider records as $0, which is
 /// itself an honest signal that dollar-based caps don't apply to that route.
 fn estimate_cost_usd(provider: &ModelProvider, model_id: &str, usage: TokenUsage) -> f64 {
-    let (input_per_million, output_per_million): (f64, f64) = match provider {
-        ModelProvider::Anthropic => {
-            if model_id.contains("opus") {
-                (15.0, 75.0)
-            } else if model_id.contains("haiku") {
-                (0.8, 4.0)
-            } else {
-                (3.0, 15.0) // sonnet family, the default
+    // Real per-model pricing from the catalog (see `model::catalog`) rather
+    // than a family heuristic. The heuristic this replaced priced every
+    // non-opus, non-haiku Anthropic id at the sonnet-tier $3/$15 — including
+    // `claude-sonnet-5`, which is $2/$10 and, after the retired-id migration,
+    // the default model. Every spend figure and every governance cap decision
+    // on the default route was therefore 50% high.
+    let catalogued = catalog_key(provider)
+        .and_then(|key| catalog::lookup(key, model_id))
+        .map(|m| (m.input_per_million, m.output_per_million));
+
+    let (input_per_million, output_per_million): (f64, f64) = match catalogued {
+        Some(price) => price,
+        // Not in the catalog: a brand-new id, a custom pin, or an
+        // OpenAI-compatible route. Fall back to a family heuristic rather than
+        // $0, which would silently defeat spend caps — except for
+        // OpenAI-compatible, where $0 is the honest answer (see this
+        // function's doc comment).
+        None => match provider {
+            ModelProvider::Anthropic => {
+                if model_id.contains("opus") {
+                    (5.0, 25.0)
+                } else if model_id.contains("haiku") {
+                    (1.0, 5.0)
+                } else {
+                    (3.0, 15.0)
+                }
             }
-        }
-        ModelProvider::OpenAI => {
-            if model_id.contains("mini") {
-                (0.15, 0.6)
-            } else if model_id.contains("gpt-4o") {
-                (2.5, 10.0)
-            } else {
-                (5.0, 15.0)
+            ModelProvider::OpenAI => {
+                if model_id.contains("nano") {
+                    (0.2, 1.25)
+                } else if model_id.contains("mini") {
+                    (0.75, 4.5)
+                } else {
+                    (5.0, 30.0)
+                }
             }
-        }
-        ModelProvider::Google => {
-            if model_id.contains("flash") {
-                (0.075, 0.3)
-            } else {
-                (1.25, 5.0)
+            ModelProvider::Google => {
+                if model_id.contains("lite") {
+                    (0.25, 1.5)
+                } else if model_id.contains("flash") {
+                    (1.5, 7.5)
+                } else {
+                    (2.0, 12.0)
+                }
             }
-        }
-        _ => (0.0, 0.0),
+            _ => (0.0, 0.0),
+        },
     };
     (usage.input_tokens as f64 / 1_000_000.0) * input_per_million
         + (usage.output_tokens as f64 / 1_000_000.0) * output_per_million
@@ -210,6 +246,14 @@ fn estimate_tokens(text: &str) -> u32 {
 /// trying to track every model's exact figure — unknown/local models get a
 /// conservative default rather than an assumed-huge one.
 fn context_window_tokens(provider: &ModelProvider, model_id: &str) -> u32 {
+    // The catalog's real figure first. The flat per-provider constants below
+    // were badly wrong once the catalog moved on: Anthropic was pinned at
+    // 200_000 for every model, but opus-5/sonnet-5 carry a 1M window — so
+    // compaction fired at 140k on a window five times that size, summarizing
+    // away context the model could still hold.
+    if let Some(m) = catalog_key(provider).and_then(|key| catalog::lookup(key, model_id)) {
+        return m.context;
+    }
     match provider {
         ModelProvider::Anthropic => 200_000,
         ModelProvider::OpenAI => 128_000,
@@ -402,89 +446,11 @@ struct KnownModel {
     context: usize,
 }
 
-const ANTHROPIC_MODELS: &[KnownModel] = &[
-    KnownModel {
-        id: "claude-3-5-sonnet-20241022",
-        name: "Claude 3.5 Sonnet",
-        context: 200000,
-    },
-    KnownModel {
-        id: "claude-3-5-haiku-20241022",
-        name: "Claude 3.5 Haiku",
-        context: 200000,
-    },
-    KnownModel {
-        id: "claude-3-opus-20240229",
-        name: "Claude 3 Opus",
-        context: 200000,
-    },
-    KnownModel {
-        id: "claude-3-5-sonnet-latest",
-        name: "Claude 3.5 Sonnet (latest)",
-        context: 200000,
-    },
-];
-
-const OPENAI_MODELS: &[KnownModel] = &[
-    KnownModel {
-        id: "gpt-4o",
-        name: "GPT-4o",
-        context: 128000,
-    },
-    KnownModel {
-        id: "gpt-4o-mini",
-        name: "GPT-4o mini",
-        context: 128000,
-    },
-    KnownModel {
-        id: "gpt-4-turbo",
-        name: "GPT-4 Turbo",
-        context: 128000,
-    },
-    KnownModel {
-        id: "o1",
-        name: "o1",
-        context: 200000,
-    },
-    KnownModel {
-        id: "o1-mini",
-        name: "o1-mini",
-        context: 128000,
-    },
-    KnownModel {
-        id: "gpt-4o-2024-08-06",
-        name: "GPT-4o (2024-08-06)",
-        context: 128000,
-    },
-];
-
-const GOOGLE_MODELS: &[KnownModel] = &[
-    KnownModel {
-        id: "gemini-1.5-pro",
-        name: "Gemini 1.5 Pro",
-        context: 1048576,
-    },
-    KnownModel {
-        id: "gemini-1.5-flash",
-        name: "Gemini 1.5 Flash",
-        context: 1048576,
-    },
-    KnownModel {
-        id: "gemini-2.0-flash-exp",
-        name: "Gemini 2.0 Flash Exp",
-        context: 1048576,
-    },
-    KnownModel {
-        id: "gemini-1.5-flash-8b",
-        name: "Gemini 1.5 Flash 8B",
-        context: 1048576,
-    },
-    KnownModel {
-        id: "gemini-1.5-pro-002",
-        name: "Gemini 1.5 Pro 002",
-        context: 2000000,
-    },
-];
+// The Anthropic/OpenAI/Google catalogs used to be three hand-written arrays
+// here. They went stale silently and were wrong in three ways at once (retired
+// Google ids, no gpt-5.x, mispriced claude-sonnet-5) — see `model::catalog`,
+// which now sources them from the models.dev registry with a live fetch, a
+// disk cache, and a generated offline snapshot.
 
 // OpenAI-compatible generic models (covers OpenRouter, Groq, vLLM, self-hosted)
 const OPENAI_COMPAT_MODELS: &[KnownModel] = &[
@@ -773,6 +739,45 @@ fn resolve_active_config(
         api_key: provider_api_key(settings, &ModelProvider::Anthropic),
         endpoint: provider_endpoint(settings, &ModelProvider::Anthropic),
     })
+}
+
+/// Per-mission model override (task 3): a Mission created with an explicit
+/// `model_provider`/`model_id` (`CreateMissionParams`) takes precedence over
+/// the resolved role/global setting for every turn that Mission runs. Called
+/// from the two real per-turn call paths — `process_message_with_role` and
+/// `run_subagent_turn` — right after they resolve the role/global config, so
+/// there's exactly one place this override applies rather than a second
+/// resolver nothing calls (see this file's module docs on that failure mode).
+///
+/// `model_id` alone pins just the model on the already-resolved provider;
+/// `model_provider` alone switches provider and falls back to that
+/// provider's default model; both together fully replace the resolution.
+fn apply_mission_model_override(
+    resolved: ResolvedModelConfig,
+    settings: &Settings,
+    mission: &crate::api::types::Mission,
+) -> ResolvedModelConfig {
+    if mission.model_provider.is_none() && mission.model_id.is_none() {
+        return resolved;
+    }
+
+    let provider = mission
+        .model_provider
+        .as_deref()
+        .and_then(parse_provider_str)
+        .unwrap_or(resolved.provider);
+
+    let model_id = mission
+        .model_id
+        .clone()
+        .unwrap_or_else(|| provider_default_model(settings, &provider));
+
+    ResolvedModelConfig {
+        api_key: provider_api_key(settings, &provider),
+        endpoint: provider_endpoint(settings, &provider),
+        provider,
+        model_id,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,7 +1276,7 @@ impl ModelManager {
             warn!("Failed to get settings for list_models, using defaults");
             Settings {
                 anthropic_api_key: None,
-                anthropic_model: "claude-3-5-sonnet-20241022".to_string(),
+                anthropic_model: "claude-sonnet-5".to_string(),
                 openai_api_key: None,
                 openai_model: None,
                 google_api_key: None,
@@ -1294,51 +1299,49 @@ impl ModelManager {
         let mut models: Vec<serde_json::Value> = Vec::new();
 
         // Helper to insert models for a provider
-        let mut push_provider_models = |_provider_enum: ModelProvider,
-                                        known: &[KnownModel],
-                                        provider_str: &str,
-                                        default_model_id: String,
-                                        enabled: bool| {
-            for km in known {
-                let is_default = km.id == default_model_id;
+        // Anthropic / OpenAI / Google come from the catalog (live registry,
+        // disk cache, or the generated snapshot — see `model::catalog`) rather
+        // than a hand-written array, so a retired id can't linger in the picker
+        // the way `gemini-1.5-pro` did.
+        let mut push_catalogued = |provider: ModelProvider,
+                                   provider_str: &str,
+                                   default_model_id: String,
+                                   enabled: bool| {
+            let key = catalog_key(&provider).expect("first-party provider has a catalog key");
+            for m in catalog::models_for(key) {
+                let is_default = m.id == default_model_id;
                 models.push(serde_json::json!({
-                    "id": km.id,
-                    "name": km.name,
+                    "id": m.id,
+                    "name": m.name,
                     "provider": provider_str,
-                    "context_length": km.context,
+                    "context_length": m.context,
                     "default": is_default,
                     "available": enabled
                 }));
             }
         };
 
-        // Anthropic
         let anthropic_enabled = is_provider_enabled(&settings, &ModelProvider::Anthropic);
-        push_provider_models(
+        push_catalogued(
             ModelProvider::Anthropic,
-            ANTHROPIC_MODELS,
             "anthropic",
             settings.anthropic_model.clone(),
             anthropic_enabled,
         );
 
-        // OpenAI
         let openai_enabled = is_provider_enabled(&settings, &ModelProvider::OpenAI);
         let openai_default = provider_default_model(&settings, &ModelProvider::OpenAI);
-        push_provider_models(
+        push_catalogued(
             ModelProvider::OpenAI,
-            OPENAI_MODELS,
             "openai",
             openai_default,
             openai_enabled,
         );
 
-        // Google
         let google_enabled = is_provider_enabled(&settings, &ModelProvider::Google);
         let google_default = provider_default_model(&settings, &ModelProvider::Google);
-        push_provider_models(
+        push_catalogued(
             ModelProvider::Google,
-            GOOGLE_MODELS,
             "google",
             google_default,
             google_enabled,
@@ -1804,6 +1807,7 @@ impl ModelManager {
                 endpoint: provider_endpoint(&settings, &ModelProvider::Anthropic),
             }
         });
+        let resolved = apply_mission_model_override(resolved, &settings, &mission);
 
         info!(
             "Processing message for mission {} with provider={:?} model={} role={:?}",
@@ -1831,38 +1835,35 @@ impl ModelManager {
         };
         let history = effective_history(&history);
 
-        // Check if provider requires key and it's missing -> simulated response
-        let needs_key = matches!(
+        // A Mission that can't reach a provider used to answer with a
+        // fabricated Assistant turn — "here's a simulated response... I would
+        // have: 1. Analyzed the repo, 2. Checked AGENTS.md" — and then marked
+        // the Mission `Review`, as if work had been done and was waiting to be
+        // looked at. Nothing had run. That is the exact "looks like it works"
+        // failure mode this project's conventions exist to prevent, and it was
+        // on the very first turn a new user without a key would ever take.
+        //
+        // Now: a `System` notice (CID speaking, not a model pretending to),
+        // stating only what is true, plus what to configure; and `Failed`,
+        // because the turn genuinely did not run.
+        let missing_config = if matches!(
             resolved.provider,
             ModelProvider::Anthropic | ModelProvider::OpenAI | ModelProvider::Google
-        );
-        if needs_key && resolved.api_key.is_none() {
-            // No key: simulated
-            let simulated = format!(
-                "⚠️ No API key configured for provider {:?}. Current model: {}\n\nTo enable real AI:\n- Anthropic: set ANTHROPIC_API_KEY or add in Settings (Provider: Anthropic)\n- OpenAI: set OPENAI_API_KEY or add in Settings (Provider: OpenAI)\n- Google: set GOOGLE_API_KEY or GEMINI_API_KEY (Provider: Google)\n- OpenAI-Compatible: set endpoint + optional key (covers OpenRouter, Groq, vLLM, Ollama, LM Studio)\n\nFor now, here's a simulated response for your request: \"{}\"\n\nI would have:\n1. Analyzed the repo at `{}`\n2. Checked AGENTS.md and Skills\n3. Proposed a plan for role {:?}\n4. Executed tool calls with your approval\n\nCurrent Settings: planner={:?}/{:?}, implementer={:?}/{:?}, reviewer={:?}/{:?}\n\nPhase 1 multi-provider routing is active: you can swap provider mid-Mission via Settings -> per-role config (Planner/Implementer/Reviewer can each use different provider/model). Change Settings and next message will use new provider.",
-                resolved.provider,
-                resolved.model_id,
-                user_content,
-                repo.path,
-                role,
-                settings.planner_provider, settings.planner_model,
-                settings.implementer_provider, settings.implementer_model,
-                settings.reviewer_provider, settings.reviewer_model,
-            );
-            self.persistence.create_message(
-                mission_id,
-                MessageRole::Assistant,
-                &simulated,
-                vec![],
-            )?;
-            emit_new_message(&app_state, mission_id, &simulated);
-            let _ = self
-                .persistence
-                .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
-            return Ok(());
-        }
-
-        if matches!(
+        ) && resolved.api_key.is_none()
+        {
+            Some(format!(
+                "⚠️ This Mission is routed to {:?} ({}), but no API key is configured, \
+                 so nothing was sent and no work was done.\n\n\
+                 Add a key in Settings → Providers, or set one of:\n\
+                 - Anthropic: ANTHROPIC_API_KEY\n\
+                 - OpenAI: OPENAI_API_KEY\n\
+                 - Google: GOOGLE_API_KEY or GEMINI_API_KEY\n\n\
+                 To use a local or third-party endpoint instead (OpenRouter, Groq, Ollama, \
+                 LM Studio, vLLM), pick the OpenAI-Compatible provider and set its endpoint.\n\n\
+                 Send your message again once that's configured.",
+                resolved.provider, resolved.model_id
+            ))
+        } else if matches!(
             resolved.provider,
             ModelProvider::OpenAICompatible
                 | ModelProvider::Ollama
@@ -1870,20 +1871,29 @@ impl ModelManager {
                 | ModelProvider::LlamaCpp
         ) && resolved.endpoint.is_none()
         {
-            let simulated = format!(
-                "⚠️ No endpoint configured for OpenAI-compatible provider (current provider {:?} model {}).\n\nSet openai_compatible_endpoint in Settings to use OpenRouter (https://openrouter.ai/api/v1), Groq (https://api.groq.com/openai/v1), Ollama (http://localhost:11434/v1), LM Studio (http://localhost:1234/v1), vLLM, etc.\n\nExample endpoints:\n- OpenRouter: https://openrouter.ai/api/v1\n- Groq: https://api.groq.com/openai/v1\n- Ollama: http://localhost:11434/v1\n- LM Studio: http://localhost:1234/v1\n- llama.cpp: http://localhost:8080/v1\n\nFor now simulated response for: \"{}\" in repo {} with role {:?}.",
-                resolved.provider, resolved.model_id, user_content, repo.path, role
-            );
-            self.persistence.create_message(
-                mission_id,
-                MessageRole::Assistant,
-                &simulated,
-                vec![],
-            )?;
-            emit_new_message(&app_state, mission_id, &simulated);
+            Some(format!(
+                "⚠️ This Mission is routed to {:?} ({}), but no endpoint is configured, \
+                 so nothing was sent and no work was done.\n\n\
+                 Set the OpenAI-compatible endpoint in Settings → Providers, for example:\n\
+                 - OpenRouter: https://openrouter.ai/api/v1\n\
+                 - Groq: https://api.groq.com/openai/v1\n\
+                 - Ollama: http://localhost:11434/v1\n\
+                 - LM Studio: http://localhost:1234/v1\n\
+                 - llama.cpp: http://localhost:8080/v1\n\n\
+                 Send your message again once that's configured.",
+                resolved.provider, resolved.model_id
+            ))
+        } else {
+            None
+        };
+
+        if let Some(notice) = missing_config {
+            self.persistence
+                .create_message(mission_id, MessageRole::System, &notice, vec![])?;
+            emit_new_message(&app_state, mission_id, &notice);
             let _ = self
                 .persistence
-                .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                .update_mission_status(mission_id, crate::api::types::MissionStatus::Failed);
             return Ok(());
         }
 
@@ -3177,6 +3187,8 @@ impl ModelManager {
         let resolved = resolve_active_config(&settings, None).ok_or_else(|| {
             anyhow!("No model provider is configured — set one up in Settings before spawning subagents")
         })?;
+        let mission = self.persistence.get_mission(mission_id)?;
+        let resolved = apply_mission_model_override(resolved, &settings, &mission);
 
         let messages_before = self.persistence.list_messages(mission_id)?.len();
 
@@ -3253,21 +3265,19 @@ impl ModelManager {
         // — a subagent's tokens cost exactly as much as the main agent's.
         let usd = estimate_cost_usd(&resolved.provider, &resolved.model_id, usage);
         if usd > 0.0 {
-            if let Ok(mission) = self.persistence.get_mission(mission_id) {
-                if let Ok(repo) = self.persistence.get_repo_channel(&mission.repo_channel_id) {
-                    app_state.governance_manager.record_spend(
-                        &repo.workspace_id,
-                        mission_id,
-                        usd,
-                        Some(format!(
-                            "subagent turn: {:?} {} ({} in / {} out tokens)",
-                            resolved.provider,
-                            resolved.model_id,
-                            usage.input_tokens,
-                            usage.output_tokens
-                        )),
-                    );
-                }
+            if let Ok(repo) = self.persistence.get_repo_channel(&mission.repo_channel_id) {
+                app_state.governance_manager.record_spend(
+                    &repo.workspace_id,
+                    mission_id,
+                    usd,
+                    Some(format!(
+                        "subagent turn: {:?} {} ({} in / {} out tokens)",
+                        resolved.provider,
+                        resolved.model_id,
+                        usage.input_tokens,
+                        usage.output_tokens
+                    )),
+                );
             }
         }
 
@@ -4161,30 +4171,36 @@ mod spend_tracking_tests {
     use axum::{routing::post, Router};
 
     #[test]
-    fn estimate_cost_usd_prices_anthropic_by_model_tier() {
+    fn estimate_cost_usd_prices_anthropic_from_the_real_catalog() {
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
         };
+        // The number the old family heuristic got wrong: sonnet-5 is $2/$10,
+        // not the sonnet-tier $3/$15 it was lumped in with. Since the retired-id
+        // migration made it the default model, every spend figure and every
+        // governance cap decision on the default route was 50% high.
         assert_eq!(
-            estimate_cost_usd(
-                &ModelProvider::Anthropic,
-                "claude-3-5-sonnet-20241022",
-                usage
-            ),
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-sonnet-5", usage),
+            2.0 + 10.0
+        );
+        // sonnet-4-6 genuinely is $3/$15 — proving these are per-model catalog
+        // lookups, not one tier applied to everything named "sonnet".
+        assert_eq!(
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-sonnet-4-6", usage),
             3.0 + 15.0
         );
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::Anthropic, "claude-3-opus-20240229", usage),
-            15.0 + 75.0
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-5", usage),
+            5.0 + 25.0
         );
         assert_eq!(
-            estimate_cost_usd(
-                &ModelProvider::Anthropic,
-                "claude-3-5-haiku-20241022",
-                usage
-            ),
-            0.8 + 4.0
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-4-8", usage),
+            5.0 + 25.0
+        );
+        assert_eq!(
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-haiku-4-5", usage),
+            1.0 + 5.0
         );
     }
 
@@ -4194,13 +4210,15 @@ mod spend_tracking_tests {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
         };
+        // Catalogued, current models — the previous assertions used gpt-4o and
+        // gpt-4o-mini, which the shipped list had already outlived.
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-4o", usage),
-            2.5 + 10.0
+            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6", usage),
+            5.0 + 30.0
         );
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-4o-mini", usage),
-            0.15 + 0.6
+            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.4-mini", usage),
+            0.75 + 4.5
         );
     }
 
@@ -4210,14 +4228,35 @@ mod spend_tracking_tests {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
         };
+        // gemini-1.5-* used to be asserted here. Those models no longer exist,
+        // which is exactly how a stale hardcoded table stays "passing" while
+        // the product offers users ids that 404.
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::Google, "gemini-1.5-flash", usage),
-            0.075 + 0.3
+            estimate_cost_usd(&ModelProvider::Google, "gemini-3.6-flash", usage),
+            1.5 + 7.5
         );
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::Google, "gemini-1.5-pro", usage),
-            1.25 + 5.0
+            estimate_cost_usd(&ModelProvider::Google, "gemini-3.1-pro-preview", usage),
+            2.0 + 12.0
         );
+    }
+
+    #[test]
+    fn an_uncatalogued_model_still_costs_something_rather_than_zero() {
+        // A brand-new or user-pinned id must not silently price at $0 — that
+        // would defeat every dollar-based spend cap.
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+        };
+        assert!(
+            estimate_cost_usd(
+                &ModelProvider::Anthropic,
+                "claude-something-unreleased",
+                usage
+            ) > 0.0
+        );
+        assert!(estimate_cost_usd(&ModelProvider::Google, "gemini-99-pro", usage) > 0.0);
     }
 
     #[test]
@@ -4242,12 +4281,8 @@ mod spend_tracking_tests {
         // cost half as much — catches an accidental flat rate or off-by-a-
         // power-of-ten error in the per-million-token math.
         assert_eq!(
-            estimate_cost_usd(
-                &ModelProvider::Anthropic,
-                "claude-3-5-sonnet-20241022",
-                usage
-            ),
-            1.5
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-sonnet-5", usage),
+            1.0
         );
     }
 
@@ -4773,7 +4808,7 @@ mod tool_execution_tests {
                 vec![],
                 "what's in secret.txt?",
                 "unused-key",
-                "claude-3-5-sonnet-20241022".to_string(),
+                "claude-sonnet-5".to_string(),
                 mock_url,
                 app_state,
                 true, // review_prompt.md §1.2: untrusted content already active
@@ -5128,6 +5163,260 @@ mod tool_execution_tests {
     }
 }
 
+/// An unconfigured provider used to produce a fabricated Assistant turn
+/// ("here's a simulated response... I would have: 1. Analyzed the repo...")
+/// and then mark the Mission `Review`, as though work had completed and was
+/// waiting to be looked at — on the first turn a new user without a key would
+/// ever take. These pin the honest replacement.
+///
+/// Exercises the missing-*endpoint* branch because it is deterministic:
+/// `provider_endpoint` has no environment-variable fallback for
+/// `OpenAICompatible`, whereas the missing-*key* branch would silently not
+/// fire on any machine that happens to export `ANTHROPIC_API_KEY`. Both
+/// branches funnel into the same emit-and-set-status sink, which is what is
+/// actually being asserted here.
+#[cfg(test)]
+mod unconfigured_provider_tests {
+    use super::*;
+
+    async fn run_turn_with_no_endpoint() -> (ModelManager, String) {
+        let core = crate::Core::new_in_memory().unwrap();
+        let manager = ModelManager::new(core.persistence.clone());
+        let app_state = core.app_state();
+
+        let repo = manager
+            .persistence
+            .connect_repo("/tmp/unconfigured-provider-test", None)
+            .unwrap();
+
+        let mut settings = manager.persistence.get_settings().unwrap();
+        settings.implementer_provider = Some("openai_compatible".to_string());
+        settings.openai_compatible_endpoint = None;
+        manager.persistence.update_settings(&settings).unwrap();
+
+        let mission = manager
+            .persistence
+            .create_mission(
+                &repo.id,
+                "Unconfigured",
+                "test",
+                crate::api::types::SessionMode::Shared,
+                crate::api::types::AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+
+        manager
+            .process_message_with_role(&mission.id, "hello", AgentRole::Implementer, app_state)
+            .await
+            .unwrap();
+
+        (manager, mission.id)
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_provider_never_fabricates_an_assistant_turn() {
+        let (manager, mission_id) = run_turn_with_no_endpoint().await;
+        let messages = manager.persistence.list_messages(&mission_id).unwrap();
+
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m.role, MessageRole::Assistant)),
+            "an unconfigured provider must not answer as the assistant"
+        );
+
+        let notice = messages
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::System))
+            .expect("a System notice explaining the missing configuration");
+        let body = notice.content.to_lowercase();
+        assert!(
+            body.contains("no endpoint is configured"),
+            "notice should say what is actually wrong, got: {}",
+            notice.content
+        );
+        for fabrication in ["simulated", "i would have", "phase 1"] {
+            assert!(
+                !body.contains(fabrication),
+                "notice must not narrate work that never happened ({fabrication}): {}",
+                notice.content
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_provider_does_not_mark_the_mission_ready_for_review() {
+        let (manager, mission_id) = run_turn_with_no_endpoint().await;
+        let mission = manager.persistence.get_mission(&mission_id).unwrap();
+
+        assert_eq!(
+            mission.status,
+            crate::api::types::MissionStatus::Failed,
+            "nothing ran, so the Mission must not look like it has work to review"
+        );
+    }
+}
+
+/// Task 3 regression tests: a Mission created with an explicit
+/// `model_provider`/`model_id` override must actually resolve to that model
+/// on its real turns — not just in a resolver nothing calls. Exercises the
+/// exact real call path (`process_message_with_role`) rather than testing
+/// `apply_mission_model_override` in isolation, per this codebase's
+/// documented history of tested-but-unwired resolvers.
+#[cfg(test)]
+mod mission_model_override_tests {
+    use super::*;
+    use axum::{routing::post, Json, Router};
+
+    fn manager_and_state() -> (ModelManager, AppState) {
+        let core = crate::Core::new_in_memory().unwrap();
+        (
+            ModelManager::new(core.persistence.clone()),
+            core.app_state(),
+        )
+    }
+
+    /// An OpenAI-compatible mock that records the `model` field of every
+    /// request body it receives, so a test can assert *which* model id
+    /// actually reached the wire — not just that some call succeeded.
+    async fn start_model_capturing_server() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let sse_body =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":5}}\n\n\
+             data: [DONE]\n\n"
+                .to_string();
+
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let captured = captured_clone.clone();
+                let sse_body = sse_body.clone();
+                async move {
+                    if let Some(model) = payload["model"].as_str() {
+                        captured.lock().unwrap().push(model.to_string());
+                    }
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        sse_body,
+                    )
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        (format!("http://{addr}/chat/completions"), captured)
+    }
+
+    #[tokio::test]
+    async fn a_mission_with_an_explicit_model_id_resolves_to_it_not_the_global_setting() {
+        let (mock_url, captured) = start_model_capturing_server().await;
+        let (manager, app_state) = manager_and_state();
+
+        let repo = manager
+            .persistence
+            .connect_repo("/tmp/model-override-test", None)
+            .unwrap();
+
+        // Global setting: Implementer role defaults to a model this test
+        // never expects to see on the wire.
+        let mut settings = manager.persistence.get_settings().unwrap();
+        settings.implementer_provider = Some("openai_compatible".to_string());
+        settings.implementer_model = Some("global-default-model".to_string());
+        settings.openai_compatible_endpoint = Some(mock_url);
+        manager.persistence.update_settings(&settings).unwrap();
+
+        let mission = manager
+            .persistence
+            .create_mission(
+                &repo.id,
+                "Override test",
+                "test",
+                crate::api::types::SessionMode::Shared,
+                crate::api::types::AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+        // Mirrors what `handle_mission_create` does when `CreateMissionParams`
+        // carries `model_provider`/`model_id`.
+        manager
+            .persistence
+            .update_mission_model(
+                &mission.id,
+                Some("openai_compatible".to_string()),
+                Some("mission-pinned-model".to_string()),
+            )
+            .unwrap();
+
+        manager
+            .process_message_with_role(
+                &mission.id,
+                "hello",
+                AgentRole::Implementer,
+                app_state.clone(),
+            )
+            .await
+            .unwrap();
+
+        let seen = captured.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec!["mission-pinned-model".to_string()],
+            "the Mission's own model_id override must reach the provider call, \
+             not the role's global implementer_model"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mission_without_an_override_uses_the_global_setting() {
+        let (mock_url, captured) = start_model_capturing_server().await;
+        let (manager, app_state) = manager_and_state();
+
+        let repo = manager
+            .persistence
+            .connect_repo("/tmp/model-no-override-test", None)
+            .unwrap();
+
+        let mut settings = manager.persistence.get_settings().unwrap();
+        settings.implementer_provider = Some("openai_compatible".to_string());
+        settings.implementer_model = Some("global-default-model".to_string());
+        settings.openai_compatible_endpoint = Some(mock_url);
+        manager.persistence.update_settings(&settings).unwrap();
+
+        let mission = manager
+            .persistence
+            .create_mission(
+                &repo.id,
+                "No override",
+                "test",
+                crate::api::types::SessionMode::Shared,
+                crate::api::types::AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+
+        manager
+            .process_message_with_role(
+                &mission.id,
+                "hello",
+                AgentRole::Implementer,
+                app_state.clone(),
+            )
+            .await
+            .unwrap();
+
+        let seen = captured.lock().unwrap().clone();
+        assert_eq!(seen, vec!["global-default-model".to_string()]);
+    }
+}
+
 /// Regression tests for review_prompt.md §3.1: the full message history was
 /// sent on every turn with no summarization, truncation, or token
 /// accounting at all — a long Mission would grow until it exceeded the
@@ -5165,23 +5454,30 @@ mod context_compaction_tests {
 
     #[test]
     fn context_window_tokens_gives_a_real_figure_per_provider() {
+        // From the catalog, per model. This previously asserted a flat 200_000
+        // for every Anthropic model — so on a 1M-window model, compaction fired
+        // at 140k and summarized away context the model could still hold.
         assert_eq!(
-            context_window_tokens(&ModelProvider::Anthropic, "claude-3-5-sonnet-20241022"),
-            200_000
-        );
-        assert_eq!(
-            context_window_tokens(&ModelProvider::OpenAI, "gpt-4o"),
-            128_000
-        );
-        assert_eq!(
-            context_window_tokens(&ModelProvider::Google, "gemini-1.5-pro"),
+            context_window_tokens(&ModelProvider::Anthropic, "claude-sonnet-5"),
             1_000_000
+        );
+        assert_eq!(
+            context_window_tokens(&ModelProvider::Anthropic, "claude-haiku-4-5"),
+            200_000,
+            "and a genuinely 200k model must still read as 200k"
+        );
+        assert_eq!(
+            context_window_tokens(&ModelProvider::Google, "gemini-3.6-flash"),
+            1_048_576
         );
         // Unknown/local models get a conservative default, not an assumed-huge one.
         assert_eq!(
             context_window_tokens(&ModelProvider::OpenAICompatible, "some-local-model"),
             8_192
         );
+        // An uncatalogued id falls back to the per-provider constant rather
+        // than to zero, which would make compaction fire on every turn.
+        assert!(context_window_tokens(&ModelProvider::OpenAI, "gpt-unreleased") >= 128_000);
     }
 
     #[test]
@@ -5272,7 +5568,7 @@ mod context_compaction_tests {
             "system prompt",
             &history,
             &ModelProvider::Anthropic,
-            "claude-3-5-sonnet-20241022",
+            "claude-sonnet-5",
         );
         assert!(
             result.is_none(),

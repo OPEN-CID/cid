@@ -111,6 +111,14 @@ async fn main() -> Result<()> {
     core.set_access_policy(policy);
     cid_core::observability::install_panic_hook(core.crash_log.clone());
 
+    // Best-effort, non-blocking: pulls the current model catalog (ids, context
+    // windows, real per-token pricing) so the picker and every spend estimate
+    // stop depending on a snapshot compiled into the binary. Started here
+    // rather than in `Core::new` because it needs a Tokio runtime, and
+    // `Core::new` is called from sync contexts and tests. Offline is fine —
+    // the cached or bundled catalog stands and a warning is logged.
+    cid_core::model::catalog::refresh_in_background();
+
     let addr = SocketAddr::new(args.host, args.port);
     println!("CID Core v{}", env!("CARGO_PKG_VERSION"));
     println!("  WS:       ws://{addr}/ws  (JSON-RPC 2.0)");
