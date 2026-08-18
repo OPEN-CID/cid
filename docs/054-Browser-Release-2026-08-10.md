@@ -6,7 +6,36 @@ have to do?** Everything below was run for real on this machine this session —
 last session (`docs/053-Production-Readiness-Review.md` §3a/§5) and re-verifies the
 whole stack on top of it.
 
-**Update, same day, opened as PR #4**: committing this work and pushing it through real
+**Update 2026-08-18 — release day, still PR #4.** Clearing the advisories before merge
+turned up a defect that would have broken Option C's very first step. Both fixed in this
+pass, before merge:
+
+- **`Cargo.lock` was gitignored and absent from the repo.** The `Dockerfile`'s third
+  instruction is `COPY Cargo.toml Cargo.lock ./`, and Coolify builds from a fresh clone —
+  so §3 Option C's resource 1 could never have built, failing on a missing file. `docs/053`
+  §4's "every `COPY` source exists" check was run against a *working tree*, which has the
+  file; the repository does not. Now committed, with `.gitignore` corrected. **This is the
+  same class of bug this repo keeps finding: verify against the artifact the consumer
+  actually gets, not the one on your disk.**
+- **`h2` 0.4.15 → 0.4.16** (RUSTSEC-2026-0258, published 2026-08-17). Worth noting *why*
+  CI was green on this while a local `cargo audit` failed: with no lockfile committed,
+  every build resolved its own versions, so CI happened to pick the patched release and
+  this machine did not. The two only agree now that the lock is pinned.
+- **npm: 4 advisories → 0** (`js-yaml` 4.3.0→4.3.1 and `nanoid` 3.3.16→3.3.18, both high;
+  `dompurify` 3.4.12→3.4.13 via `monaco-editor`, moderate). Lockfile-only patch bumps.
+- **Still open, unchanged:** 25 `cargo audit` warnings — `unmaintained`/`unsound` notices,
+  not vulnerabilities, and not suppressed. 11 are the GTK3 bindings Tauri v2 requires on
+  Linux (no upgrade exists upstream); the rest are `git2` 0.19, `lru`, `paste`, `instant`,
+  and the `unic-*` family. Clearing `git2` means a major-version bump with real API churn —
+  deliberately not done on release day.
+- **A footgun in Option C's Build Variables**, for whoever hits it: `VITE_CID_CORE_PORT`
+  must be *empty*, and `api.ts` reads it with `??`, so an empty string works but an
+  *absent* variable falls back to `5919` and produces `wss://cid-core.opencid.dev:5919/ws`
+  — which Traefik does not serve. If Coolify drops the empty value, set it to `443`
+  instead; `wss://host:443/ws` is equivalent and unambiguous. The console check in
+  §3 Option C's Verify step catches this.
+
+**Update 2026-08-10, opened as PR #4**: committing this work and pushing it through real
 CI (rather than only this machine) caught two things neither local testing nor the
 sections below originally covered, both fixed before merge:
 
