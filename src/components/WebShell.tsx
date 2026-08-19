@@ -17,11 +17,14 @@ import {
 
 type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
 
+/// Mirrors what /health actually returns. `uptime`, `active_missions`, and
+/// `platform` used to be read off that response and rendered as 0/0/unknown on
+/// every install, because Core has never sent them — uptime is real now, and
+/// the mission count comes from the store, which does have it.
 interface HealthInfo {
-  uptime: number;
+  uptimeSeconds: number;
   connectedClients: number;
-  activeMissions: number;
-  platform: string;
+  version: string;
 }
 
 export function WebShellProvider({ children }: { children: React.ReactNode }) {
@@ -34,6 +37,9 @@ export function ConnectionBanner() {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [retryCount, setRetryCount] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenSaved, setTokenSaved] = useState(() => api.hasAuthToken());
 
   useEffect(() => {
     if (connected) {
@@ -43,6 +49,25 @@ export function ConnectionBanner() {
       setStatus("disconnected");
     }
   }, [connected]);
+
+  // /health is unauthenticated by design, so it can tell us *why* we are not
+  // connected: without this the browser only ever sees an opaque closed socket
+  // (a rejected WebSocket upgrade is indistinguishable from Core being down).
+  useEffect(() => {
+    if (connected) return;
+    let cancelled = false;
+    api
+      .health()
+      .then((h) => {
+        if (!cancelled) setAuthRequired(!!h.auth_required);
+      })
+      .catch(() => {
+        if (!cancelled) setAuthRequired(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, retryCount]);
 
   const handleRetry = useCallback(async () => {
     setStatus("connecting");
@@ -130,6 +155,40 @@ export function ConnectionBanner() {
           {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
       </div>
+      {authRequired && (
+        <form
+          className="px-4 pb-3 flex flex-wrap items-center gap-2 border-t border-border/50 pt-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!tokenInput.trim()) return;
+            api.setAuthToken(tokenInput);
+            setTokenSaved(true);
+            setTokenInput("");
+            handleRetry();
+          }}
+        >
+          <label htmlFor="cid-access-token" className="text-xs text-muted-foreground">
+            {tokenSaved
+              ? "Core rejected the saved access token — paste a current one:"
+              : "Core requires an access token:"}
+          </label>
+          <input
+            id="cid-access-token"
+            type="password"
+            autoComplete="off"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="Paste the token Core was started with"
+            className="flex-1 min-w-[16rem] bg-background border border-border rounded px-2 py-1 text-xs"
+          />
+          <button
+            type="submit"
+            className="text-xs border border-border rounded px-2 py-1 hover:bg-muted"
+          >
+            Save and reconnect
+          </button>
+        </form>
+      )}
       {expanded && (
         <div className="px-4 pb-3 space-y-2 border-t border-border/50">
           <p className="text-xs text-muted-foreground">
@@ -137,7 +196,7 @@ export function ConnectionBanner() {
             <code className="bg-muted px-1.5 py-0.5 rounded text-[11px]">npm run dev:core</code>
           </p>
           <p className="text-xs text-muted-foreground">
-            Target: <span className="text-foreground">ws://127.0.0.1:5919/ws</span>
+            Target: <span className="text-foreground">{api.socketUrl}</span>
           </p>
         </div>
       )}
@@ -147,19 +206,23 @@ export function ConnectionBanner() {
 
 /** Health dashboard showing Core stats */
 export function HealthDashboard() {
-  const { connected } = useCid();
+  const { connected, missions } = useCid();
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [showDashboard, setShowDashboard] = useState(false);
 
+  // MissionStatus serializes snake_case (cid-core/src/api/types.rs) — these are
+  // its three terminal states, everything else is still in flight.
+  const activeMissions = missions.filter(
+    (m) => !["done", "failed", "closed"].includes(m.status),
+  ).length;
+
   const fetchHealth = useCallback(async () => {
     try {
-      const resp = await fetch("http://127.0.0.1:5919/health");
-      const data = await resp.json();
+      const data = await api.health();
       setHealth({
-        uptime: data.uptime || 0,
-        connectedClients: data.connected_clients || 0,
-        activeMissions: data.active_missions || 0,
-        platform: data.platform || navigator.platform,
+        uptimeSeconds: data.uptime_seconds ?? 0,
+        connectedClients: data.connected_clients ?? 0,
+        version: data.version ?? "unknown",
       });
     } catch {
       setHealth(null);
@@ -219,7 +282,7 @@ export function HealthDashboard() {
                     <Clock className="w-3 h-3" />
                     Uptime
                   </span>
-                  <span className="font-medium">{formatUptime(health.uptime)}</span>
+                  <span className="font-medium">{formatUptime(health.uptimeSeconds)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground flex items-center gap-1.5">
@@ -231,9 +294,9 @@ export function HealthDashboard() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground flex items-center gap-1.5">
                     <Activity className="w-3 h-3" />
-                    Active Missions
+                    Active (this repo)
                   </span>
-                  <span className="font-medium">{health.activeMissions}</span>
+                  <span className="font-medium">{activeMissions}</span>
                 </div>
               </>
             )}
@@ -266,14 +329,13 @@ export function AccessControlPanel() {
     version?: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenSaved, setTokenSaved] = useState(() => api.hasAuthToken());
 
   useEffect(() => {
-    const port = import.meta.env.VITE_CID_CORE_PORT || "5919";
-    const host = import.meta.env.VITE_CID_CORE_HOST || "127.0.0.1";
     const fetchHealth = async () => {
       try {
-        const resp = await fetch(`http://${host}:${port}/health`);
-        setHealth(await resp.json());
+        setHealth(await api.health());
         setError(null);
       } catch (e) {
         setError(String(e));
@@ -342,6 +404,60 @@ export function AccessControlPanel() {
               <code>--auth-token</code>.
             </span>
           </div>
+        )}
+
+        {authRequired && (
+          <form
+            className="border rounded px-2.5 py-2 space-y-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!tokenInput.trim()) return;
+              api.setAuthToken(tokenInput);
+              setTokenSaved(true);
+              setTokenInput("");
+              api.connect().catch(() => {});
+            }}
+          >
+            <label htmlFor="cid-access-token-settings" className="font-medium block">
+              This browser&apos;s access token
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Kept in this browser&apos;s local storage, never in the app bundle — each person
+              pastes their own copy on their own device.
+            </p>
+            <div className="flex gap-2">
+              <input
+                id="cid-access-token-settings"
+                type="password"
+                autoComplete="off"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder={tokenSaved ? "Replace the stored token" : "Paste the token"}
+                className="flex-1 bg-background border border-border rounded px-2 py-1 text-xs"
+              />
+              <button
+                type="submit"
+                className="text-xs border border-border rounded px-2 py-1 hover:bg-muted"
+              >
+                Save
+              </button>
+              {tokenSaved && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    api.setAuthToken(null);
+                    setTokenSaved(false);
+                  }}
+                  className="text-xs border border-border rounded px-2 py-1 hover:bg-muted"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {tokenSaved ? "A token is stored for this browser." : "No token stored yet."}
+            </p>
+          </form>
         )}
 
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

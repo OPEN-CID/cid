@@ -80,6 +80,7 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<String>,
     pub metrics: Arc<crate::observability::Metrics>,
     pub crash_log: Arc<crate::observability::CrashLog>,
+    pub started_at: std::time::Instant,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -144,6 +145,7 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
         "service": "cid-core",
         "version": env!("CARGO_PKG_VERSION"),
         "connected_clients": state.connected_clients.load(std::sync::atomic::Ordering::Relaxed),
+        "uptime_seconds": state.started_at.elapsed().as_secs(),
         "auth_required": state.access_policy.requires_auth(),
         "loopback_only": state.access_policy.is_loopback_only(),
     }))
@@ -181,10 +183,27 @@ async fn ws_handler(
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     // A WebSocket upgrade is authorized before the socket exists — once open it
-    // carries the same authority as the HTTP surface.
-    if let Err(reason) = check_access(&state, &headers) {
+    // carries the same authority as the HTTP surface. A browser cannot set the
+    // Authorization header here, so the policy also accepts the token as a
+    // `cid.bearer.*` subprotocol (see AccessPolicy::authorize_websocket).
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    let protocols = headers
+        .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok());
+
+    let authorization = state.access_policy.authorize_websocket(auth, protocols);
+    if let AccessDecision::Denied(reason) = authorization.decision {
         return (axum::http::StatusCode::UNAUTHORIZED, reason).into_response();
     }
+
+    // Echoing the offered subprotocol is required for the handshake to be
+    // accepted by the client that sent it.
+    let ws = match authorization.selected_protocol {
+        Some(protocol) => ws.protocols([protocol]),
+        None => ws,
+    };
     ws.on_upgrade(move |socket| handle_ws(socket, state))
         .into_response()
 }

@@ -134,9 +134,33 @@ boundary.
 cid-core --host 0.0.0.0 --auth-token "$(cid-core --generate-token)"
 ```
 
-When a token is configured, both `/api/rpc` and the `/ws` upgrade require
-`Authorization: Bearer <token>`. Comparison is constant-time. `/health` stays open and
-reports only reachability, version, connected client count, and whether auth is required.
+When a token is configured, both `/api/rpc` and the `/ws` upgrade require the token.
+Comparison is constant-time. `/health` stays open and reports only reachability, version,
+uptime, connected client count, and whether auth is required.
+
+Two ways to present it, because a browser can only use the second:
+
+| Client | Channel |
+|---|---|
+| Native (TUI, curl, desktop shell, any HTTP client) | `Authorization: Bearer <token>` |
+| Browser WebSocket | `Sec-WebSocket-Protocol: cid.bearer.<base64url(token)>` |
+
+`new WebSocket(...)` cannot set request headers — the subprotocol list is the only part
+of the handshake a browser controls. Until this existed the web client could not
+authenticate at all, so *any* Core it could reach was one that required no token: every
+hosted deployment failed with an opaque closed socket. The header is still accepted and
+still wins when both are present, so a malformed subprotocol cannot downgrade a valid
+header.
+
+The token is base64url-encoded there only because a subprotocol must be a valid HTTP
+token; this is encoding, not encryption. It is the same secret over the same handshake as
+the header, and it is deliberately **not** a `?token=` query parameter — those land in
+access logs, proxy logs, and `Referer` headers.
+
+In the browser the token is stored in `localStorage` and pasted per device. It is
+deliberately not a `VITE_*` build variable: those are inlined into a bundle that anyone
+who can load the page can download, which would publish the secret that grants full
+control of Core.
 
 CORS is an explicit origin allow-list (the local desktop and web shell origins by
 default, extended with `--allow-origin`), not `Any`. Without this, any web page the user

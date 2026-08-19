@@ -59,6 +59,42 @@ export type JsonRpcNotification = {
 
 type NotificationHandler = (notif: JsonRpcNotification) => void;
 
+/// Where the bearer token lives. Deliberately localStorage and not a build-time
+/// variable: a `VITE_*` value is inlined into a bundle anyone can download, so
+/// hosting the web client would publish the secret that grants full control of
+/// Core. Each person pastes their own copy on their own device instead.
+const AUTH_TOKEN_KEY = "cid.auth_token";
+
+/// Thrown when Core rejects the credentials, so the UI can prompt for a token
+/// rather than reporting a generic failure the user cannot act on.
+export class AuthRequiredError extends Error {
+  constructor(message = "Core requires an access token") {
+    super(message);
+    this.name = "AuthRequiredError";
+  }
+}
+
+/// A browser cannot set request headers on a WebSocket handshake, so the token
+/// travels as a subprotocol instead — base64url because a subprotocol must be a
+/// valid HTTP token. Mirrors `ws_bearer_protocol` in cid-core/src/access/mod.rs.
+export function wsBearerProtocol(token: string): string {
+  const bytes = new TextEncoder().encode(token);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `cid.bearer.${encoded}`;
+}
+
+function readStoredToken(): string | null {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    // Storage can be unavailable (private mode, embedded webview) — the client
+    // still works against a Core that needs no token.
+    return null;
+  }
+}
+
 class CidApiClient {
   private ws: WebSocket | null = null;
   private httpBase: string;
@@ -68,6 +104,8 @@ class CidApiClient {
   private notificationHandlers = new Set<NotificationHandler>();
   private reconnectAttempts = 0;
   private isTauri = false;
+  private token: string | null = null;
+  private healthBase: string;
 
   constructor() {
     const port = import.meta.env.VITE_CID_CORE_PORT ?? "5919";
@@ -84,7 +122,60 @@ class CidApiClient {
     const portSuffix = port ? `:${port}` : "";
     this.wsUrl = `${secure ? "wss" : "ws"}://${host}${portSuffix}/ws`;
     this.httpBase = `${secure ? "https" : "http"}://${host}${portSuffix}`;
+    this.healthBase = this.httpBase;
     this.isTauri = !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
+    this.token = readStoredToken();
+  }
+
+  /// Core's unauthenticated status endpoint. Exposed so callers reuse the one
+  /// place that knows the scheme/host/port, rather than rebuilding the URL and
+  /// getting `http://` wrong on a TLS-fronted deployment.
+  get healthUrl(): string {
+    return `${this.healthBase}/health`;
+  }
+
+  get socketUrl(): string {
+    return this.wsUrl;
+  }
+
+  async health(): Promise<{
+    auth_required?: boolean;
+    loopback_only?: boolean;
+    connected_clients?: number;
+    uptime_seconds?: number;
+    version?: string;
+  }> {
+    const resp = await fetch(this.healthUrl);
+    if (!resp.ok) throw new Error(`Health check failed: ${resp.status}`);
+    return resp.json();
+  }
+
+  hasAuthToken(): boolean {
+    return !!this.token;
+  }
+
+  /// Store (or clear, with null) the bearer token and drop the current socket
+  /// so the next connect negotiates with the new credentials.
+  setAuthToken(token: string | null): void {
+    const trimmed = token?.trim() || null;
+    this.token = trimmed;
+    try {
+      if (trimmed) {
+        localStorage.setItem(AUTH_TOKEN_KEY, trimmed);
+      } else {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+      }
+    } catch {
+      // Non-persistent is still usable for this tab.
+    }
+    if (this.ws) {
+      // Prevents the old socket's onclose from racing a reconnect with stale
+      // credentials against the caller's own reconnect.
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.reconnectAttempts = 0;
   }
 
   async connect(): Promise<void> {
@@ -97,7 +188,9 @@ class CidApiClient {
 
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.wsUrl);
+        this.ws = this.token
+          ? new WebSocket(this.wsUrl, [wsBearerProtocol(this.token)])
+          : new WebSocket(this.wsUrl);
 
         this.ws.onopen = () => {
           console.log(`[CID] Connected to core at ${this.wsUrl}`);
@@ -214,11 +307,20 @@ class CidApiClient {
       method,
       params,
     };
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.token) {
+      headers["Authorization"] = `Bearer ${this.token}`;
+    }
     const resp = await fetch(`${this.httpBase}/api/rpc`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(req),
     });
+    if (resp.status === 401) {
+      throw new AuthRequiredError(
+        this.token ? "Access token rejected by Core" : "Core requires an access token",
+      );
+    }
     if (!resp.ok) {
       throw new Error(`HTTP RPC failed: ${resp.status}`);
     }

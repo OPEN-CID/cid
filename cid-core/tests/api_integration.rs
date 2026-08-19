@@ -2724,3 +2724,172 @@ mod fs_list_dirs {
         );
     }
 }
+
+/// A browser cannot set request headers on a WebSocket handshake, so Core also
+/// accepts the bearer token as a `cid.bearer.*` subprotocol. These tests drive a
+/// real Core over a real socket, because the gap they cover — the web client
+/// could never authenticate at all — survived a full unit-tested access module
+/// and only shows up in an actual handshake.
+mod websocket_bearer_auth {
+    use super::*;
+    use cid_core::access::{ws_bearer_protocol, AccessPolicy};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    const TOKEN: &str = "integration-test-token";
+
+    /// Loopback Core that still demands a token — a token is *permitted* on
+    /// loopback and only *required* off it, which keeps this test free of a
+    /// real network bind.
+    async fn start_core_with_token() -> String {
+        let mut core = Core::new_in_memory().expect("core creation");
+        core.set_access_policy(
+            AccessPolicy::new(
+                "127.0.0.1".parse().unwrap(),
+                Some(TOKEN.to_string()),
+                vec![],
+            )
+            .expect("policy"),
+        );
+        let app = cid_core::api::router::create_router(core.app_state());
+        let listener = tokio::net::TcpListener::bind::<SocketAddr>("127.0.0.1:0".parse().unwrap())
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            let _core = core;
+            let _ = axum::serve(listener, app.into_make_service()).await;
+        });
+
+        for _ in 0..150 {
+            if reqwest::get(format!("http://{addr}/health")).await.is_ok() {
+                return addr.to_string();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("core did not become reachable");
+    }
+
+    #[tokio::test]
+    async fn browser_subprotocol_token_opens_a_working_socket() {
+        let addr = start_core_with_token().await;
+        let protocol = ws_bearer_protocol(TOKEN);
+
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            protocol.parse().expect("header value"),
+        );
+
+        let (mut socket, response) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("handshake with a valid subprotocol token must succeed");
+
+        // The server has to echo the selection back or the client fails the
+        // negotiation — omitting it was the subtle half of this feature.
+        assert_eq!(
+            response
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|v| v.to_str().ok()),
+            Some(protocol.as_str()),
+        );
+
+        // Prove the socket carries real RPC, not just that it opened.
+        use futures::{SinkExt, StreamExt};
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"jsonrpc": "2.0", "id": "1", "method": "repo.list", "params": {}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send rpc");
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+            .await
+            .expect("rpc reply before timeout")
+            .expect("stream item")
+            .expect("ws message");
+        let body: Value = serde_json::from_str(reply.to_text().expect("text frame")).unwrap();
+        assert!(
+            body.get("result").is_some(),
+            "authenticated socket must serve RPC, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_without_credentials_is_rejected() {
+        let addr = start_core_with_token().await;
+        let request = format!("ws://{addr}/ws").into_client_request().unwrap();
+
+        match tokio_tungstenite::connect_async(request).await {
+            Ok(_) => panic!("an unauthenticated handshake must not succeed"),
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 401)
+            }
+            Err(other) => panic!("expected an HTTP 401, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_with_a_wrong_subprotocol_token_is_rejected() {
+        let addr = start_core_with_token().await;
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            ws_bearer_protocol("not-the-token")
+                .parse()
+                .expect("header value"),
+        );
+
+        match tokio_tungstenite::connect_async(request).await {
+            Ok(_) => panic!("a wrong token must not succeed"),
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), 401)
+            }
+            Err(other) => panic!("expected an HTTP 401, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_rpc_still_requires_the_authorization_header() {
+        let addr = start_core_with_token().await;
+        let client = reqwest::Client::new();
+        let body = json!({"jsonrpc": "2.0", "id": "1", "method": "repo.list", "params": {}});
+
+        let unauthenticated = client
+            .post(format!("http://{addr}/api/rpc"))
+            .json(&body)
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(unauthenticated.status(), 401);
+
+        let authenticated = client
+            .post(format!("http://{addr}/api/rpc"))
+            .bearer_auth(TOKEN)
+            .json(&body)
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(authenticated.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn health_stays_reachable_so_a_client_can_learn_a_token_is_needed() {
+        let addr = start_core_with_token().await;
+        let health: Value = reqwest::get(format!("http://{addr}/health"))
+            .await
+            .expect("health request")
+            .json()
+            .await
+            .expect("json");
+
+        assert_eq!(health["auth_required"], json!(true));
+        assert!(
+            health["uptime_seconds"].is_u64(),
+            "uptime must be real, not a field the UI invents: {health}"
+        );
+    }
+}
