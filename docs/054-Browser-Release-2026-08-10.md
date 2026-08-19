@@ -28,6 +28,19 @@ pass, before merge:
   Linux (no upgrade exists upstream); the rest are `git2` 0.19, `lru`, `paste`, `instant`,
   and the `unic-*` family. Clearing `git2` means a major-version bump with real API churn —
   deliberately not done on release day.
+- **Option C could not have worked at all, for a reason no test covered.** Core requires
+  `Authorization: Bearer <token>` on `/api/rpc` *and* on the `/ws` upgrade whenever a
+  token is set (`router.rs`), a container always binds `0.0.0.0` so a token is always
+  mandatory there — and the browser client sent no credentials on either transport, with
+  no way to. `new WebSocket(...)` cannot set request headers at all. So every hosted
+  deployment would have failed with a 401 and an opaque closed socket, and Option B's
+  `--host 0.0.0.0` shape was broken the same way. Invisible until now because every
+  environment ever tested (local dev, Tauri, E2E) is loopback with no token.
+  **Fixed this session**: Core also accepts the token as a `cid.bearer.<base64url>`
+  WebSocket subprotocol — the only channel a browser controls — and the web client stores
+  a pasted token in `localStorage` and sends it on both transports. `SECURITY.md` §2 has
+  the table. Verified in a real Chromium against a real token-protected Core: 6/6 checks,
+  including that a *wrong* token still fails.
 - **A footgun in Option C's Build Variables**, for whoever hits it: `VITE_CID_CORE_PORT`
   must be *empty*, and `api.ts` reads it with `??`, so an empty string works but an
   *absent* variable falls back to `5919` and produces `wss://cid-core.opencid.dev:5919/ws`
@@ -231,12 +244,16 @@ vars for a hosted deploy: `VITE_CID_CORE_HOST=cid-core.opencid.dev`,
 the actual client bundle separately, since a build-variable mistake shows up in the
 bundle, not the server):
 
-1. `https://cid-core.opencid.dev/health` returns `200`.
-2. Open `https://cid.opencid.dev`, open the browser console: `[CID] Connected to core at
-   wss://cid-core.opencid.dev/ws` — if it instead says `ws://` (not `wss://`) or shows a
-   host of `127.0.0.1`, the Build Variables weren't set as *build* variables and the
-   bundle needs rebuilding, not just redeploying.
-3. Connect a repo, create a Mission, confirm a message round-trips — the real golden
+1. `https://cid-core.opencid.dev/health` returns `200`, with `"auth_required": true`.
+2. Open `https://cid.opencid.dev`. The banner asks for an access token — paste the same
+   `CID_AUTH_TOKEN` value from resource 1 and press **Save and reconnect**. It is stored
+   in that browser's `localStorage`, so each person does this once per device; it is
+   never baked into the bundle.
+3. Browser console: `[CID] Connected to core at wss://cid-core.opencid.dev/ws` — if it
+   instead says `ws://` (not `wss://`) or shows a host of `127.0.0.1`, the Build Variables
+   weren't set as *build* variables and the bundle needs rebuilding, not just redeploying.
+   If the banner keeps asking for a token, the token is wrong, not the deployment.
+4. Connect a repo, create a Mission, confirm a message round-trips — the real golden
    path, not just a reachable socket.
 
 This Option C was **not verified end-to-end this session** — it depends on Coolify/Oracle

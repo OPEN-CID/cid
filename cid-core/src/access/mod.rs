@@ -109,9 +109,97 @@ impl AccessPolicy {
         }
     }
 
+    /// Check a WebSocket handshake, which cannot rely on `Authorization`.
+    ///
+    /// A browser has no way to set request headers on `new WebSocket(...)` —
+    /// the subprotocol list is the only part of the handshake it controls. So a
+    /// browser client presents its token as `cid.bearer.<base64url>` and Core
+    /// accepts it there in addition to (never instead of) the header, which
+    /// native clients still use. The token is base64url-encoded because a
+    /// subprotocol must be an HTTP token: no spaces, commas, or non-ASCII.
+    ///
+    /// This is the same secret over the same TLS-protected handshake as the
+    /// header, and unlike a `?token=` query parameter it stays out of URLs,
+    /// access logs, and `Referer`. See `SECURITY.md` §2.
+    pub fn authorize_websocket(
+        &self,
+        auth_header: Option<&str>,
+        protocol_header: Option<&str>,
+    ) -> WsAuthorization {
+        let offered = protocol_header.and_then(|h| {
+            h.split(',')
+                .map(str::trim)
+                .find(|p| p.starts_with(WS_BEARER_PREFIX))
+                .map(str::to_string)
+        });
+
+        // The header wins when present, so native clients keep their existing
+        // path and a malformed subprotocol can never downgrade a valid header.
+        if auth_header.is_some() || offered.is_none() {
+            return WsAuthorization {
+                decision: self.authorize(auth_header),
+                selected_protocol: offered,
+            };
+        }
+
+        let expected = match &self.token {
+            None => {
+                return WsAuthorization {
+                    decision: AccessDecision::Allowed,
+                    selected_protocol: offered,
+                }
+            }
+            Some(t) => t,
+        };
+
+        let decision = match offered.as_deref().and_then(decode_ws_bearer) {
+            None => AccessDecision::Denied("Malformed cid.bearer WebSocket subprotocol"),
+            Some(p) if constant_time_eq(p.as_bytes(), expected.as_bytes()) => {
+                AccessDecision::Allowed
+            }
+            Some(_) => AccessDecision::Denied("Invalid access token"),
+        };
+
+        WsAuthorization {
+            decision,
+            selected_protocol: offered,
+        }
+    }
+
     pub fn origin_allowed(&self, origin: &str) -> bool {
         self.allowed_origins.iter().any(|o| o == origin || o == "*")
     }
+}
+
+/// Subprotocol prefix carrying a bearer token through a WebSocket handshake.
+pub const WS_BEARER_PREFIX: &str = "cid.bearer.";
+
+/// Outcome of a WebSocket handshake check.
+pub struct WsAuthorization {
+    pub decision: AccessDecision,
+    /// The subprotocol to echo in the response. RFC 6455 requires the server to
+    /// select from what the client offered; omitting it leaves `ws.protocol`
+    /// empty on the client, which some clients treat as a failed negotiation.
+    pub selected_protocol: Option<String>,
+}
+
+/// Build the subprotocol a client offers for `token`. Shared with the tests and
+/// any non-browser client that prefers the subprotocol path.
+pub fn ws_bearer_protocol(token: &str) -> String {
+    use base64::Engine;
+    format!(
+        "{WS_BEARER_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token)
+    )
+}
+
+fn decode_ws_bearer(protocol: &str) -> Option<String> {
+    use base64::Engine;
+    let encoded = protocol.strip_prefix(WS_BEARER_PREFIX)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -182,6 +270,97 @@ mod tests {
         );
         assert_eq!(
             policy.authorize(Some("Bearer s3cret-token")),
+            AccessDecision::Allowed
+        );
+    }
+
+    fn token_policy(token: &str) -> AccessPolicy {
+        AccessPolicy::new(
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            Some(token.into()),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn websocket_accepts_the_token_as_a_subprotocol() {
+        let policy = token_policy("s3cret-token");
+        let offered = ws_bearer_protocol("s3cret-token");
+
+        let authz = policy.authorize_websocket(None, Some(&offered));
+        assert_eq!(authz.decision, AccessDecision::Allowed);
+        // Must be echoed verbatim or the client fails the negotiation.
+        assert_eq!(authz.selected_protocol.as_deref(), Some(offered.as_str()));
+    }
+
+    #[test]
+    fn websocket_rejects_a_wrong_or_malformed_subprotocol() {
+        let policy = token_policy("s3cret-token");
+
+        assert_eq!(
+            policy
+                .authorize_websocket(None, Some(&ws_bearer_protocol("wrong")))
+                .decision,
+            AccessDecision::Denied("Invalid access token")
+        );
+        assert_eq!(
+            policy
+                .authorize_websocket(None, Some("cid.bearer.!!!not-base64!!!"))
+                .decision,
+            AccessDecision::Denied("Malformed cid.bearer WebSocket subprotocol")
+        );
+        // No header and no subprotocol is the browser's pre-token state.
+        assert_eq!(
+            policy.authorize_websocket(None, None).decision,
+            AccessDecision::Denied("Missing Authorization: Bearer <token> header")
+        );
+    }
+
+    #[test]
+    fn websocket_picks_the_bearer_entry_out_of_a_multi_protocol_offer() {
+        let policy = token_policy("s3cret-token");
+        let offered = format!("chat, {}, superchat", ws_bearer_protocol("s3cret-token"));
+
+        let authz = policy.authorize_websocket(None, Some(&offered));
+        assert_eq!(authz.decision, AccessDecision::Allowed);
+        assert_eq!(
+            authz.selected_protocol.as_deref(),
+            Some(ws_bearer_protocol("s3cret-token").as_str())
+        );
+    }
+
+    #[test]
+    fn websocket_header_still_wins_over_a_bad_subprotocol() {
+        let policy = token_policy("s3cret-token");
+        let authz =
+            policy.authorize_websocket(Some("Bearer s3cret-token"), Some("cid.bearer.garbage"));
+        assert_eq!(authz.decision, AccessDecision::Allowed);
+    }
+
+    #[test]
+    fn websocket_without_a_configured_token_stays_open() {
+        let policy = AccessPolicy::new(IpAddr::V4(Ipv4Addr::LOCALHOST), None, vec![]).unwrap();
+        assert_eq!(
+            policy.authorize_websocket(None, None).decision,
+            AccessDecision::Allowed
+        );
+        // Still echoed, so a client that always offers one negotiates cleanly.
+        let authz = policy.authorize_websocket(None, Some(&ws_bearer_protocol("anything")));
+        assert_eq!(authz.decision, AccessDecision::Allowed);
+        assert!(authz.selected_protocol.is_some());
+    }
+
+    #[test]
+    fn ws_bearer_round_trips_tokens_a_subprotocol_cannot_carry_literally() {
+        // A token with a space or comma would break the subprotocol grammar if
+        // it were not encoded — this is why the value is base64url.
+        let raw = "tok en,with/odd+chars";
+        let policy = token_policy(raw);
+        assert_eq!(
+            policy
+                .authorize_websocket(None, Some(&ws_bearer_protocol(raw)))
+                .decision,
             AccessDecision::Allowed
         );
     }

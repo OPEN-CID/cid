@@ -103,6 +103,9 @@ pub struct Core {
     pub event_tx: broadcast::Sender<String>,
     pub metrics: Arc<Metrics>,
     pub crash_log: Arc<CrashLog>,
+    /// Process start, so /health can report a real uptime instead of the zero
+    /// the Core Health panel used to display for a field Core never sent.
+    started_at: std::time::Instant,
 }
 
 impl Core {
@@ -142,6 +145,7 @@ impl Core {
         let sandbox_manager = Arc::new(SandboxManager::new());
         let access_policy = Arc::new(AccessPolicy::local_only());
         let connected_clients = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started_at = std::time::Instant::now();
         let metrics = Arc::new(Metrics::new());
         let crash_log_path = dirs::data_dir().map(|mut p| {
             p.push("cid");
@@ -188,6 +192,7 @@ impl Core {
             sandbox_manager,
             access_policy,
             connected_clients,
+            started_at,
             event_tx,
             metrics,
             crash_log,
@@ -230,6 +235,7 @@ impl Core {
         let sandbox_manager = Arc::new(SandboxManager::new());
         let access_policy = Arc::new(AccessPolicy::local_only());
         let connected_clients = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started_at = std::time::Instant::now();
         let metrics = Arc::new(Metrics::new());
         let crash_log = Arc::new(CrashLog::new(None));
 
@@ -263,6 +269,7 @@ impl Core {
             sandbox_manager,
             access_policy,
             connected_clients,
+            started_at,
             event_tx,
             metrics,
             crash_log,
@@ -300,6 +307,7 @@ impl Core {
             sandbox_manager: self.sandbox_manager.clone(),
             access_policy: self.access_policy.clone(),
             connected_clients: self.connected_clients.clone(),
+            started_at: self.started_at,
             event_tx: self.event_tx.clone(),
             metrics: self.metrics.clone(),
             crash_log: self.crash_log.clone(),
