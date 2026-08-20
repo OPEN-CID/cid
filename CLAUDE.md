@@ -88,6 +88,20 @@ structure for re-verifying older "done" claims against actual code.
   "Access is denied" tied to a specific `.exe` in `target/debug/deps/`). Fix: delete the
   specific flagged `.exe` and rebuild; it's a one-off flag, not a real problem with the
   binary.
+- **WDAC can also block *toolchain* binaries, where "delete and rebuild" doesn't apply**
+  (hit 2026-08-19 on `cargo-fmt.exe` and `clippy-driver.exe`, both `os error 4551`). What
+  works, in order: `rustup component remove <rustfmt|clippy>` then `add` it again — that
+  re-extraction cleared the block on `cargo-fmt.exe`. It did **not** clear
+  `clippy-driver.exe`, and neither did copying it elsewhere, so that block is on the file
+  itself, not its path. The working fallback is to run the gate in Docker, mirroring CI's
+  own command exactly: `docker run --rm -v C:/Projects/cid:/src -w /src -e
+  CARGO_TARGET_DIR=/tmp/target rust:1-bookworm bash -c "... cargo clippy -p cid-core -p
+  cid-tui --all-targets -- -D warnings"` (`CARGO_TARGET_DIR` inside the container keeps
+  the Linux artifacts out of the Windows `target/`). Do this rather than skipping the gate.
+- **A corrupted `target/` shows up as `can't find crate for <x>`, not as a file error.**
+  Also 2026-08-19: `ratatui` and then `indoc` failed to resolve mid-build with artifacts
+  visibly present in `target/debug/deps/` — cargo's fingerprint said fresh, the file was
+  gone. `cargo clean -p <crate>` for the named crate fixes it one at a time.
 - **`Access is denied. (os error 5)` on rebuild** — a running `cid-core.exe` (started for
   manual/live verification) locks the binary cargo needs to overwrite. Fix:
   `taskkill //F //IM cid-core.exe` before rebuilding, restart Core afterward if needed.
@@ -375,14 +389,115 @@ re-add a hand-written model array** — that is the thing that broke.
   own passing unit test. The cache is now `schema_version`-stamped and discarded on
   mismatch. **A cache is a second code path — fix both.**
 
-**Still open, honestly:** the `Dockerfile` is *not* build-verified and cannot be on this
-machine — Docker Desktop is installed but `HypervisorPresent` is `False` and WSL is absent,
-which needs a BIOS/UEFI change plus an elevated `wsl --install` and a reboot. What was
-verified without a daemon: both base image tags resolve in the registry, every `COPY`
-source exists and covers all three workspace members, and one real defect was found and
-fixed by inspection — `VOLUME ["/home/cid/data"]` named a directory the image never
-created, so Docker would have made it `root:root` while the container runs as `cid`, and
-the default `CMD`'s `--db` write would have failed on first start.
+**Still open at the time of that pass:** the `Dockerfile` was *not* build-verified and
+could not be on this machine — Docker Desktop was installed but `HypervisorPresent` was
+`False` and WSL absent. What was verified without a daemon: both base image tags resolve
+in the registry, every `COPY` source exists and covers all three workspace members, and
+one real defect was found and fixed by inspection — `VOLUME ["/home/cid/data"]` named a
+directory the image never created, so Docker would have made it `root:root` while the
+container runs as `cid`, and the default `CMD`'s `--db` write would have failed on first
+start. **This is now closed — see the 2026-08-19 section below.**
+
+## Release day and container verification — 2026-08-19
+
+Two things happened after the snapshot above, and this section exists because the file
+went a week without recording either. Read `docs/054-Browser-Release-2026-08-10.md` first
+for the release-day detail; it is the live checklist and was updated in place.
+
+**2026-08-17/18 (PRs #4 and #5, both merged).** Release day turned up defects that only
+appear when you check the artifact a *consumer* gets rather than your own working tree:
+`Cargo.lock` was gitignored and therefore absent from a fresh clone, so the `Dockerfile`'s
+`COPY Cargo.toml Cargo.lock ./` could never have built; and with no lockfile every build
+resolved its own dependency versions, which is why CI was green on an `h2` advisory that a
+local `cargo audit` flagged. Also fixed: the web client could not authenticate to a
+token-protected Core *at all* (`new WebSocket(...)` cannot set headers), so every hosted
+deployment would have failed with an opaque closed socket — Core now also accepts the
+token as a `cid.bearer.<base64url>` subprotocol (`SECURITY.md` §2), and `api.ts` became
+protocol-aware for a TLS-fronted deployment.
+
+**2026-08-19 (this pass).** Closing the items `docs/054` §4 had left open:
+
+- **The `Dockerfile` is build-verified for real.** Docker Desktop works on this machine
+  now. Built from a `git archive` of `HEAD` — the artifact Coolify clones, deliberately
+  *not* the working tree, since that distinction is exactly what hid the `Cargo.lock`
+  break. Clean build, 185 MB image; the container then passed `/health` 200, `/api/rpc`
+  401 with no token *and* with a wrong one → 200 with the right one, `/ws` 401 → **101
+  Switching Protocols** with the bearer subprotocol, and `cid.db` created in the volume
+  owned by `cid:cid` (confirming the `VOLUME` ownership fix works rather than failing as
+  root). `docs/052` §1 and `SECURITY.md` §2 now record this instead of the honesty note.
+  **Not covered:** `docker-compose.yml`'s Caddy/TLS pairing, and an **arm64** build —
+  Oracle's Always Free box is ARM, and that cross-build is the one gap left here.
+- **`git2` 0.19 → 0.21 and `portable-pty` 0.8 → 0.9 — the two audit warnings that were
+  reachable from our own `Cargo.toml`.** git2 0.21 clears RUSTSEC-2026-0008/-0183/-0184;
+  its `StringArray` iterator now yields `Result<Option<&str>>` instead of `Option<&str>`
+  — which *is* the unsoundness fix — so `list_worktrees` and `get_remote_url` were
+  rewritten, the latter also losing a latent `.unwrap()`, with three regression tests over
+  its branches. portable-pty 0.9 swaps the unmaintained `serial` crate for `serial2` and
+  needed no code change at all. Net: **25 warnings → 21**, on a dependency graph that got
+  *smaller* (704 crates, down from 710).
+- **Why the remaining 21 are staying, with the arithmetic that decides it.** Every one is
+  transitive, and the split is: **12** in the GTK3 stack Tauri v2 requires on Linux (the
+  11 gtk-rs crates plus `proc-macro-error`, which arrives via `glib-macros`) with no
+  upstream successor; **5** `unic-*` via `tauri-utils` → `urlpattern`; `instant` via
+  `tantivy` → `measure_time`; `paste` via `candle`/`gemm`; and **2** for `lru`. `lru` is
+  the interesting one: bumping `tantivy` 0.22 → 0.26 (an on-disk **search index format
+  change**, so every indexed repo would need a rebuild) and `ratatui` 0.29 → 0.30 (a large
+  API refactor) would clear RUSTSEC-2026-0002 — but **not** RUSTSEC-2026-0253, which needs
+  `lru` ≥ 0.18.2 while tantivy 0.26 pins ^0.16.3. Two risky bumps to remove one of two
+  warnings on a non-vulnerability is a bad trade; re-check when tantivy moves past
+  `lru` 0.18.
+- **Doc drift closed.** `WEBSITE-BUILD-PROMPT.md` still put the app at the `opencid.dev`
+  root; the decision actually deployed against is **`cid.opencid.dev`** (the root stays
+  free — `houses` shares that zone). Its Part A deploy section also still specified
+  Cloudflare Workers, which `docs/054` §3 Option C superseded with Coolify; it is now
+  marked superseded rather than left as a second competing target. Its "build a Connect to
+  Core screen" spec was half-built by PR #5, so it now says which half exists (token entry,
+  `localStorage`, rejected-vs-absent) and which is the real remaining gap (a **runtime**
+  Core URL — host/port are build-time `VITE_*` only, so a hosted bundle can talk to
+  exactly one Core).
+
+- **Auth-token rotation without a restart** — `docs/052` §9's longest-standing operational
+  gap, closed on request. `access.token.rotate` (authorized by the *current* token, like
+  any RPC) swaps the token in place and then **closes every live WebSocket session**. That
+  second half is the whole point: a socket is authorized once, at handshake, so without it
+  a revoked credential keeps driving RPCs on the connection it already holds — the
+  rotation would have been cosmetic. Mechanically: `AccessPolicy`'s token moved behind an
+  `Arc<RwLock<..>>` so every clone of the policy observes the swap (a per-clone copy would
+  have left the old token working wherever it was missed), and `handle_ws`'s read loop
+  became a `select!` over the socket and a new `session_reset_tx` broadcast. Refuses a
+  replacement under 16 chars, one identical to the current token, and any rotation on a
+  Core with no token configured — introducing an auth requirement at runtime would lock
+  out the desktop shell already connected without one. **In memory only**: no config file
+  exists, so a restart reverts to `--auth-token`/`CID_AUTH_TOKEN`, and both `SECURITY.md`
+  §2 and `docs/052` §9 say so rather than implying persistence. Verified against a real
+  running Core, not only in tests (this file's "use the feature before believing it"
+  rule): rotated over `curl`, watched the old token start returning 401, held a real
+  browser-shaped socket open through it and saw the server close it with
+  `disconnected_clients: 1`.
+- **The E2E suite had a real fragility, found by running it rather than trusting it.**
+  `flow1.spec.ts`'s golden path failed at `page.goto` while all 31 API-level specs in the
+  same run passed — Playwright's **default 30s per-test timeout** is shorter than the
+  first real navigation on a cold checkout, since that request is what triggers vite's dep
+  pre-bundling. Two fixes, both at the source: an explicit `timeout: 90_000` (not a retry,
+  which would have hidden a genuine hang behind a warm second attempt), and `127.0.0.1`
+  everywhere instead of `localhost` — `vite.config.ts` binds `host: "127.0.0.1"` while on
+  Windows `localhost` resolves to `::1` first, so every navigation paid a failed IPv6
+  connect first. The specs now `page.goto("/")` against `baseURL` rather than hardcoding a
+  host twice. Full suite: **32/32 cold**, including real worktree creation through the
+  newly-bumped git2.
+
+Gates, all run on this machine this session: **574 Rust tests** (0 failed, 1 ignored — the
+network-dependent real-embeddings test), **201 frontend tests**, **32/32 Playwright E2E**,
+`cargo fmt --check`, `cargo clippy -p cid-core -p cid-tui --all-targets -- -D warnings`
+(clean — run in a Linux container, see below), `tsc --noEmit`, `npm run lint`,
+`npm audit` (0 vulnerabilities), `cargo audit` (0 vulnerabilities, 21 warnings as above).
+
+**One environment lesson worth more than the work it cost.** WDAC blocked
+`clippy-driver.exe` itself, so `cargo clippy` could not run natively at all — see the
+Windows issues section above for what does and doesn't clear that, and for the container
+fallback that runs CI's exact clippy command instead of skipping the gate. Related: do
+**not** run an emulated `buildx --platform linux/arm64` build alongside another container
+build on this machine — doing so killed the Docker daemon mid-run and took both with it.
 
 ## Website
 

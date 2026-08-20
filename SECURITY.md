@@ -152,6 +152,12 @@ hosted deployment failed with an opaque closed socket. The header is still accep
 still wins when both are present, so a malformed subprotocol cannot downgrade a valid
 header.
 
+Both channels were re-verified on 2026-08-19 against a **containerized** Core (the
+`0.0.0.0`-bound, token-required shape a real deployment uses, rather than a loopback dev
+Core): `/api/rpc` returned `401` with no token *and* with a wrong token, `200` with the
+right one; `/ws` returned `401` in both negative cases and `101 Switching Protocols`,
+echoing the accepted subprotocol, with the right one.
+
 The token is base64url-encoded there only because a subprotocol must be a valid HTTP
 token; this is encoding, not encryption. It is the same secret over the same handshake as
 the header, and it is deliberately **not** a `?token=` query parameter — those land in
@@ -170,7 +176,20 @@ visited could drive an RPC surface that reads files and runs commands.
 
 - The token authenticates the **connection, not a person**. Everyone who has it has full
   access. Per-user identity arrives with Phase 3's Workspace membership.
-- No rotation without a restart.
+- Rotation is possible without a restart, but does not survive one.
+  `access.token.rotate` (authorized by the *current* token, like any other RPC)
+  replaces the required token in place and closes every open WebSocket session, so the
+  replaced credential stops working on connections it already holds — a socket is
+  authorized once, at handshake, so that step is what makes the rotation real rather
+  than cosmetic. Omit the `token` parameter to have Core generate one. It refuses a
+  replacement under 16 characters, one identical to the current token, and any rotation
+  on a Core that requires no token (introducing an auth requirement at runtime would
+  lock out an already-connected local shell). A client that rotates *over a WebSocket*
+  gets its reply — carrying the new token — before its own socket is closed with the
+  rest, so it is never locked out of the credential it just minted; it does have to
+  reconnect. **The new value lives in memory only** —
+  Core has no config file, so a restart returns to `--auth-token`/`CID_AUTH_TOKEN`;
+  update those too if the rotation is meant to outlive the process.
 - Traffic is plain HTTP. Put a TLS-terminating reverse proxy in front if the network path
   is not trusted — the token is only as private as the connection carrying it.
 

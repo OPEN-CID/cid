@@ -29,11 +29,13 @@ axum = { version = "0.7", features = ["ws"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
-# Git
-git2 = { version = "0.19", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+# Git. 0.21 is the floor: it clears RUSTSEC-2026-0008/-0183/-0184 (unsound
+# `Buf` deref, `Remote::list()`, and `BlameHunk` signature), which 0.19 carried.
+git2 = { version = "0.21", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
 
 # PTY
-portable-pty = "0.8"
+# 0.9 swaps the unmaintained `serial` crate (RUSTSEC-2024-0384) for `serial2`.
+portable-pty = "0.9"
 
 # SQLite
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -80,7 +82,7 @@ tokenizers = { version = "0.23.1", default-features = false, features = ["onig"]
 [dev-dependencies]
 # Integration tests build real git repos as fixtures; features must match the
 # main dependency above so cargo does not resolve two libgit2 configurations.
-git2 = { version = "0.19", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+git2 = { version = "0.21", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
 proptest = "1"
 tempfile = "3.10"
 tokio-test = "0.4"

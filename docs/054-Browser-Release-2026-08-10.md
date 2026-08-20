@@ -6,6 +6,31 @@ have to do?** Everything below was run for real on this machine this session —
 last session (`docs/053-Production-Readiness-Review.md` §3a/§5) and re-verifies the
 whole stack on top of it.
 
+**Update 2026-08-19 — the two §4 gaps that could be closed here, closed.**
+
+- **The `Dockerfile` is build-verified** (Docker Desktop works on this machine now):
+  clean build from a `git archive` of `HEAD`, 185 MB image, and a real container passing
+  `/health` 200, `/api/rpc` 401→200, `/ws` 401→101 with the bearer subprotocol, and
+  `cid.db` owned by `cid` in the volume. Details in `docs/052` §1; §3 Option C step 8 and
+  §4 below are updated. The remaining container caveat is **arm64** — Oracle's box is ARM
+  and the verified build was amd64.
+- **`git2` 0.19 → 0.21** (clearing the three `unsound` advisories that were ours) and
+  **`portable-pty` 0.8 → 0.9** (dropping the unmaintained `serial` crate for `serial2`,
+  no code change needed): `cargo audit` 25 warnings → **21**. The remaining 21 are all
+  transitive — see `CLAUDE.md`'s 2026-08-19 section for the per-crate disposition,
+  including why bumping `tantivy`/`ratatui` to chase `lru` would still leave
+  RUSTSEC-2026-0253 open.
+- **The E2E suite's golden path was failing on a cold run** for a test-infrastructure
+  reason, not a product one: a 30s default per-test timeout against vite's first-navigation
+  dep pre-bundling, plus `localhost` (which resolves to `::1` first on Windows) while vite
+  binds `127.0.0.1`. Fixed in `playwright.config.ts`; **32/32 cold** afterwards.
+- **Auth-token rotation without a restart** is now real (`access.token.rotate`), closing
+  the §4 gap below and `docs/052` §9's entry. It drops live WebSocket sessions so the
+  replaced token stops working on connections it already holds; the new value is in
+  memory only, so update `CID_AUTH_TOKEN` in your Coolify environment variables too.
+- Gates this session: 574 Rust tests, 201 frontend tests, 32/32 E2E, fmt/clippy/tsc/lint
+  clean, `npm audit` 0.
+
 **Update 2026-08-18 — release day, still PR #4.** Clearing the advisories before merge
 turned up a defect that would have broken Option C's very first step. Both fixed in this
 pass, before merge:
@@ -23,11 +48,12 @@ pass, before merge:
   this machine did not. The two only agree now that the lock is pinned.
 - **npm: 4 advisories → 0** (`js-yaml` 4.3.0→4.3.1 and `nanoid` 3.3.16→3.3.18, both high;
   `dompurify` 3.4.12→3.4.13 via `monaco-editor`, moderate). Lockfile-only patch bumps.
-- **Still open, unchanged:** 25 `cargo audit` warnings — `unmaintained`/`unsound` notices,
+- **Still open at the time:** 25 `cargo audit` warnings — `unmaintained`/`unsound` notices,
   not vulnerabilities, and not suppressed. 11 are the GTK3 bindings Tauri v2 requires on
   Linux (no upgrade exists upstream); the rest are `git2` 0.19, `lru`, `paste`, `instant`,
   and the `unic-*` family. Clearing `git2` means a major-version bump with real API churn —
-  deliberately not done on release day.
+  deliberately not done on release day. (**Done 2026-08-19**, along with `portable-pty`;
+  see the update at the top of this file — 25 → 21.)
 - **Option C could not have worked at all, for a reason no test covered.** Core requires
   `Authorization: Bearer <token>` on `/api/rpc` *and* on the `/ws` upgrade whenever a
   token is set (`router.rs`), a container always binds `0.0.0.0` so a token is always
@@ -218,9 +244,13 @@ vars for a hosted deploy: `VITE_CID_CORE_HOST=cid-core.opencid.dev`,
    actually be owned by the unprivileged `cid` user instead of failing on first write).
 7. Domain: `https://cid-core.opencid.dev`. Traefik issues the Let's Encrypt cert
    automatically, same as `houses`.
-8. **This Dockerfile has still never been build-verified anywhere** (§4 below) — the
-   first real build happens on Coolify itself. Watch the build log on first deploy;
-   if it fails, that's the first real signal on this image, not a config mistake.
+8. **The Dockerfile is build-verified as of 2026-08-19** (it wasn't when this section was
+   written — see §4). It was built from a `git archive` of `HEAD` (the artifact Coolify
+   clones, not a working tree), started with a token, and checked end-to-end:
+   `/health` 200, `/api/rpc` 401→200, `/ws` 401→101 with the bearer subprotocol, and
+   `cid.db` created in the volume owned by `cid`. Coolify's build is still its own
+   environment (ARM64 vs. this machine's AMD64, its own cache) — watch the first build
+   log — but a failure there is now a Coolify/platform signal, not an unproven image.
 
 **Coolify resource 2 — the web client**:
 
@@ -263,14 +293,19 @@ before trusting resource 1 to come up clean on the first try.
 
 ## 4. Known, honestly-stated gaps (unchanged by this pass, not release blockers)
 
-- **`Dockerfile` still isn't build-verified** — no Docker daemon available on this
-  machine (`HypervisorPresent: False`, no WSL). Not needed for Option A/B above; only
-  matters if you specifically want the container path. See `docs/052` §1 and §9.
+- ~~**`Dockerfile` still isn't build-verified**~~ — **closed 2026-08-19.** Docker Desktop
+  was working on this machine by then, so the build finally ran: clean build from a clean
+  `git archive`, 185 MB image, and a real container passing the health/auth/volume checks
+  listed in `docs/052` §1. Remaining caveat, stated rather than hidden: it was built for
+  **linux/amd64**, and Oracle's Always Free box is **ARM64** — the Dockerfile has no
+  architecture-specific content, but that specific cross-build has not been run here.
 - **Windows has no kernel-level filesystem confinement for Autonomous mode** — command
   allow-list and path policy are real, but not a hard sandbox boundary on Windows
   specifically (`SECURITY.md`, `docs/RELEASE-REPORT-v1.0.0.md` #16). Relevant if you turn
   on Autonomous mode; not relevant to Manual/Co-Pilot use.
-- **No auth-token rotation without a restart; no config file** — flags/env only. Fine at
+- ~~**No auth-token rotation without a restart**~~ — **closed 2026-08-19**, see the update
+  at the top of this file and `docs/052` §9. **No config file** — flags/env only, which is
+  why a rotated token does not survive a restart. Fine at
   today's single-instance scope (`docs/052` §9).
 
 Nothing above blocks using CID in a browser today — they're operational maturity items

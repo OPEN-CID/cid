@@ -78,6 +78,8 @@ pub struct AppState {
     /// Live count of connected WebSocket clients, surfaced on /health.
     pub connected_clients: Arc<std::sync::atomic::AtomicUsize>,
     pub event_tx: broadcast::Sender<String>,
+    /// Closes every open WebSocket session — see `Core::session_reset_tx`.
+    pub session_reset_tx: broadcast::Sender<()>,
     pub metrics: Arc<crate::observability::Metrics>,
     pub crash_log: Arc<crate::observability::CrashLog>,
     pub started_at: std::time::Instant,
@@ -243,8 +245,24 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
         }
     });
 
-    // Handle incoming messages
-    while let Some(msg) = stream.next().await {
+    // Handle incoming messages, until either the client goes away or the
+    // access token is rotated. The reset arm is what makes rotation real: this
+    // socket was authorized once at handshake, so without it a revoked token
+    // would keep driving RPCs on the connection it already holds.
+    let mut session_reset_rx = state.session_reset_tx.subscribe();
+    loop {
+        let msg = tokio::select! {
+            _ = session_reset_rx.recv() => {
+                info!("Closing WebSocket session: access token rotated");
+                let mut guard = sink.lock().await;
+                let _ = guard.send(Message::Close(None)).await;
+                break;
+            }
+            msg = stream.next() => match msg {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
         match msg {
             Ok(Message::Text(text)) => {
                 match serde_json::from_str::<JsonRpcRequest>(&text) {
@@ -559,6 +577,9 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "repo_health.scan" => handle_repo_health_scan(params).await,
         "observability.crashes.list" => handle_observability_crashes_list(state).await,
 
+        // Access control
+        "access.token.rotate" => handle_access_token_rotate(params, state).await,
+
         _ => Err(anyhow::anyhow!("Method not found: {}", method)),
     };
 
@@ -580,6 +601,42 @@ async fn handle_repo_health_scan(params: serde_json::Value) -> anyhow::Result<se
 
 async fn handle_observability_crashes_list(state: &AppState) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::to_value(state.crash_log.list())?)
+}
+
+/// Replace the bearer token without restarting Core, then drop every live
+/// WebSocket session so the old token stops working everywhere at once — not
+/// just on connections opened after the change.
+///
+/// Reaching this method already required the *current* token (`check_access`
+/// for HTTP, the handshake for WS), which is the authorization for rotating it.
+///
+/// The new token lives in memory only: a restart returns to whatever
+/// `--auth-token`/`CID_AUTH_TOKEN` says, since Core has no config file to
+/// persist it to (`docs/052-Production-Deployment.md` §9). Update the flag or
+/// env var too if the rotation is meant to outlive the process.
+async fn handle_access_token_rotate(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let requested = params
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let token = state.access_policy.rotate_token(requested)?;
+
+    // Count before signalling: the sessions are about to close, so reading the
+    // gauge afterwards would race the count down toward zero.
+    let dropped = state
+        .connected_clients
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let _ = state.session_reset_tx.send(());
+
+    tracing::warn!("Access token rotated; {dropped} WebSocket session(s) closed");
+    Ok(serde_json::json!({
+        "token": token,
+        "disconnected_clients": dropped,
+    }))
 }
 
 // ============ Handlers ============

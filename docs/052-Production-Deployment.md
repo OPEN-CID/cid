@@ -40,13 +40,29 @@ A `Dockerfile` and `docker-compose.yml` now exist at the repo root (previously: 
 existed, and there was no packaged deployment artifact of any kind for a team wanting to
 run `cid-core` outside a desktop install).
 
-**Honesty note**: this `Dockerfile` was written against `cid-core/Cargo.toml`'s real
-dependency set (`git2`'s `vendored-libgit2`/`vendored-openssl` and `rusqlite`'s `bundled`
-feature, confirmed by reading it, mean the build stage needs a C toolchain but the
-runtime stage needs no external libgit2/sqlite/openssl packages) but **has not been
-build-verified in this environment** — no Docker daemon was available in the session
-that wrote it. Build and run it yourself once before relying on it in production; if it
-needs a fix, this is the first place to correct.
+**Build-verified 2026-08-19** (it was not, for the three sessions before that — no Docker
+daemon was available on the machine that wrote it). What was actually run, so you know
+what this claim covers:
+
+- `docker build` from a **`git archive` of `HEAD`**, not the working tree — the artifact a
+  fresh clone gets, which is what Coolify/CI builds from. (`Cargo.lock` being gitignored
+  and therefore absent from that archive is exactly how the release-day build break in
+  `docs/054` was missed; verifying against the working tree would not have caught it.)
+  Result: clean build, ~8m20s for the `cargo build --release -p cid-core` layer, **185 MB**
+  final image.
+- `docker run` with `-e CID_AUTH_TOKEN` and a named volume: Core starts, binds `0.0.0.0`,
+  reports `auth_required=true`, and refreshes its model catalog live from `models.dev`
+  inside the container.
+- `/health` → `200`. `/api/rpc` → `401` with no token **and** with a wrong token, `200`
+  with the right one. `/ws` → `401` without the `cid.bearer.<base64url>` subprotocol and
+  with a wrong one, **`101 Switching Protocols`** with the right one — the browser-auth
+  path from `SECURITY.md` §2, confirmed against a real container rather than a loopback
+  dev Core.
+- `/home/cid/data/cid.db` is created and owned by `cid:cid`, confirming the `VOLUME`
+  ownership fix (`docs/053` §4) works rather than failing on first write as root.
+
+The one thing this does *not* cover: `docker-compose.yml`'s Caddy pairing and TLS
+termination were not exercised, only the image itself.
 
 ```bash
 docker build -t cid-core .
@@ -208,7 +224,22 @@ expecting one from CID.
 
 - **No config file** — flags/env only (§2). Fine at current scope; would need real design
   work (precedence rules, hot-reload or not) before adding one, not a quick patch.
-- **No auth token rotation without a restart** (`SECURITY.md` §2, unchanged by this pass).
+- ~~**No auth token rotation without a restart**~~ — **closed 2026-08-19.**
+  `access.token.rotate` swaps the token on a running Core and drops live WebSocket
+  sessions so the old credential stops working immediately; `SECURITY.md` §2 has the
+  rules and refusals. Rotate with:
+
+  ```bash
+  curl -s -X POST https://your-core/api/rpc \
+    -H "Authorization: Bearer $CURRENT_TOKEN" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"access.token.rotate","params":{}}'
+  ```
+
+  The response carries the token now in force. **It is in memory only** — the config-file
+  gap above is exactly why: update `CID_AUTH_TOKEN` (or the `--auth-token` flag) in your
+  service definition as well, or the next restart reverts to the old value. Every client
+  must be given the new token; browsers will be prompted for it automatically once their
+  socket closes.
 - **No multi-instance/HA story** — one `cid-core` process, one SQLite file. Horizontal
   scaling was never a design goal (self-hosted, single-team scale); documented here as a
   boundary, not a bug.
