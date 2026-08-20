@@ -15,14 +15,24 @@
  */
 
 use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Result};
+
+/// Shortest token `rotate_token` will accept. `generate_token` produces 40
+/// characters; this floor exists so a rotation cannot quietly weaken a
+/// deployment to something guessable.
+const MIN_TOKEN_LEN: usize = 16;
 
 /// How Core decides whether a request may proceed.
 #[derive(Debug, Clone)]
 pub struct AccessPolicy {
-    /// Required bearer token, when one applies.
-    token: Option<String>,
+    /// Required bearer token, when one applies. Behind a lock because
+    /// `rotate_token` replaces it while Core is serving, through the `Arc` the
+    /// router state already shares — every clone of this policy must observe
+    /// the new value immediately, or the old token would keep working on
+    /// whichever clone missed the update.
+    token: Arc<RwLock<Option<String>>>,
     /// Whether the listening address is loopback-only.
     loopback_only: bool,
     /// Origins permitted by CORS. Empty means the built-in local defaults.
@@ -56,7 +66,7 @@ impl AccessPolicy {
         }
 
         Ok(Self {
-            token,
+            token: Arc::new(RwLock::new(token)),
             loopback_only,
             allowed_origins: if allowed_origins.is_empty() {
                 DEFAULT_ORIGINS.iter().map(|s| s.to_string()).collect()
@@ -69,14 +79,57 @@ impl AccessPolicy {
     /// A loopback policy with no token — the default local development shape.
     pub fn local_only() -> Self {
         Self {
-            token: None,
+            token: Arc::new(RwLock::new(None)),
             loopback_only: true,
             allowed_origins: DEFAULT_ORIGINS.iter().map(|s| s.to_string()).collect(),
         }
     }
 
     pub fn requires_auth(&self) -> bool {
-        self.token.is_some()
+        self.read_token().is_some()
+    }
+
+    fn read_token(&self) -> Option<String> {
+        // A poisoned lock would mean a panic while swapping the token. Failing
+        // closed (treating it as "a token is required and nothing matches") is
+        // the safe reading, so unwrap the poison rather than defaulting to None,
+        // which would disable auth entirely.
+        self.token.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Replace the required token while Core is serving.
+    ///
+    /// Returns the token now in force. The caller is responsible for dropping
+    /// live sessions: a WebSocket is authorized once at handshake, so without
+    /// that step an old credential keeps its already-open socket. See
+    /// `SECURITY.md` §2.
+    ///
+    /// Deliberately refuses when no token is configured. A loopback Core has
+    /// nothing to rotate, and *introducing* a requirement at runtime would lock
+    /// out the desktop shell that is already connected without one.
+    pub fn rotate_token(&self, new_token: Option<String>) -> Result<String> {
+        let current = self.read_token();
+        let Some(current) = current else {
+            bail!(
+                "This Core requires no access token, so there is nothing to rotate. Start it with \
+                 --auth-token (or CID_AUTH_TOKEN) to require one."
+            );
+        };
+
+        let next = match new_token {
+            Some(t) => t.trim().to_string(),
+            None => generate_token(),
+        };
+
+        if next.len() < MIN_TOKEN_LEN {
+            bail!("A replacement token must be at least {MIN_TOKEN_LEN} characters.");
+        }
+        if next == current {
+            bail!("The replacement token is identical to the current one; nothing was rotated.");
+        }
+
+        *self.token.write().unwrap_or_else(|e| e.into_inner()) = Some(next.clone());
+        Ok(next)
     }
 
     pub fn is_loopback_only(&self) -> bool {
@@ -88,7 +141,7 @@ impl AccessPolicy {
     /// Comparison is constant-time so a wrong token cannot be recovered by
     /// timing the response.
     pub fn authorize(&self, auth_header: Option<&str>) -> AccessDecision {
-        let expected = match &self.token {
+        let expected = match self.read_token() {
             None => return AccessDecision::Allowed,
             Some(t) => t,
         };
@@ -142,7 +195,7 @@ impl AccessPolicy {
             };
         }
 
-        let expected = match &self.token {
+        let expected = match self.read_token() {
             None => {
                 return WsAuthorization {
                     decision: AccessDecision::Allowed,
@@ -430,6 +483,78 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn rotation_replaces_the_token_for_every_clone_of_the_policy() {
+        let policy = token_policy("the-original-token");
+        // A clone stands in for the `Arc<AccessPolicy>` the router state shares:
+        // if rotation only affected one of them, the old token would keep working.
+        let shared = policy.clone();
+
+        let new_token = policy
+            .rotate_token(Some("a-brand-new-token".into()))
+            .unwrap();
+        assert_eq!(new_token, "a-brand-new-token");
+
+        assert_eq!(
+            shared.authorize(Some("Bearer the-original-token")),
+            AccessDecision::Denied("Invalid access token")
+        );
+        assert_eq!(
+            shared.authorize(Some("Bearer a-brand-new-token")),
+            AccessDecision::Allowed
+        );
+        // The WebSocket path reads the same value, not a copy taken at startup.
+        assert_eq!(
+            shared
+                .authorize_websocket(None, Some(&ws_bearer_protocol("the-original-token")))
+                .decision,
+            AccessDecision::Denied("Invalid access token")
+        );
+        assert_eq!(
+            shared
+                .authorize_websocket(None, Some(&ws_bearer_protocol("a-brand-new-token")))
+                .decision,
+            AccessDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn rotation_without_a_replacement_generates_one() {
+        let policy = token_policy("the-original-token");
+        let generated = policy.rotate_token(None).unwrap();
+
+        assert_eq!(generated.len(), 40);
+        assert_eq!(
+            policy.authorize(Some(&format!("Bearer {generated}"))),
+            AccessDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn rotation_is_refused_when_no_token_is_configured() {
+        let policy = AccessPolicy::local_only();
+        let err = policy.rotate_token(Some("a-perfectly-fine-token".into()));
+        assert!(err.is_err());
+        // Refused, not silently applied: a loopback Core must not acquire an
+        // auth requirement that would lock out the already-connected shell.
+        assert!(!policy.requires_auth());
+    }
+
+    #[test]
+    fn rotation_rejects_a_short_or_unchanged_token() {
+        let policy = token_policy("the-original-token");
+
+        assert!(policy.rotate_token(Some("short".into())).is_err());
+        assert!(policy
+            .rotate_token(Some("the-original-token".into()))
+            .is_err());
+        // Both refusals leave the original in force rather than clearing it.
+        assert_eq!(
+            policy.authorize(Some("Bearer the-original-token")),
+            AccessDecision::Allowed
+        );
     }
 
     #[test]

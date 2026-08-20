@@ -7,8 +7,17 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   reporter: "list",
+  // Playwright's 30s default is not enough for the *first* real navigation on a
+  // cold checkout: that request is what triggers vite's dep pre-bundling of the
+  // whole client graph, and it timed out at `page.goto` while every API-level
+  // spec in the same run passed. Raised rather than papered over with a retry,
+  // because a retry would hide a genuine hang behind a warm second attempt.
+  timeout: 90_000,
   use: {
-    baseURL: "http://localhost:1420",
+    // 127.0.0.1, not localhost: `vite.config.ts` binds `host: "127.0.0.1"`,
+    // while on Windows `localhost` resolves to `::1` first — so every
+    // navigation paid a failed IPv6 connect before falling back.
+    baseURL: "http://127.0.0.1:1420",
     trace: "on-first-retry",
     video: "on-first-retry",
   },
@@ -28,7 +37,7 @@ export default defineConfig({
   webServer: [
     {
       command: "npm run dev",
-      url: "http://localhost:1420",
+      url: "http://127.0.0.1:1420",
       reuseExistingServer: true,
       timeout: 60000,
     },

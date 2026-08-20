@@ -295,7 +295,9 @@ impl GitManager {
             let repo = Repository::open(repo_path)?;
             let worktrees = repo.worktrees()?;
             let mut list = Vec::new();
-            for name in worktrees.iter().flatten() {
+            // git2 0.21 yields Result<Option<&str>> per entry (Err on a non-UTF-8
+            // name); such an entry is skipped rather than failing the whole listing.
+            for name in worktrees.iter().filter_map(|n| n.ok().flatten()) {
                 if let Ok(wt) = repo.find_worktree(name) {
                     list.push(serde_json::json!({
                         "name": name,
@@ -372,12 +374,12 @@ impl GitManager {
 pub fn get_remote_url(repo_path: &str) -> Result<String> {
     let repo = Repository::open(repo_path)?;
     let remote = repo.find_remote("origin").or_else(|_| {
-        repo.remotes()?
+        let remotes = repo.remotes()?;
+        let name = remotes
             .iter()
-            .next()
-            .flatten()
-            .map(|name| repo.find_remote(name).unwrap())
-            .ok_or_else(|| git2::Error::from_str("no remote"))
+            .find_map(|n| n.ok().flatten())
+            .ok_or_else(|| git2::Error::from_str("no remote"))?;
+        repo.find_remote(name)
     })?;
     Ok(remote.url().unwrap_or("").to_string())
 }
@@ -514,6 +516,49 @@ mod tests {
             let gm = GitManager::new();
             let result = gm.reset_hard(tmp.path().to_str().unwrap(), "not-a-real-sha");
             assert!(result.is_err());
+        }
+    }
+
+    /// `get_remote_url`'s remote-name lookup was rewritten for git2 0.21, whose
+    /// `StringArray` iterator yields `Result<Option<&str>>` instead of
+    /// `Option<&str>`. These cover the three branches it has.
+    mod remote_url {
+        use super::*;
+
+        #[test]
+        fn prefers_origin_when_present() {
+            let tmp = TempDir::new().unwrap();
+            let repo = Repository::init(tmp.path()).unwrap();
+            repo.remote("upstream", "https://example.com/upstream.git")
+                .unwrap();
+            repo.remote("origin", "https://example.com/origin.git")
+                .unwrap();
+
+            assert_eq!(
+                get_remote_url(tmp.path().to_str().unwrap()).unwrap(),
+                "https://example.com/origin.git"
+            );
+        }
+
+        #[test]
+        fn falls_back_to_the_first_remote_when_there_is_no_origin() {
+            let tmp = TempDir::new().unwrap();
+            let repo = Repository::init(tmp.path()).unwrap();
+            repo.remote("upstream", "https://example.com/upstream.git")
+                .unwrap();
+
+            assert_eq!(
+                get_remote_url(tmp.path().to_str().unwrap()).unwrap(),
+                "https://example.com/upstream.git"
+            );
+        }
+
+        #[test]
+        fn errors_when_the_repo_has_no_remotes() {
+            let tmp = TempDir::new().unwrap();
+            Repository::init(tmp.path()).unwrap();
+
+            assert!(get_remote_url(tmp.path().to_str().unwrap()).is_err());
         }
     }
 }

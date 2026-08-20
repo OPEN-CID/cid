@@ -101,6 +101,10 @@ pub struct Core {
     pub access_policy: Arc<AccessPolicy>,
     pub connected_clients: Arc<std::sync::atomic::AtomicUsize>,
     pub event_tx: broadcast::Sender<String>,
+    /// Signals every open WebSocket session to close. A socket is authorized
+    /// once, at handshake, so rotating the access token has to drop live
+    /// sessions or the replaced credential keeps the connection it already has.
+    pub session_reset_tx: broadcast::Sender<()>,
     pub metrics: Arc<Metrics>,
     pub crash_log: Arc<CrashLog>,
     /// Process start, so /health can report a real uptime instead of the zero
@@ -134,6 +138,7 @@ impl Core {
             context_engine_manager.clone(),
         ));
         let (event_tx, _rx) = broadcast::channel(1000);
+        let (session_reset_tx, _reset_rx) = broadcast::channel(16);
 
         let background_model_router = Arc::new(BackgroundModelRouter::new(event_tx.clone()));
         let subagent_orchestrator = Arc::new(SubagentOrchestrator::new(event_tx.clone()));
@@ -194,6 +199,7 @@ impl Core {
             connected_clients,
             started_at,
             event_tx,
+            session_reset_tx,
             metrics,
             crash_log,
         })
@@ -224,6 +230,7 @@ impl Core {
             context_engine_manager.clone(),
         ));
         let (event_tx, _rx) = broadcast::channel(1000);
+        let (session_reset_tx, _reset_rx) = broadcast::channel(16);
 
         let background_model_router = Arc::new(BackgroundModelRouter::new(event_tx.clone()));
         let subagent_orchestrator = Arc::new(SubagentOrchestrator::new(event_tx.clone()));
@@ -271,6 +278,7 @@ impl Core {
             connected_clients,
             started_at,
             event_tx,
+            session_reset_tx,
             metrics,
             crash_log,
         })
@@ -309,6 +317,7 @@ impl Core {
             connected_clients: self.connected_clients.clone(),
             started_at: self.started_at,
             event_tx: self.event_tx.clone(),
+            session_reset_tx: self.session_reset_tx.clone(),
             metrics: self.metrics.clone(),
             crash_log: self.crash_log.clone(),
         }

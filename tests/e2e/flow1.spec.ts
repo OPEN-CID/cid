@@ -57,7 +57,7 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
     }
 
     // 1. Open app
-    await page.goto("http://localhost:1420");
+    await page.goto("/");
     await expect(page.locator("text=CID").first()).toBeVisible({ timeout: 10000 });
 
     // Wait for repos to load
@@ -191,7 +191,7 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
     }
 
     // 6. Verify UI loads
-    await page.goto("http://localhost:1420");
+    await page.goto("/");
     await expect(page.locator("body")).toBeVisible();
 
     console.log("[E2E] Flow 1 golden path completed successfully");

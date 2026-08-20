@@ -2735,12 +2735,12 @@ mod websocket_bearer_auth {
     use cid_core::access::{ws_bearer_protocol, AccessPolicy};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    const TOKEN: &str = "integration-test-token";
+    pub(super) const TOKEN: &str = "integration-test-token";
 
     /// Loopback Core that still demands a token — a token is *permitted* on
     /// loopback and only *required* off it, which keeps this test free of a
     /// real network bind.
-    async fn start_core_with_token() -> String {
+    pub(super) async fn start_core_with_token() -> String {
         let mut core = Core::new_in_memory().expect("core creation");
         core.set_access_policy(
             AccessPolicy::new(
@@ -2890,6 +2890,213 @@ mod websocket_bearer_auth {
         assert!(
             health["uptime_seconds"].is_u64(),
             "uptime must be real, not a field the UI invents: {health}"
+        );
+    }
+}
+
+/// `access.token.rotate` — replacing the bearer token on a running Core
+/// (`docs/052-Production-Deployment.md` §9's "no rotation without a restart").
+mod token_rotation {
+    use super::websocket_bearer_auth::{start_core_with_token, TOKEN};
+    use super::*;
+    use cid_core::access::ws_bearer_protocol;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    const REPLACEMENT: &str = "a-replacement-token-long-enough";
+
+    async fn rpc_with_token(base: &str, token: &str, method: &str, params: Value) -> (u16, Value) {
+        let resp = reqwest::Client::new()
+            .post(format!("http://{base}/api/rpc"))
+            .bearer_auth(token)
+            .json(&json!({"jsonrpc": "2.0", "id": "1", "method": method, "params": params}))
+            .send()
+            .await
+            .expect("request");
+        let status = resp.status().as_u16();
+        // A 401 body is not JSON-RPC, so only parse when the request got through.
+        let body = if status == 200 {
+            resp.json().await.expect("json response")
+        } else {
+            Value::Null
+        };
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn rotating_swaps_which_token_the_http_surface_accepts() {
+        let addr = start_core_with_token().await;
+
+        let (status, body) = rpc_with_token(
+            &addr,
+            TOKEN,
+            "access.token.rotate",
+            json!({"token": REPLACEMENT}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["result"]["token"], json!(REPLACEMENT), "{body}");
+
+        // The point of the feature: the credential that authorized the rotation
+        // is itself no longer accepted afterwards.
+        let (old_status, _) = rpc_with_token(&addr, TOKEN, "repo.list", json!({})).await;
+        assert_eq!(old_status, 401, "the rotated-out token must stop working");
+
+        let (new_status, new_body) =
+            rpc_with_token(&addr, REPLACEMENT, "repo.list", json!({})).await;
+        assert_eq!(new_status, 200);
+        assert!(new_body.get("result").is_some(), "{new_body}");
+    }
+
+    #[tokio::test]
+    async fn rotating_without_a_replacement_returns_a_generated_token_that_works() {
+        let addr = start_core_with_token().await;
+
+        let (_, body) = rpc_with_token(&addr, TOKEN, "access.token.rotate", json!({})).await;
+        let generated = body["result"]["token"]
+            .as_str()
+            .unwrap_or_else(|| panic!("expected a generated token: {body}"))
+            .to_string();
+        assert_eq!(generated.len(), 40);
+
+        let (status, _) = rpc_with_token(&addr, &generated, "repo.list", json!({})).await;
+        assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn rotating_closes_a_live_websocket_session() {
+        use futures::StreamExt;
+
+        let addr = start_core_with_token().await;
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            ws_bearer_protocol(TOKEN).parse().expect("header value"),
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("authenticated handshake");
+
+        let (status, _) = rpc_with_token(
+            &addr,
+            TOKEN,
+            "access.token.rotate",
+            json!({"token": REPLACEMENT}),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        // A socket is authorized once, at handshake. If rotation did not close
+        // it, this connection would keep serving RPC on a revoked credential —
+        // so the stream must end rather than stay quietly usable.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(msg) = socket.next().await {
+                match msg {
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => return true,
+                    Ok(_) => continue,
+                }
+            }
+            true
+        })
+        .await;
+        assert_eq!(
+            ended,
+            Ok(true),
+            "the live session must be dropped when the token is rotated"
+        );
+
+        // And the replaced token cannot open a new one.
+        let mut stale = format!("ws://{addr}/ws").into_client_request().unwrap();
+        stale.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            ws_bearer_protocol(TOKEN).parse().expect("header value"),
+        );
+        assert!(
+            tokio_tungstenite::connect_async(stale).await.is_err(),
+            "the rotated-out token must not open a new socket either"
+        );
+    }
+
+    /// Rotating over a socket drops that same socket. The reply carries the new
+    /// token, so it has to be delivered *before* the close, or the caller would
+    /// lose the credential it just minted and be locked out of its own Core.
+    #[tokio::test]
+    async fn rotating_over_a_websocket_still_returns_the_new_token_before_closing() {
+        use futures::{SinkExt, StreamExt};
+
+        let addr = start_core_with_token().await;
+        let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "Sec-WebSocket-Protocol",
+            ws_bearer_protocol(TOKEN).parse().expect("header value"),
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("authenticated handshake");
+
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"jsonrpc": "2.0", "id": "1", "method": "access.token.rotate", "params": {}})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("send rotate");
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+            .await
+            .expect("reply before timeout")
+            .expect("stream item")
+            .expect("ws message");
+        let body: Value = serde_json::from_str(reply.to_text().expect("text frame")).unwrap();
+        let token = body["result"]["token"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the rotating client must receive its new token: {body}"))
+            .to_string();
+
+        // And that token is the one now in force on the HTTP surface.
+        let (status, _) = rpc_with_token(&addr, &token, "repo.list", json!({})).await;
+        assert_eq!(status, 200);
+    }
+
+    #[tokio::test]
+    async fn rotation_is_refused_on_a_core_that_requires_no_token() {
+        // Introducing an auth requirement at runtime would lock out the already
+        // connected local shell, so this is an error rather than a silent set.
+        let base = start_core().await;
+        let body = rpc(&base, "access.token.rotate", json!({"token": REPLACEMENT})).await;
+
+        assert!(
+            body.get("error").is_some(),
+            "expected a refusal, got {body}"
+        );
+        let (status, _) = rpc_with_token(
+            base.trim_start_matches("http://"),
+            REPLACEMENT,
+            "repo.list",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, 200, "the Core must still be open, not newly locked");
+    }
+
+    #[tokio::test]
+    async fn a_too_short_replacement_is_refused_and_leaves_the_old_token_working() {
+        let addr = start_core_with_token().await;
+
+        let (status, body) = rpc_with_token(
+            &addr,
+            TOKEN,
+            "access.token.rotate",
+            json!({"token": "short"}),
+        )
+        .await;
+        assert_eq!(status, 200, "the request itself was authorized");
+        assert!(body.get("error").is_some(), "expected a refusal: {body}");
+
+        let (still_ok, _) = rpc_with_token(&addr, TOKEN, "repo.list", json!({})).await;
+        assert_eq!(
+            still_ok, 200,
+            "a refused rotation must not clear the token in force"
         );
     }
 }

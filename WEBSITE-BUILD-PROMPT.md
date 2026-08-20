@@ -1,4 +1,4 @@
-# Build Brief — opencid.dev (the live app) + doc.opencid.dev (documentation)
+# Build Brief — cid.opencid.dev (the live app) + doc.opencid.dev (documentation)
 
 You are an AI coding agent with file, shell, and git access. This brief covers **two**
 separate deliverables under one domain family. Read §0 first — it corrects a naming
@@ -11,23 +11,32 @@ direction on where things live.
 
 | Domain | What it is | Where it's built |
 |---|---|---|
-| **opencid.dev** | The **live CID product**, running in a browser — the same React/Vite web client already in this platform repo (`src/`), the one Tauri wraps for desktop and `npm run dev` serves locally. Visiting it is *using CID*, not reading about it. | **Inside the existing CID platform repo** (this repo, or wherever it lives) — not a new repo. See Part A. |
+| **cid.opencid.dev** | The **live CID product**, running in a browser — the same React/Vite web client already in this platform repo (`src/`), the one Tauri wraps for desktop and `npm run dev` serves locally. Visiting it is *using CID*, not reading about it. | **Inside the existing CID platform repo** (this repo, or wherever it lives) — not a new repo. See Part A. |
+| **cid-core.opencid.dev** | The `cid-core` daemon backing the hosted client, if you run one (the repo-root `Dockerfile`). Optional — every visitor may instead point the page at their own local Core. | Same repo, deployed as a container. See `docs/054-Browser-Release-2026-08-10.md` §3 Option C. |
 | **doc.opencid.dev** | Documentation, architecture, concepts, roadmap, blog, community — everything about the project that isn't the running app itself. | A **new, standalone repo** (`cid-docs` or similar). See Part B. |
 
-**Do not build a third "marketing landing page" repo.** An earlier draft of this brief
-had `opencid.dev` as a static marketing site and `docs.opencid.dev` as documentation, with
-no home for the actual product. That's superseded: the product's own web client already
-exists and is what belongs at the primary domain, so there is no separate landing site to
-build — the "landing" experience is the CID app's own first-run screen (§Part A.2).
+**The app lives on the `cid.` subdomain, not the `opencid.dev` root.** Two earlier drafts
+got this wrong in different directions. The first had `opencid.dev` as a static marketing
+site and `docs.opencid.dev` as documentation, with no home for the actual product. The
+second (superseding it) moved the product to the `opencid.dev` root — but that root is
+shared: the `houses` project already uses this zone for `nilaami.opencid.dev`, so the root
+is deliberately left free for a future umbrella page rather than being claimed by any one
+project. The decision actually made and deployed against is `cid.opencid.dev`, matching
+`nilaami.opencid.dev`'s pattern — see `docs/054-Browser-Release-2026-08-10.md` §3 Option C,
+which is the authoritative deployment runbook for Part A.
 
-If a lightweight explainer is still wanted for people who land on `opencid.dev` with zero
-context before connecting anything, that lives as the **first-run screen inside the app**
-(Part A.2), not as a separate site — one domain, one visitor flow: arrive → understand in
-five seconds what this is → connect to a Core → use it.
+**Do not build a separate "marketing landing page" repo.** The product's own web client
+already exists and is what belongs at the app domain, so there is no separate landing site
+to build — the "landing" experience is the CID app's own first-run screen (§Part A.2).
+
+If a lightweight explainer is still wanted for people who land on `cid.opencid.dev` with
+zero context before connecting anything, that lives as the **first-run screen inside the
+app** (Part A.2), not as a separate site — one domain, one visitor flow: arrive →
+understand in five seconds what this is → connect to a Core → use it.
 
 ---
 
-# Part A — opencid.dev: hosting the actual CID web client
+# Part A — cid.opencid.dev: hosting the actual CID web client
 
 ## A.1 What already exists (verified in this repo, do not rebuild)
 
@@ -39,57 +48,82 @@ five seconds what this is → connect to a Core → use it.
   is no server-side rendering and no product logic to reimplement.
 - Core already supports being reached by a hosted web client, safely, today —
   this was purpose-built for exactly this ("Part 15, Phase 2" in `cid-core/src/access/mod.rs`):
-  - `cid-core --host 0.0.0.0 --auth-token <token> --allow-origin https://opencid.dev`
+  - `cid-core --host 0.0.0.0 --auth-token <token> --allow-origin https://cid.opencid.dev`
     binds Core beyond loopback, **requires** a bearer token (refuses to start
     non-loopback without one — verified in `AccessPolicy::new`,
-    `cid-core/src/access/mod.rs`), and adds `https://opencid.dev` to the CORS allow-list
+    `cid-core/src/access/mod.rs`), and adds `https://cid.opencid.dev` to the CORS allow-list
     (`cid-core/src/main.rs`'s `--allow-origin`, repeatable).
   - Default CORS origins (loopback-only Core, the common case) are
     `http://localhost:1420`, `http://127.0.0.1:1420`, `tauri://localhost`,
-    `https://tauri.localhost` — **`https://opencid.dev` is not in that default list**, so
-    a hosted page can only reach a *local* Core if the user starts Core with
-    `--allow-origin https://opencid.dev` (loopback Core + browser on a different origin
+    `https://tauri.localhost` — **`https://cid.opencid.dev` is not in that default list**,
+    so a hosted page can only reach a *local* Core if the user starts Core with
+    `--allow-origin https://cid.opencid.dev` (loopback Core + browser on a different origin
     still works for CORS purposes; loopback-only refers to the bind address, not who's
     allowed to call it).
+- **The browser-side half of that is also already built** (PR #5, 2026-08-18 — do not
+  rebuild it, read it first):
+  - `src/lib/api.ts` stores a bearer token in `localStorage` under `cid.auth_token`
+    (`setAuthToken`/`hasAuthToken`), sends it as `Authorization: Bearer <token>` on
+    `/api/rpc`, and — because `new WebSocket(...)` cannot set request headers at all —
+    as a `cid.bearer.<base64url>` **WebSocket subprotocol** on `/ws`, mirroring
+    `ws_bearer_protocol` in `cid-core/src/access/mod.rs`. A 401 raises a distinguishable
+    `AuthRequiredError` rather than a generic network failure.
+  - `src/components/WebShell.tsx` already renders the token prompt in two places: the
+    connection banner (asks for a token, and says specifically when a *stored* token was
+    rejected rather than absent) and a settings panel that shows whether Core requires
+    one. `SECURITY.md` §2 has the transport table.
+  - Build-time origin flags exist: `VITE_CID_CORE_HOST`, `VITE_CID_CORE_PORT`,
+    `VITE_CID_CORE_SECURE` (explicit `"true"` opt-in for `https`/`wss` — deliberately not
+    inferred from `window.location.protocol`, since Core and the page can legitimately sit
+    on different origins with different schemes).
 - **There is no multi-tenant cloud Core.** CID does not host anyone's code or run anyone's
-  agents server-side. `opencid.dev` hosting the web client does **not** mean CID-the-company
-  can see your repos — every visitor points the hosted page at *their own* Core (running on
-  their machine, their LAN, or a box they control). Say this plainly in the app; don't let
-  it be ambiguous.
+  agents server-side. `cid.opencid.dev` hosting the web client does **not** mean
+  CID-the-project can see your repos — every visitor points the hosted page at *their own*
+  Core (running on their machine, their LAN, or a box they control). Say this plainly in
+  the app; don't let it be ambiguous.
 
 ## A.2 What to build
 
 1. **A "Connect to Core" first-run screen**, shown when the web client has no working
    Core connection configured (new component, e.g. `src/components/onboarding/ConnectCore.tsx`,
-   gating the existing app shell):
+   gating the existing app shell). **Half of this now exists — read A.1's PR #5 bullet
+   before writing any of it.** What is already built: the token field, its `localStorage`
+   persistence, the rejected-vs-absent distinction, and a settings panel to replace or
+   clear the token. What is genuinely still missing:
    - A short, honest explainer (2-3 sentences: what CID is, that this page talks to a
-     Core *you* run, that nothing is uploaded anywhere).
-   - A form: Core URL (default guess `http://localhost:5919`), optional bearer token
-     field (only needed if the user's Core requires one).
+     Core *you* run, that nothing is uploaded anywhere). Today an unconfigured visitor
+     sees a connection-failure banner, not an explanation.
+   - **A Core URL field.** This is the real gap: host/port/scheme are currently *build*-time
+     only (`VITE_CID_CORE_*`, inlined by `vite build`), so a hosted bundle can only ever
+     talk to the one Core it was built against. Making the URL a runtime setting — stored
+     alongside the token in `localStorage`, falling back to the build-time values when
+     unset — is the change that turns this into a real "bring your own Core" page.
    - A "how do I get a Core running" panel with the exact copyable command:
      `cid-core --port 5919` for same-machine use (no `--allow-origin` needed if the
-     browser is also on `localhost:1420` — but opencid.dev is a *different* origin, so
-     the real instruction for opencid.dev specifically must be:
-     `cid-core --allow-origin https://opencid.dev` (loopback bind, no token needed since
-     it's still bound to 127.0.0.1) — verify this against current `access/mod.rs` logic
-     before shipping the copy, don't assume).
-   - Persist the working Core URL (and token, if any) in `localStorage`, not cookies —
-     match whatever the existing desktop client already uses for its own config storage
-     (check `src/lib/api.ts` and any existing settings persistence before inventing a new
-     mechanism).
+     browser is also on `localhost:1420` — but cid.opencid.dev is a *different* origin, so
+     the real instruction for the hosted page specifically must be:
+     `cid-core --allow-origin https://cid.opencid.dev` (loopback bind, no token needed
+     since it's still bound to 127.0.0.1) — verify this against current `access/mod.rs`
+     logic before shipping the copy, don't assume).
    - Clear, reachable "Disconnect / change Core" control once connected, not just a
      one-way setup wizard.
    - If the configured Core is unreachable (network error, CORS rejection, wrong token),
-     show the *actual* error, not a generic "something went wrong" — CORS rejections in
-     particular look like a silent network failure in the browser console; detect and
-     explain that specific case if you can distinguish it.
-2. **A deploy pipeline for the existing web client**, added to this platform repo's CI
-   (not the docs repo): on push to `main` (or a `release` tag — decide based on how this
-   repo already gates releases, check `.github/workflows/ci.yml` first), run
-   `npm run build` and deploy `dist/` to Cloudflare Workers static assets under the
-   `opencid.dev` route, via `wrangler deploy`. Add `wrangler.jsonc` at the repo root (or
-   under `src/` if that reads cleaner given the existing layout — match this repo's
-   conventions, don't force a structure it doesn't already have).
+     show the *actual* error, not a generic "something went wrong" — the wrong-token case
+     is already distinguishable (`AuthRequiredError`), but CORS rejections still look like
+     a silent network failure in the browser console; detect and explain that case if you
+     can distinguish it.
+2. **A deploy pipeline for the existing web client.** ⚠️ **Superseded — check before
+   building.** This brief originally called for Cloudflare Workers static assets +
+   `wrangler.jsonc` in this repo's CI. The deployment actually decided on is
+   **Coolify (Nixpacks static site) on the existing Oracle Cloud box**, reusing the same
+   infrastructure the `houses` project already runs, with `cid-core` deployed beside it
+   from the repo-root `Dockerfile` — full step-by-step in
+   `docs/054-Browser-Release-2026-08-10.md` §3 Option C, including the exact Build
+   Variables and the `VITE_CID_CORE_PORT` empty-value footgun. Follow that, not this item.
+   Cloudflare Workers remains the plan for **Part B's docs site only** (a separate repo,
+   unaffected by this decision). If you are asked to automate the Coolify deploy from CI
+   later, add it as a workflow that triggers Coolify's deploy webhook — do not reintroduce
+   a second, competing hosting target for the same `dist/`.
 3. **Do not change how the desktop/Tauri build works.** This is an *additional* deploy
    target for the same `dist/` output, not a replacement — Tauri keeps bundling the app
    itself exactly as it does today.
@@ -114,9 +148,11 @@ product/app code, no live Core connection, nothing dynamic beyond what a CDN ser
 
 ## B.1 Ground truth about the product (for writing accurate docs)
 
-CID is **already built and working** — 465+ passing tests, a working Rust Core, web UI,
-Tauri desktop app, and TUI. Docs should be written as real documentation, not
-pre-launch teaser copy.
+CID is **already built and working** — a working Rust Core, web UI, Tauri desktop app,
+and TUI, with 201 frontend tests plus the full Rust workspace suite green as of
+2026-08-19. Docs should be written as real documentation, not pre-launch teaser copy.
+(Re-run the suites rather than quoting those counts as gospel — they move; the point is
+that the product is tested and real, not the specific number.)
 
 **One-sentence description:** a chat-native, multi-agent software engineering platform —
 Slack-shaped mission control for shipping code with AI agents.
@@ -169,7 +205,7 @@ CID repo's actual code/tests before writing the page, per the honesty rules in B
 
 | Surface | Status | Docs may say |
 |---|---|---|
-| Web (opencid.dev / self-hosted) | **Working** | Full instructions — link to opencid.dev, explain the "bring your own Core" model from Part A |
+| Web (cid.opencid.dev / self-hosted) | **Working** | Full instructions — link to cid.opencid.dev, explain the "bring your own Core" model from Part A |
 | Desktop (Tauri v2, Windows + macOS) | **Working, builds from source** | Build-from-source steps. No signed installers published yet — no live download buttons pointing at files that don't exist |
 | CLI / TUI (`cid-tui`) | **Working** | Full instructions |
 | Linux desktop | Buildable, less tested | Mark clearly as such |
@@ -191,7 +227,7 @@ distribution (no Homebrew formula, no winget, no `cargo install` from crates.io)
    tone. Never "AI writes your whole codebase while you sleep."
 5. **Do not fabricate metrics** — no invented benchmarks, user counts, or testimonials.
    Star counts must be fetched live at build time from the GitHub API, or omitted.
-6. **Do not claim CID hosts anyone's code.** Every mention of `opencid.dev` in the docs
+6. **Do not claim CID hosts anyone's code.** Every mention of `cid.opencid.dev` in the docs
    must be consistent with Part A.1's "bring your own Core" model.
 
 ## B.3 Repository layout
@@ -255,14 +291,14 @@ Same audience as the product itself: engineers who live in dark-mode editors.
 
 ### Docs home (Starlight-managed, `doc.opencid.dev/`)
 A short landing inside the docs shell: one-line thesis, primary CTA = **"Open the app"**
-linking to `opencid.dev` (not a fake download button) and a secondary CTA = "Star on
+linking to `cid.opencid.dev` (not a fake download button) and a secondary CTA = "Star on
 GitHub." A compact "why not just use an in-editor assistant" honesty section — chat-native
 and thread-shaped, worktree isolation per Mission, explicit approval gates, one Core
 across surfaces. Describe what CID chose and why; do not disparage named competitors.
 
 ### `/docs/*` sidebar structure — build as titled stub pages first, fill after
 
-- **Getting Started** — What is CID · Using the web app (opencid.dev + your own Core,
+- **Getting Started** — What is CID · Using the web app (cid.opencid.dev + your own Core,
   cross-link to Part A's connect flow) · Installing the desktop app · Installing the
   CLI/TUI · Your first Mission · Connecting a model provider
 - **Concepts** — Workspaces, Repo Channels & Missions · Worktrees & isolation ·
@@ -271,7 +307,7 @@ across surfaces. Describe what CID chose and why; do not disparage named competi
   Model routing & per-role overrides
 - **Guides** — Reviewing a diff per hunk · Checkpoints & rewind · Using the terminal ·
   MCP servers per Repo Channel · Autonomous-mode allow-lists · Spend caps · Running your
-  own Core for opencid.dev (the `--host`/`--auth-token`/`--allow-origin` flags, precisely)
+  own Core for cid.opencid.dev (the `--host`/`--auth-token`/`--allow-origin` flags, precisely)
 - **Reference** — JSON-RPC API overview · Configuration · CLI/TUI · `/metrics`
 - **Security** — Threat model · Credential storage · Sandboxing (including the Windows
   filesystem-confinement limitation, stated plainly) · Reporting a vulnerability
@@ -284,7 +320,7 @@ format it — it is authoritative. Note the source doc per page in an HTML comme
 1. **Why CID exists** — the product thesis.
 2. **The autonomy model** — Manual / Co-Pilot / Autonomous, why approval gates are the
    default, what Autonomous actually governs.
-3. **One Core, many surfaces** — the JSON-RPC architecture, why `opencid.dev` is a thin
+3. **One Core, many surfaces** — the JSON-RPC architecture, why `cid.opencid.dev` is a thin
    client over a Core you run yourself rather than a hosted backend.
 
 Real design-decision writing. No filler, no listicles, no SEO padding.
