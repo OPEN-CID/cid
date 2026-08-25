@@ -40,12 +40,12 @@ beforeEach(() => {
   vi.mocked(api.setAuthToken).mockReset();
   vi.mocked(api.hasAuthToken).mockReset().mockReturnValue(false);
   vi.mocked(api.health).mockReset().mockResolvedValue(HEALTH_LOCAL);
-  vi.mocked(useCid).mockReturnValue({ connected: false, missions: [] } as any);
+  vi.mocked(useCid).mockReturnValue({ connected: false, sessions: [] } as any);
 });
 
 describe("ConnectionBanner", () => {
   it("renders nothing when connected", () => {
-    vi.mocked(useCid).mockReturnValue({ connected: true, missions: [] } as any);
+    vi.mocked(useCid).mockReturnValue({ connected: true, sessions: [] } as any);
     const { container } = render(<ConnectionBanner />);
     expect(container).toBeEmptyDOMElement();
   });
@@ -188,7 +188,7 @@ describe("HealthDashboard", () => {
   });
 
   it("reports the uptime Core actually sends, not a field it never had", async () => {
-    vi.mocked(useCid).mockReturnValue({ connected: true, missions: [] } as any);
+    vi.mocked(useCid).mockReturnValue({ connected: true, sessions: [] } as any);
     render(<HealthDashboard />);
 
     fireEvent.click(screen.getByText("Healthy"));
@@ -198,11 +198,11 @@ describe("HealthDashboard", () => {
     expect(await screen.findByText("1m 5s")).toBeInTheDocument();
   });
 
-  it("counts in-flight missions from the store, excluding terminal states", async () => {
+  it("counts in-flight sessions from the store, excluding terminal states", async () => {
     vi.mocked(useCid).mockReturnValue({
       connected: true,
-      // MissionStatus serializes snake_case in cid-core/src/api/types.rs.
-      missions: [
+      // SessionStatus serializes snake_case in cid-core/src/api/types.rs.
+      sessions: [
         { id: "1", status: "running" },
         { id: "2", status: "review" },
         { id: "3", status: "done" },

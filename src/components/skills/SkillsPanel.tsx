@@ -121,7 +121,7 @@ export function SkillsPanel() {
       <div>
         <h3 className="font-semibold text-sm mb-2">Skills (Workspace & Repo)</h3>
         <div className="text-xs text-muted-foreground mb-2">
-          Workspace context = org-wide conventions. Repo context = repo-specific. Resolution: Mission &gt; Repo &gt; Workspace, nearest wins. Skills are markdown snippets stored in SQLite Phase 0, full multi-file SKILL.md support is Phase 1.
+          Workspace context = org-wide conventions. Repo context = repo-specific. Resolution: Session &gt; Repo &gt; Workspace, nearest wins. Skills are markdown snippets stored in SQLite Phase 0, full multi-file SKILL.md support is Phase 1.
         </div>
 
         <div className="space-y-2 mb-4">

@@ -3,13 +3,13 @@
 ## Vision
 
 Approval and monitoring from a phone, not a full editing surface — per Part 1's explicit
-mobile non-goal: reviewing diffs, approving plan/tool-call requests, checking Mission
+mobile non-goal: reviewing diffs, approving plan/tool-call requests, checking Session
 status, voice input, push-style notifications, a read-only terminal.
 
 ## Goals
 
-`src/mobile/MobileApp.tsx` — Mission list (blocked-on-approval Missions surface first) →
-tap into a Mission → approve/deny/comment on pending tool calls → read-only diff and
+`src/mobile/MobileApp.tsx` — Session list (blocked-on-approval Sessions surface first) →
+tap into a Session → approve/deny/comment on pending tool calls → read-only diff and
 terminal tabs. Built on the Phase 2 bake-off decision (ADR 0010: Tauri v2 Mobile), so it
 shares the exact React bundle and JSON-RPC contract every other shell uses — no separate
 mobile backend.
@@ -37,13 +37,13 @@ different React entry point over the identical `src/lib/api.ts` client.
 
 ## Data Structures
 
-`Mission`, `Message`, `PendingApproval` (mobile-local TypeScript types in
+`Session`, `Message`, `PendingApproval` (mobile-local TypeScript types in
 `MobileApp.tsx`, mirroring the shared backend shapes).
 
 ## Traits / Interfaces
 
-No mobile-specific RPC methods — `mission.list`, `message.list`,
-`mission.approveTool`, `mission.sendMessage`, `git.diff` are all shared.
+No mobile-specific RPC methods — `session.list`, `message.list`,
+`session.approveTool`, `session.sendMessage`, `git.diff` are all shared.
 
 ## Storage Layout
 
@@ -94,7 +94,7 @@ Bake-off decision (Phase 2, ADR 0010) → mobile companion app built (Phase 3).
 
 ## Acceptance Criteria
 
-A Mission blocked on approval is visible and actionable from the mobile shell — verified
+A Session blocked on approval is visible and actionable from the mobile shell — verified
 via the web-build path; not yet verified on a physical device.
 
 ## AI Coding Rules

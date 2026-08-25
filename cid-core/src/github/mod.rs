@@ -1,6 +1,6 @@
 //! Phase 1 GitHub bridge — Repo Channel ↔ GitHub remote
 //! - Connect a Repo Channel to a GitHub remote (owner/repo)
-//! - Issue list/get + issue → Mission (mirrors Copilot issue→PR flow)
+//! - Issue list/get + issue → Session (mirrors Copilot issue→PR flow)
 //! - PR create/list/status with git push + API
 //! - Off by default, user enables per Repo Channel via `github.connect`
 //!
@@ -19,7 +19,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use crate::api::types::{AutonomyLevel, GitHubConfig, GitHubIssue, GitHubPr, Mission, SessionMode};
+use crate::api::types::{
+    AutonomyLevel, GitHubConfig, GitHubIssue, GitHubPr, IsolationMode, Session,
+};
 use crate::persistence::Persistence;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -390,14 +392,14 @@ impl GitHubManager {
         Ok(issue)
     }
 
-    // ========== Issue → Mission ==========
+    // ========== Issue → Session ==========
 
-    pub async fn issue_to_mission(
+    pub async fn issue_to_session(
         &self,
         repo_path: &str,
         issue_number: u64,
-        session_mode: Option<SessionMode>,
-    ) -> Result<Mission> {
+        isolation_mode: Option<IsolationMode>,
+    ) -> Result<Session> {
         // Fetch issue
         let issue = self.get_issue(repo_path, issue_number).await?;
 
@@ -421,19 +423,19 @@ impl GitHubManager {
             issue.number, issue.title, body, issue.url
         );
 
-        let mode = session_mode.unwrap_or(SessionMode::Worktree);
+        let mode = isolation_mode.unwrap_or(IsolationMode::Worktree);
 
-        // Create mission via persistence
-        let mission = self
+        // Create session via persistence
+        let session = self
             .persistence
-            .create_mission(
+            .create_session(
                 &repo_channel.id,
                 &title,
                 &task_description,
                 mode,
                 AutonomyLevel::CoPilot,
             )
-            .context("Failed to create mission from issue")?;
+            .context("Failed to create session from issue")?;
 
         // Also create a system message linking the issue (for traceability)
         let link_msg = format!(
@@ -446,17 +448,17 @@ impl GitHubManager {
         );
         // Best-effort, ignore errors
         let _ = self.persistence.create_message(
-            &mission.id,
+            &session.id,
             crate::api::types::MessageRole::System,
             &link_msg,
             vec![],
         );
 
         info!(
-            "Created mission {} from GitHub issue #{} for repo {}",
-            mission.id, issue.number, repo_path
+            "Created session {} from GitHub issue #{} for repo {}",
+            session.id, issue.number, repo_path
         );
-        Ok(mission)
+        Ok(session)
     }
 
     // ========== PRs ==========

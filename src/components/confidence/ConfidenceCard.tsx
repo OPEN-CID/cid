@@ -49,7 +49,7 @@ function barColor(score: number): string {
  * into one opaque number — Part A's explicit requirement, because a wrong
  * "high confidence" is worse than no score at all.
  */
-export function ConfidenceCard({ missionId, filePath }: { missionId: string; filePath: string }) {
+export function ConfidenceCard({ sessionId, filePath }: { sessionId: string; filePath: string }) {
   const [card, setCard] = useState<ConfidenceScore | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -60,7 +60,7 @@ export function ConfidenceCard({ missionId, filePath }: { missionId: string; fil
     setLoading(true);
     setError(null);
     try {
-      const result = await api.confidence.score(missionId, filePath);
+      const result = await api.confidence.score(sessionId, filePath);
       setCard(result);
       setExpanded(true);
     } catch (e) {
@@ -72,11 +72,11 @@ export function ConfidenceCard({ missionId, filePath }: { missionId: string; fil
 
   // 051-Editor-Excellence-Roadmap.md Wave 5.1f: confidence.history had a
   // real, tested backend and no caller anywhere. Scores are stored per
-  // Mission, not per file — labelled honestly rather than implying a
+  // Session, not per file — labelled honestly rather than implying a
   // per-file filter the data doesn't support.
   const loadHistory = async () => {
     try {
-      const scores: ConfidenceScore[] = await api.confidence.history(missionId);
+      const scores: ConfidenceScore[] = await api.confidence.history(sessionId);
       setHistory(scores || []);
     } catch (e) {
       toast.error(`Failed to load confidence history: ${e}`);
@@ -126,7 +126,7 @@ export function ConfidenceCard({ missionId, filePath }: { missionId: string; fil
 
       {expanded && history && (
         <div className="border-t px-2 py-2 space-y-1">
-          <div className="text-[10px] text-muted-foreground">Recent scores for this Mission (all files):</div>
+          <div className="text-[10px] text-muted-foreground">Recent scores for this Session (all files):</div>
           {history.length === 0 && <div className="text-[11px] text-muted-foreground">No prior scores recorded.</div>}
           {history.map((h) => (
             <div key={h.patch_id} className="flex items-center gap-2 text-[11px]">

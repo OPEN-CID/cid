@@ -16,8 +16,8 @@ import {
 /**
  * Mobile companion shell — approval and monitoring only.
  *
- * Part 1's mobile non-goal and Part 19's mobile screen spec: Mission list →
- * Mission thread with pending approval cards → approve/deny/comment →
+ * Part 1's mobile non-goal and Part 19's mobile screen spec: Session list →
+ * Session thread with pending approval cards → approve/deny/comment →
  * read-only terminal and diff. Deliberately no file tree and no editor; code is
  * not written from here.
  *
@@ -25,12 +25,12 @@ import {
  * and web shells, per the Phase 2 bake-off ADR (0010).
  */
 
-type Mission = {
+type Session = {
   id: string;
   title: string;
   status: string;
   autonomy_level: string;
-  session_mode: string;
+  isolation_mode: string;
   worktree_path?: string | null;
   repo_channel_id: string;
   updated_at: string;
@@ -65,7 +65,7 @@ function statusDot(status: string) {
 }
 
 /** Ask for notification permission once, then post one per pending approval. */
-function useApprovalNotifications(pending: PendingApproval[], missionTitle: string) {
+function useApprovalNotifications(pending: PendingApproval[], sessionTitle: string) {
   const [enabled, setEnabled] = useState(
     typeof Notification !== "undefined" && Notification.permission === "granted"
   );
@@ -84,7 +84,7 @@ function useApprovalNotifications(pending: PendingApproval[], missionTitle: stri
     for (const p of fresh) {
       try {
         new Notification("CID needs your approval", {
-          body: `${missionTitle}: ${p.tool_name}`,
+          body: `${sessionTitle}: ${p.tool_name}`,
           tag: p.tool_call_id,
         });
       } catch {
@@ -93,7 +93,7 @@ function useApprovalNotifications(pending: PendingApproval[], missionTitle: stri
       }
     }
     setSeen((prev) => new Set([...prev, ...fresh.map((p) => p.tool_call_id)]));
-  }, [enabled, pending, missionTitle, seen]);
+  }, [enabled, pending, sessionTitle, seen]);
 
   return { enabled, request };
 }
@@ -154,15 +154,15 @@ function useVoiceInput(onText: (text: string) => void) {
   return { supported: !!Recognition, listening, toggle };
 }
 
-function MissionList({ onOpen }: { onOpen: (m: Mission) => void }) {
-  const [missions, setMissions] = useState<Mission[]>([]);
+function SessionList({ onOpen }: { onOpen: (m: Session) => void }) {
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setMissions((await api.mission.list()) ?? []);
+      setSessions((await api.session.list()) ?? []);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -174,27 +174,27 @@ function MissionList({ onOpen }: { onOpen: (m: Mission) => void }) {
   useEffect(() => {
     load();
     const unsub = api.onNotification((n) => {
-      if (n.method?.startsWith("mission.")) load();
+      if (n.method?.startsWith("session.")) load();
     });
     return () => unsub();
   }, [load]);
 
-  // Missions waiting on a human come first — that is the whole reason to open
+  // Sessions waiting on a human come first — that is the whole reason to open
   // this app on a phone.
   const sorted = useMemo(
     () =>
-      [...missions].sort((a, b) => {
+      [...sessions].sort((a, b) => {
         const aBlocked = a.status === "blocked_on_approval" ? 0 : 1;
         const bBlocked = b.status === "blocked_on_approval" ? 0 : 1;
         return aBlocked - bBlocked || b.updated_at.localeCompare(a.updated_at);
       }),
-    [missions]
+    [sessions]
   );
 
   return (
     <div className="flex flex-col h-full">
       <header className="h-14 border-b flex items-center px-4 gap-2 bg-card shrink-0">
-        <span className="font-semibold">Missions</span>
+        <span className="font-semibold">Sessions</span>
         <button onClick={load} className="ml-auto p-2 -mr-2" aria-label="Refresh">
           <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
         </button>
@@ -204,7 +204,7 @@ function MissionList({ onOpen }: { onOpen: (m: Mission) => void }) {
         {error && <div className="m-4 p-3 rounded border text-sm text-red-300">{error}</div>}
         {!error && sorted.length === 0 && !loading && (
           <div className="p-8 text-center text-sm text-muted-foreground">
-            No missions yet. Start one from the desktop or web app.
+            No sessions yet. Start one from the desktop or web app.
           </div>
         )}
         {sorted.map((m) => (
@@ -232,7 +232,7 @@ function MissionList({ onOpen }: { onOpen: (m: Mission) => void }) {
   );
 }
 
-function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => void }) {
+function SessionDetail({ session, onBack }: { session: Session; onBack: () => void }) {
   const [tab, setTab] = useState<"thread" | "diff" | "terminal">("thread");
   const [messages, setMessages] = useState<Message[]>([]);
   const [pending, setPending] = useState<PendingApproval[]>([]);
@@ -241,49 +241,49 @@ function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => vo
   const [diff, setDiff] = useState<string>("");
   const [terminal, setTerminal] = useState<string[]>([]);
 
-  const notifications = useApprovalNotifications(pending, mission.title);
+  const notifications = useApprovalNotifications(pending, session.title);
   const voice = useVoiceInput((text) => setReply((r) => (r ? `${r} ${text}` : text)));
 
   const loadMessages = useCallback(async () => {
     try {
-      setMessages((await api.message.list(mission.id)) ?? []);
+      setMessages((await api.message.list(session.id)) ?? []);
     } catch {
       // The thread simply stays as-is if Core is briefly unreachable.
     }
-  }, [mission.id]);
+  }, [session.id]);
 
   useEffect(() => {
     loadMessages();
     const unsub = api.onNotification((n) => {
-      if (n.params?.mission_id !== mission.id) return;
-      if (n.method === "mission.tool_call.request") {
+      if (n.params?.session_id !== session.id) return;
+      if (n.method === "session.tool_call.request") {
         setPending((prev) => [...prev, n.params as PendingApproval]);
-      } else if (n.method === "mission.tool_call.complete") {
+      } else if (n.method === "session.tool_call.complete") {
         setPending((prev) => prev.filter((p) => p.tool_call_id !== n.params.tool_call_id));
         loadMessages();
-      } else if (n.method?.startsWith("mission.message")) {
+      } else if (n.method?.startsWith("session.message")) {
         loadMessages();
       } else if (n.method === "pty.output") {
         setTerminal((prev) => [...prev.slice(-400), String(n.params?.data ?? "")]);
       }
     });
     return () => unsub();
-  }, [mission.id, loadMessages]);
+  }, [session.id, loadMessages]);
 
   useEffect(() => {
     if (tab !== "diff") return;
-    const path = mission.worktree_path;
+    const path = session.worktree_path;
     if (!path) return;
     api.git
       .diff(path)
       .then((d) => setDiff(JSON.stringify(d, null, 2)))
       .catch((e) => setDiff(String(e)));
-  }, [tab, mission.worktree_path]);
+  }, [tab, session.worktree_path]);
 
   const decide = async (toolCallId: string, approved: boolean) => {
     setBusy(true);
     try {
-      await api.mission.approveTool(mission.id, toolCallId, approved);
+      await api.session.approveTool(session.id, toolCallId, approved);
       setPending((prev) => prev.filter((p) => p.tool_call_id !== toolCallId));
     } finally {
       setBusy(false);
@@ -296,7 +296,7 @@ function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => vo
     setReply("");
     setBusy(true);
     try {
-      await api.mission.sendMessage(mission.id, content);
+      await api.session.sendMessage(session.id, content);
       await loadMessages();
     } finally {
       setBusy(false);
@@ -310,9 +310,9 @@ function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => vo
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="min-w-0">
-          <div className="font-medium text-sm truncate">{mission.title}</div>
+          <div className="font-medium text-sm truncate">{session.title}</div>
           <div className="text-[11px] text-muted-foreground">
-            {mission.status.replace(/_/g, " ")} · {mission.autonomy_level}
+            {session.status.replace(/_/g, " ")} · {session.autonomy_level}
           </div>
         </div>
         {!notifications.enabled && (
@@ -395,7 +395,7 @@ function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => vo
 
         {tab === "diff" && (
           <pre className="text-[11px] font-mono whitespace-pre-wrap break-all">
-            {mission.worktree_path ? diff || "Loading diff…" : "This Mission has no worktree."}
+            {session.worktree_path ? diff || "Loading diff…" : "This Session has no worktree."}
           </pre>
         )}
 
@@ -444,7 +444,7 @@ function MissionDetail({ mission, onBack }: { mission: Mission; onBack: () => vo
 }
 
 export function MobileApp() {
-  const [selected, setSelected] = useState<Mission | null>(null);
+  const [selected, setSelected] = useState<Session | null>(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -463,9 +463,9 @@ export function MobileApp() {
       )}
       <div className="flex-1 min-h-0">
         {selected ? (
-          <MissionDetail mission={selected} onBack={() => setSelected(null)} />
+          <SessionDetail session={selected} onBack={() => setSelected(null)} />
         ) : (
-          <MissionList onOpen={setSelected} />
+          <SessionList onOpen={setSelected} />
         )}
       </div>
     </div>

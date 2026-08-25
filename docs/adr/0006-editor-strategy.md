@@ -14,7 +14,7 @@
 - **Context**: Build Prompt v1 asked for native GPU-rendered editor built from scratch, no Monaco. v3.0 explains why that doesn't hold up: Zed, built by Atom/Tree-sitter creators with $32M funding, took ~5 years to reach 1.0 (April 29, 2026) building exactly this — realistic cost, not few-days line item. Market converged on embedding proven editors plus ACP host for pop-out to full IDE. Non-goal for foreseeable roadmap: try to beat Monaco/CodeMirror/Zed GPUI on raw rendering Phase0-3.
 - **Decision**: 
   - Inline editor (thread-embedded, quick edits/approvals without leaving conversation, e.g., hand-tweak diff hunk before accepting): **CodeMirror 6** — lightweight, fast to load inline in chat message
-  - Full file/project editor pane: **Monaco** (same component VS Code, Kiro, early Cursor build on) in Mission's right panel or dedicated tab, with LSP integration for supported languages — fulfills "open a file like VS Code" ask
+  - Full file/project editor pane: **Monaco** (same component VS Code, Kiro, early Cursor build on) in Session's right panel or dedicated tab, with LSP integration for supported languages — fulfills "open a file like VS Code" ask
   - File tree annotated by Context Engine once enabled — not plain tree (per Part 7)
   - Phase1+: CID becomes **ACP host** (Agent Client Protocol, created by Zed Aug 2025, co-developed JetBrains Oct 2025, Apache-licensed, JSON-RPC over stdio, 25+ agents, 10+ editor surfaces) so session can pop out into Zed or JetBrains IDE and hand back — interops with best editors instead of out-building them
 - **Alternatives**:

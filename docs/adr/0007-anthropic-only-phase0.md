@@ -6,14 +6,14 @@
 - **Decision**: 
   - Phase0 `ModelManager` implements Anthropic Messages API with streaming (`https://api.anthropic.com/v1/messages`, header `anthropic-version: 2023-06-01`, streaming via SSE `data: ` lines)
   - Tools defined as Anthropic tool_use blocks: read_file, write_file, edit_file, list_files, run_terminal, git_status, git_diff, git_commit, plus MCP via mcp_call
-  - Tool-use loop: model streams content, we emit `mission.message.delta` notifications for live UI, accumulate full content, then create ToolCall entries requiring approval (Co-Pilot mode). Pending approvals stored in RwLock<HashMap>, approval channel via mpsc with 5min timeout. If denied, return "denied" result.
+  - Tool-use loop: model streams content, we emit `session.message.delta` notifications for live UI, accumulate full content, then create ToolCall entries requiring approval (Co-Pilot mode). Pending approvals stored in RwLock<HashMap>, approval channel via mpsc with 5min timeout. If denied, return "denied" result.
   - If no API key configured (env `ANTHROPIC_API_KEY` or Settings UI persisted to SQLite), fall back to simulated response that explains how to enable real AI and what would have happened — allows local dev and E2E without credit usage
   - Model list returns Claude 3.5 Sonnet (default) and Haiku
 - **Alternatives**:
   - Multi-provider from day1 (OpenAI, Google, generic OpenAI-compatible slot): would triple integration work, violate Phase0 scope boundary (Part A says if you find yourself building any of these, stop and re-read — you've drifted)
   - No fallback simulation: would make Phase0 unusable without key, blocking browser dev loop testing
 - **Consequences**:
-  - Co-Pilot autonomy only Phase0: every tool call shown, human approves/denies individually or batched (Build Prompt Part 5) — implemented via `mission.tool_call.request` notification and `mission.approve_tool` RPC
+  - Co-Pilot autonomy only Phase0: every tool call shown, human approves/denies individually or batched (Build Prompt Part 5) — implemented via `session.tool_call.request` notification and `session.approve_tool` RPC
   - Secret redaction: Phase0 minimal (no secret sent as plain context per Part 14), Phase2 will have Warp-style default redaction in live view and persisted history
   - Token/cost metrics tab is stub Phase0 (Phase1+)
   - Settings UI persists anthropic_api_key to SQLite — per Part14, secrets should be OS-native credential storage Keychain/Credential Manager/Secret Service never plaintext in SQLite — Phase0 stores as plaintext for simplicity, ADR documents this as known issue to fix Phase1

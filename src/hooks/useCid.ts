@@ -15,12 +15,12 @@ export type RepoChannel = {
   created_at: string;
 };
 
-export type Mission = {
+export type Session = {
   id: string;
   repo_channel_id: string;
   title: string;
   task_description: string;
-  session_mode: "worktree" | "shared";
+  isolation_mode: "worktree" | "shared";
   autonomy_level: "manual" | "co_pilot" | "autonomous";
   status: string;
   worktree_path?: string;
@@ -31,7 +31,7 @@ export type Mission = {
 
 export type ChatMessage = {
   id: string;
-  mission_id: string;
+  session_id: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   tool_calls: ToolCall[];
@@ -49,15 +49,15 @@ export type ToolCall = {
   approved?: boolean;
   /** review_prompt.md §1.2: set when this call was made while untrusted repo
    * content (an approved AGENTS.md/SKILL.md, or a prior file/diff/MCP read
-   * this Mission) was present in context. */
+   * this Session) was present in context. */
   provenance?: string;
   /** Set for MCP tool calls, to route the result through McpAppCard. */
   server_id?: string;
 };
 
-/** `mission.tool_call.request` notification payload — see model/mod.rs. */
+/** `session.tool_call.request` notification payload — see model/mod.rs. */
 export type PendingApproval = {
-  mission_id: string;
+  session_id: string;
   tool_call_id: string;
   tool_name: string;
   arguments: unknown;
@@ -68,8 +68,8 @@ type CidState = {
   connected: boolean;
   repos: RepoChannel[];
   selectedRepoId: string | null;
-  missions: Mission[];
-  selectedMissionId: string | null;
+  sessions: Session[];
+  selectedSessionId: string | null;
   messages: Record<string, ChatMessage[]>;
   isCoreAvailable: boolean;
   // Neither is currently read anywhere — no consumer destructures them from
@@ -81,19 +81,19 @@ type CidState = {
   setConnected: (v: boolean) => void;
   loadRepos: () => Promise<void>;
   selectRepo: (id: string | null) => void;
-  loadMissions: (repoId?: string) => Promise<void>;
-  selectMission: (id: string | null) => void;
-  loadMessages: (missionId: string) => Promise<void>;
-  addMessage: (missionId: string, msg: ChatMessage) => void;
-  updateMessage: (missionId: string, msgId: string, patch: Partial<ChatMessage>) => void;
+  loadSessions: (repoId?: string) => Promise<void>;
+  selectSession: (id: string | null) => void;
+  loadMessages: (sessionId: string) => Promise<void>;
+  addMessage: (sessionId: string, msg: ChatMessage) => void;
+  updateMessage: (sessionId: string, msgId: string, patch: Partial<ChatMessage>) => void;
 };
 
 export const useCid = create<CidState>((set, get) => ({
   connected: false,
   repos: [],
   selectedRepoId: null,
-  missions: [],
-  selectedMissionId: null,
+  sessions: [],
+  selectedSessionId: null,
   messages: {},
   isCoreAvailable: false,
   settings: null,
@@ -112,59 +112,59 @@ export const useCid = create<CidState>((set, get) => ({
   },
 
   selectRepo: (id) => {
-    set({ selectedRepoId: id, selectedMissionId: null });
+    set({ selectedRepoId: id, selectedSessionId: null });
     if (id) {
-      get().loadMissions(id);
+      get().loadSessions(id);
     }
   },
 
-  loadMissions: async (repoId) => {
+  loadSessions: async (repoId) => {
     const targetRepoId = repoId || get().selectedRepoId;
     if (!targetRepoId) return;
     try {
-      const missions = await api.mission.list(targetRepoId);
-      set({ missions });
+      const sessions = await api.session.list(targetRepoId);
+      set({ sessions });
     } catch (e) {
-      console.error("Failed to load missions", e);
+      console.error("Failed to load sessions", e);
     }
   },
 
-  selectMission: (id) => {
-    set({ selectedMissionId: id });
+  selectSession: (id) => {
+    set({ selectedSessionId: id });
     if (id) {
       get().loadMessages(id);
     }
   },
 
-  loadMessages: async (missionId) => {
+  loadMessages: async (sessionId) => {
     try {
-      const msgs = await api.message.list(missionId);
+      const msgs = await api.message.list(sessionId);
       set((s) => ({
-        messages: { ...s.messages, [missionId]: msgs },
+        messages: { ...s.messages, [sessionId]: msgs },
       }));
     } catch (e) {
       console.error("Failed to load messages", e);
     }
   },
 
-  addMessage: (missionId, msg) => {
+  addMessage: (sessionId, msg) => {
     set((s) => ({
       messages: {
         ...s.messages,
-        [missionId]: [...(s.messages[missionId] || []), msg],
+        [sessionId]: [...(s.messages[sessionId] || []), msg],
       },
     }));
   },
 
-  updateMessage: (missionId, msgId, patch) => {
+  updateMessage: (sessionId, msgId, patch) => {
     set((s) => {
-      const msgs = s.messages[missionId] || [];
+      const msgs = s.messages[sessionId] || [];
       const idx = msgs.findIndex((m) => m.id === msgId);
       if (idx === -1) return s;
       const newMsgs = [...msgs];
       newMsgs[idx] = { ...newMsgs[idx], ...patch };
       return {
-        messages: { ...s.messages, [missionId]: newMsgs },
+        messages: { ...s.messages, [sessionId]: newMsgs },
       };
     });
   },

@@ -27,6 +27,7 @@ pub mod repo_health;
 pub mod role_profiles;
 pub mod roles;
 pub mod sandbox;
+pub mod search;
 pub mod semantic_engine;
 pub mod skills;
 pub mod slack_bridge;
@@ -98,6 +99,10 @@ pub struct Core {
     pub mcp_tasks_manager: Arc<McpTasksManager>,
     pub sandbox_manager: Arc<SandboxManager>,
     pub semantic_engine: Arc<SemanticEngine>,
+    /// Owns the `ollama serve` child process when CID started one, so that
+    /// `local.runtime.stop` can distinguish our server from one the user is
+    /// already running and refuse to kill the latter.
+    pub local_runtime_manager: Arc<crate::local_models::manager::LocalRuntimeManager>,
     pub access_policy: Arc<AccessPolicy>,
     pub connected_clients: Arc<std::sync::atomic::AtomicUsize>,
     pub event_tx: broadcast::Sender<String>,
@@ -147,6 +152,8 @@ impl Core {
         let mcp_tasks_manager =
             Arc::new(McpTasksManager::new(mcp_manager.clone(), event_tx.clone()));
         let semantic_engine = Arc::new(SemanticEngine::new(analyzer.clone()));
+        let local_runtime_manager =
+            Arc::new(crate::local_models::manager::LocalRuntimeManager::new());
         let sandbox_manager = Arc::new(SandboxManager::new());
         let access_policy = Arc::new(AccessPolicy::local_only());
         let connected_clients = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -194,6 +201,7 @@ impl Core {
             teams_bridge,
             mcp_tasks_manager,
             semantic_engine,
+            local_runtime_manager,
             sandbox_manager,
             access_policy,
             connected_clients,
@@ -239,6 +247,8 @@ impl Core {
         let mcp_tasks_manager =
             Arc::new(McpTasksManager::new(mcp_manager.clone(), event_tx.clone()));
         let semantic_engine = Arc::new(SemanticEngine::new(analyzer.clone()));
+        let local_runtime_manager =
+            Arc::new(crate::local_models::manager::LocalRuntimeManager::new());
         let sandbox_manager = Arc::new(SandboxManager::new());
         let access_policy = Arc::new(AccessPolicy::local_only());
         let connected_clients = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -273,6 +283,7 @@ impl Core {
             teams_bridge,
             mcp_tasks_manager,
             semantic_engine,
+            local_runtime_manager,
             sandbox_manager,
             access_policy,
             connected_clients,
@@ -312,6 +323,7 @@ impl Core {
             teams_bridge: self.teams_bridge.clone(),
             mcp_tasks_manager: self.mcp_tasks_manager.clone(),
             semantic_engine: self.semantic_engine.clone(),
+            local_runtime_manager: self.local_runtime_manager.clone(),
             sandbox_manager: self.sandbox_manager.clone(),
             access_policy: self.access_policy.clone(),
             connected_clients: self.connected_clients.clone(),

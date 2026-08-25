@@ -16,7 +16,7 @@ checkpoint that overstates what holds is worse than no checkpoint.
 
 | Deliverable | Module | Tests |
 |---|---|---|
-| Subagent orchestration, sharing the parent Mission's worktree | `subagent/` | 7 |
+| Subagent orchestration, sharing the parent Session's worktree | `subagent/` | 7 |
 | Background/ambient model routing to detected local runtimes | `background_model/` | 5 |
 | Slack bridge (`/cid` slash command, channel allow-list, status posting) | `slack_bridge/` | 8 |
 | Teams bridge (incoming webhook, Adaptive Cards, team allow-list) | `teams_bridge/` | 8 |
@@ -47,7 +47,7 @@ Now:
 - **Layer 1, all platforms:** command path policy. Command and argument tokens that are
   absolute or use `..` are resolved and checked against the worktree before anything is
   spawned. Read-only system paths are exempt so invoking an interpreter is not misread as
-  an escape. A Mission's `run_terminal` working directory is clamped into the Mission root,
+  an escape. A Session's `run_terminal` working directory is clamped into the Session root,
   so a model-supplied `workdir` cannot redirect execution.
 - **Layer 2, where the OS provides it:** `sandbox-exec` on macOS, `bubblewrap` on Linux.
   Windows Job Objects are still applied for process containment but are **not** counted as
@@ -65,8 +65,8 @@ Now:
 so **Autonomous mode never actually ran autonomously** and the allow-list was never
 consulted on the execution path.
 
-Both are now wired: tool execution carries an `ExecutionContext` (Mission root, autonomy
-level, repo path). Autonomous Missions check the Repo Channel allow-list; pre-approved
+Both are now wired: tool execution carries an `ExecutionContext` (Session root, autonomy
+level, repo path). Autonomous Sessions check the Repo Channel allow-list; pre-approved
 commands run sandboxed without prompting, anything else falls back to the approval
 request, and explicitly denied commands are refused.
 
@@ -102,7 +102,7 @@ asserts the index survives being closed and reopened.
 `WebShell.tsx` (420 lines) and `McpAppCard.tsx` (375 lines) were never imported by any
 component. Both were reported as delivered. Now `ConnectionBanner` renders app-wide, a
 `server` tab carries `HealthDashboard` and the rewritten `AccessControlPanel`, and tool
-results in the Mission thread render as MCP Apps when a server sends renderable content
+results in the Session thread render as MCP Apps when a server sends renderable content
 (`extractMcpAppContent`), falling back to the plain result card otherwise.
 
 ---

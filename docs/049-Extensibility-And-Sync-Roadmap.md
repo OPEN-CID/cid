@@ -31,15 +31,15 @@ stated back in Part 12: a team adopting CID doesn't migrate anything.
 | VS Code concept | CID's existing equivalent | Assessment |
 |---|---|---|
 | Extensions that add *tools/capabilities* | **MCP servers** (Part 8) — any process speaking the 2026-07-28 MCP spec, added per-Workspace, enabled per-Repo-Channel | Already a real, working extension point, and a better one than VS Code's own: MCP is a genuine multi-vendor standard (25+ agents/editors), not CID-specific. Nothing to build here — document and promote it as the answer to "how do I extend CID's capabilities," rather than inventing a second, incompatible plugin format. |
-| Extensions that add *custom UI inside a tool call* | **MCP Apps** (the 2026-07-28 MCP extension, Part 2/Part 8) — servers render real interactive HTML inline | This is architecturally the same problem VS Code's Webview API solves, already solved at the protocol level CID targets. A third party wanting a custom dashboard/form inside a Mission thread ships it as an MCP Apps-capable server, not a CID-specific plugin. |
-| Extensions that add *reusable knowledge/procedures* | **`SKILL.md`** bundles (Part 12) | Already real, already UI-editable, already resolves Workspace→Repo→Mission. |
+| Extensions that add *custom UI inside a tool call* | **MCP Apps** (the 2026-07-28 MCP extension, Part 2/Part 8) — servers render real interactive HTML inline | This is architecturally the same problem VS Code's Webview API solves, already solved at the protocol level CID targets. A third party wanting a custom dashboard/form inside a Session thread ships it as an MCP Apps-capable server, not a CID-specific plugin. |
+| Extensions that add *reusable knowledge/procedures* | **`SKILL.md`** bundles (Part 12) | Already real, already UI-editable, already resolves Workspace→Repo→Session. |
 | Process isolation (one bad extension can't crash the host) | MCP servers already run out-of-process (stdio/HTTP transports) | Inherited for free from the MCP architecture — CID never had to build its own extension-host sandboxing for this category. |
 
 **What's genuinely missing** — the part VS Code's model covers that none of the above
 does:
 
 1. **UI-structure extensions**: adding a new left-rail section, a new right-panel tab
-   (beyond what a Mission-scoped MCP Apps surface gives you), or a custom command in the
+   (beyond what a Session-scoped MCP Apps surface gives you), or a custom command in the
    composer that isn't a tool call. There is no manifest format or contribution-point
    system for this today.
 2. **Themes**: CID currently ships one dark theme (Tailwind + shadcn/ui, CSS custom
@@ -80,7 +80,7 @@ React bundle as desktop/web (Part 15), reading `VITE_CID_CORE_HOST`/`VITE_CID_CO
 at runtime (`src/lib/api.ts`). If a laptop's Core is bound to its LAN address (not just
 `127.0.0.1`) with an auth token — which `AccessPolicy::new` already requires by
 construction for any non-loopback bind (ADR 0012) — a phone on the **same network** can
-point at `http://<laptop-lan-ip>:5919` and see the identical Missions, messages, and
+point at `http://<laptop-lan-ip>:5919` and see the identical Sessions, messages, and
 state, because it isn't sync at all: it's the same Core, the same SQLite file, the same
 process. **No new architecture needed for the same-network case.** What's missing is
 purely UX: a QR-code or pairing flow to get the LAN address + token onto the phone
@@ -111,7 +111,7 @@ about. This needs one of:
 - Same-network pairing (item 1 in "what already works") ships first, independent of any
   relay/cloud decision — it's real, useful, and needs no new backend.
 - The relay/hosted layer, if built, should sync *pointers and recent state* (which
-  Missions exist, their status, recent messages) for the mobile approval/monitoring use
+  Sessions exist, their status, recent messages) for the mobile approval/monitoring use
   case Part 15 already scopes mobile to — not full worktree/file content, which stays on
   the machine that has the actual git checkout. This keeps the sync surface small and
   matches mobile's existing "approval/monitoring, not full editing" non-goal (Part 1).

@@ -6,7 +6,16 @@ import { api } from "@/lib/api";
 vi.mock("@/lib/api", () => ({
   api: {
     settings: { get: vi.fn(), update: vi.fn() },
-    localRuntime: { list: vi.fn(), detect: vi.fn() },
+    localRuntime: {
+      list: vi.fn(),
+      detect: vi.fn(),
+      recommended: vi.fn().mockResolvedValue({ system: null, models: [] }),
+      status: vi.fn().mockResolvedValue({ installed: false, running: false, ownership: "not_running", installed_models: [] }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      pull: vi.fn(),
+    },
+    onNotification: vi.fn(() => () => {}),
     model: { list: vi.fn().mockResolvedValue([]) },
     // TeamIntegrationsPanel (051 Wave 5.1d) is rendered inside ProvidersPanel now.
     slack: { configGet: vi.fn().mockResolvedValue({ configured: false }), configure: vi.fn() },
@@ -43,29 +52,30 @@ describe("ProvidersPanel", () => {
     vi.mocked(api.model.list).mockReset().mockResolvedValue([]);
   });
 
-  it("loads settings and detected local runtimes on mount", async () => {
+  // Setting up a local runtime now lives on the Local tab (hardware, download,
+  // start/stop); the Cloud tab keeps only a one-line summary and the rescan, so
+  // that a user who has one running can see it without leaving this screen.
+  it("summarises detected local runtimes on mount", async () => {
     vi.mocked(api.settings.get).mockResolvedValueOnce({ anthropic_api_key: "sk-ant-...abcd" });
     vi.mocked(api.localRuntime.list).mockResolvedValueOnce(runtimes);
 
     render(<ProvidersPanel />);
     await flushAsyncWork();
 
-    expect(screen.getByText("Ollama")).toBeInTheDocument();
-    expect(screen.getByText("LM Studio")).toBeInTheDocument();
-    expect(screen.queryByText(/No local runtime detected/)).not.toBeInTheDocument();
+    expect(screen.getByText(/local runtime.* detected/)).toBeInTheDocument();
   });
 
-  it("shows the no-runtime message when nothing is available", async () => {
+  it("says so when no local runtime is running", async () => {
     vi.mocked(api.settings.get).mockResolvedValueOnce({});
     vi.mocked(api.localRuntime.list).mockResolvedValueOnce([]);
 
     render(<ProvidersPanel />);
     await flushAsyncWork();
 
-    expect(screen.getByText(/No local runtime detected/)).toBeInTheDocument();
+    expect(screen.getByText(/No local runtime running/)).toBeInTheDocument();
   });
 
-  it("rescan calls detect(true) and replaces the runtime list", async () => {
+  it("rescan calls detect(true) and updates the summary", async () => {
     vi.mocked(api.settings.get).mockResolvedValueOnce({});
     vi.mocked(api.localRuntime.list).mockResolvedValueOnce([]);
     vi.mocked(api.localRuntime.detect).mockResolvedValueOnce(runtimes);
@@ -77,7 +87,25 @@ describe("ProvidersPanel", () => {
     await flushAsyncWork();
 
     expect(vi.mocked(api.localRuntime.detect)).toHaveBeenCalledWith(true);
-    expect(screen.getByText("Ollama")).toBeInTheDocument();
+    expect(screen.getByText(/local runtime.* detected/)).toBeInTheDocument();
+  });
+
+  it("the Local tab is a separate view, not more of the same scrolling page", async () => {
+    vi.mocked(api.settings.get).mockResolvedValueOnce({});
+    vi.mocked(api.localRuntime.list).mockResolvedValueOnce([]);
+
+    render(<ProvidersPanel />);
+    await flushAsyncWork();
+
+    // Cloud credentials are visible on the default tab...
+    expect(screen.getByText("Provider credentials")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Local models" }));
+    await flushAsyncWork();
+
+    // ...and gone once the Local tab takes over.
+    expect(screen.queryByText("Provider credentials")).not.toBeInTheDocument();
+    expect(screen.getByText("This machine")).toBeInTheDocument();
   });
 
   it("saving does not resend a redacted key the user never touched", async () => {

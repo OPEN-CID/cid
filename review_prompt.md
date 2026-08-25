@@ -52,7 +52,7 @@ Work top-down. Section 1 is security and must land before anything else ships. S
 
 - `execute_tool_direct_in`'s `"read_file"`, `"write_file"`, `"edit_file"`, and `"list_files"` arms take a model-supplied `path` string and pass it **directly** to `tokio::fs::read_to_string(path)` / `tokio::fs::write(path, …)` with **no validation whatsoever** — no canonicalization, no root check, no symlink resolution.
 - `autonomy_decision` (~line 2283) returns `AutonomyDecision::PreApproved` for **every tool that isn't `run_terminal`**, with the comment:
-  > *"Only `run_terminal` consults the command allow-list — the other tools are file and git operations already confined to the Mission's own directory."*
+  > *"Only `run_terminal` consults the command allow-list — the other tools are file and git operations already confined to the Session's own directory."*
 
   **That comment is false.** `run_terminal` is genuinely confined (it calls `ctx.confined_root()` → `ctx.resolve_workdir()` → `SandboxConfig`). The file tools are not confined by anything.
 
@@ -96,7 +96,7 @@ Carried forward from `docs/CHECKPOINT-Phase3.md`, still open and verified during
 - `governance.check.merge` exists as a callable RPC; **nothing invokes it** at an actual merge/PR decision point.
 - `governance.spend.record` exists and is tested; **nothing in the model-router path calls it** after a real API call, so spend caps can never trip from real usage.
 
-**Fix:** call `check_merge` in the merge/PR path before the operation, and `record_spend` after every provider call, threading real token counts from each provider's response (`usage` on Anthropic/OpenAI, `usageMetadata` on Google). Test that a mission exceeding its cap is actually blocked on the *next* call.
+**Fix:** call `check_merge` in the merge/PR path before the operation, and `record_spend` after every provider call, threading real token counts from each provider's response (`usage` on Anthropic/OpenAI, `usageMetadata` on Google). Test that a session exceeding its cap is actually blocked on the *next* call.
 
 ---
 
@@ -135,11 +135,11 @@ This is the same failure mode already found and fixed twice in this project's hi
 
 ## 3. Core-loop production gaps
 
-### 3.1 No context compaction or token budgeting — long Missions will hard-fail
+### 3.1 No context compaction or token budgeting — long Sessions will hard-fail
 
-`cid-core/src/model/mod.rs` (~line 1346) does `self.persistence.list_messages(mission_id)?` and passes the **entire** history to `build_anthropic_messages` / `build_openai_messages` / `build_google_contents` on **every turn**. There is no summarization, no truncation, no token accounting, no `/compact` equivalent. The only token constants are output caps (`max_tokens: 4096/8192`).
+`cid-core/src/model/mod.rs` (~line 1346) does `self.persistence.list_messages(session_id)?` and passes the **entire** history to `build_anthropic_messages` / `build_openai_messages` / `build_google_contents` on **every turn**. There is no summarization, no truncation, no token accounting, no `/compact` equivalent. The only token constants are output caps (`max_tokens: 4096/8192`).
 
-Tool observations typically consume 70–80% of an agentic session's token budget, which is exactly why compaction is now standard: Claude Code ships automatic compaction plus `/compact` and `/context`. Without it, a CID Mission grows until it exceeds the context window and then fails permanently — with cost growing quadratically over the session in the meantime.
+Tool observations typically consume 70–80% of an agentic session's token budget, which is exactly why compaction is now standard: Claude Code ships automatic compaction plus `/compact` and `/context`. Without it, a CID Session grows until it exceeds the context window and then fails permanently — with cost growing quadratically over the session in the meantime.
 
 **Fix:**
 1. Track token usage per turn from each provider's response.
@@ -147,21 +147,21 @@ Tool observations typically consume 70–80% of an agentic session's token budge
 3. Expose it: a `/compact` composer command and a visible context-usage indicator in the thread.
 4. Persist the digest so it survives a reload.
 
-**Test:** a Mission with an artificially long history must still complete a turn instead of erroring.
+**Test:** a Session with an artificially long history must still complete a turn instead of erroring.
 
 ### 3.2 No checkpoint / rewind
 
 There is no snapshot, checkpoint, or undo anywhere in Core. Automatic pre-change snapshots with a rewind that can revert conversation, code, or both are now table-stakes in this category.
 
-CID is unusually well-positioned here and should not build this generically: **every Mission already runs in a dedicated git worktree.** A checkpoint is a git commit or stash on the Mission branch; rewind is a reset. Implement it on that existing primitive rather than inventing a parallel snapshot store.
+CID is unusually well-positioned here and should not build this generically: **every Session already runs in a dedicated git worktree.** A checkpoint is a git commit or stash on the Session branch; rewind is a reset. Implement it on that existing primitive rather than inventing a parallel snapshot store.
 
-**Scope:** auto-checkpoint before each Implementer tool batch; `mission.checkpoint.list` / `.rewind` RPCs; a rewind affordance in the thread and the diff view.
+**Scope:** auto-checkpoint before each Implementer tool batch; `session.checkpoint.list` / `.rewind` RPCs; a rewind affordance in the thread and the diff view.
 
 ### 3.3 The Reviewer role has no UI at all
 
-`mission.review.run`, `.get`, and `.list` are implemented, tested, and **completely unreachable from any surface** — no component calls them. The Reviewer is one of the three founding roles and Flow 1 step 6; a user cannot invoke it or see its findings.
+`session.review.run`, `.get`, and `.list` are implemented, tested, and **completely unreachable from any surface** — no component calls them. The Reviewer is one of the three founding roles and Flow 1 step 6; a user cannot invoke it or see its findings.
 
-**Fix:** a `ReviewCard` in the Mission thread (mirroring the existing `PlanCard`, which is a good model to copy) — run the Reviewer, render findings by severity with file links, show the verdict, keep the raw output expandable.
+**Fix:** a `ReviewCard` in the Session thread (mirroring the existing `PlanCard`, which is a good model to copy) — run the Reviewer, render findings by severity with file links, show the verdict, keep the raw output expandable.
 
 ---
 
@@ -182,11 +182,11 @@ Grouped, in priority order:
 | Group | Orphaned methods | Why it matters |
 |---|---|---|
 | **Context Engine toggle** | `context_engine.toggle` | **Highest priority in this section.** The Context Engine is off by default *by design* and this is the only way to turn it on — so today it can never be enabled from the UI. A flagship feature is unreachable. |
-| **Reviewer** | `mission.review.run/get/list` | See §3.3. |
+| **Reviewer** | `session.review.run/get/list` | See §3.3. |
 | **Role profiles** | `role_profile.create/get/list/update/delete/check_permission` | Phase 4 deliverable with real enforcement in the tool-dispatch path; no way to create or assign a profile. |
 | **Semantic engine** | `semantic_engine.test_impact.*` (3), `docs.for_symbol`, `docs.stale`, `index_file`, `load_blame` | The test-impact and documentation graphs — a headline Phase 4 feature — are invisible. |
-| **Decisions & deployment** | `decisions.list`, `decisions.for_mission`, `deployment.record/list/webhook` | Phase 4 deliverables, no surface. |
-| **Slack / Teams** | `slack.configure`, `slack.config.get`, `slack.trigger_mission`, and the three Teams equivalents | Cannot be configured without hand-crafting RPC calls. |
+| **Decisions & deployment** | `decisions.list`, `decisions.for_session`, `deployment.record/list/webhook` | Phase 4 deliverables, no surface. |
+| **Slack / Teams** | `slack.configure`, `slack.config.get`, `slack.trigger_session`, and the three Teams equivalents | Cannot be configured without hand-crafting RPC calls. |
 | **Code analysis** | `code.analyze_file/analyze_directory/search_symbols/get_imports` | Useful standalone; currently only reachable internally. |
 | **Misc** | `confidence.history`, `mcp.task.subscribe`, `workspace.get` | Smaller gaps. |
 
@@ -199,7 +199,7 @@ Grouped, in priority order:
 | Gap | Detail | Suggested action |
 |---|---|---|
 | **Frontend test coverage is 2 tests** | `LeftRail.test.tsx`, `ChatThread.test.tsx` only. Zero tests for `PlanCard`, `DiffViewer`, `ConfidenceCard`, `AutonomyPanel`, `RepoHealthPanel`, `ProvidersPanel`, `McpPanel`, `SkillsPanel`, `AcpPanel`, `EditorPane`, `TerminalPane`. | Component tests for the approval-critical ones first: `PlanCard` (approve/reject/edit-revokes-approval) and `DiffViewer` (per-hunk accept/reject). These gate real code changes. |
-| **Agent loop never run against a real model** | No API key was available in the build environment, so every E2E run exercises the simulated-response fallback (`model/mod.rs` ~line 1372), not a real tool-use loop. | Add an opt-in integration test gated on `ANTHROPIC_API_KEY` that runs one real Mission end-to-end. Skip cleanly when unset — never fail CI for a missing key. |
+| **Agent loop never run against a real model** | No API key was available in the build environment, so every E2E run exercises the simulated-response fallback (`model/mod.rs` ~line 1372), not a real tool-use loop. | Add an opt-in integration test gated on `ANTHROPIC_API_KEY` that runs one real Session end-to-end. Skip cleanly when unset — never fail CI for a missing key. |
 | **Tauri desktop never actually launched** | CI runs `cargo check -p cid` only. No `tauri build`, no click-through. See `docs/048-Platform-Verification.md`. | Add a `tauri build` job on at least one OS; do one manual launch pass and record the result. |
 | **Mobile never on real hardware** | Web-build emulation only. Push notifications and voice input are untested. | Cannot be closed without devices — keep it honestly documented. |
 | **`cid-tui` has no diff view** | CLI-first users must switch surfaces to review a change. | Known and tracked; build if the CLI persona matters. |
@@ -233,7 +233,7 @@ Grounded in `docs/049-Extensibility-And-Sync-Roadmap.md`, which already contains
 2. **§2.2 ESLint config** — 30 minutes, unblocks a red CI job.
 3. **§1.3 governance wiring**, **§6 hunk-reject data loss** — small, high-value correctness fixes.
 4. **§2.1 real MCP stdio** — largest single "claimed but false" gap.
-5. **§3.1 context compaction** — production blocker for any long Mission.
+5. **§3.1 context compaction** — production blocker for any long Session.
 6. **§4 orphaned RPCs**, starting with `context_engine.toggle` and the Reviewer UI.
 7. **§3.2 checkpoint/rewind** on the existing worktree primitive.
 8. **§1.2 prompt-injection defense** — do it properly rather than quickly; it needs design, not a patch.

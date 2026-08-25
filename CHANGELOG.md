@@ -12,13 +12,13 @@ exists.
 
 ### Added across Phases 0–6
 
-- **Chat-native workspace model**: Workspaces → Repo Channels → Mission Threads, with a
+- **Chat-native workspace model**: Workspaces → Repo Channels → Session Threads, with a
   real editor (CodeMirror inline + Monaco full-pane), terminal, diff viewer, MCP tool
   access, and command history embedded in the thread.
 - **Planner → Implementer → Reviewer** agent loop with three autonomy levels (Manual,
   Co-Pilot, Autonomous) and a **vibe-coding preset** for low-ceremony quick changes.
 - **Confidence Engine**: 9-signal patch scoring surfaced before approval.
-- **Isolated git worktrees per Mission** (or shared-clone mode), per-hunk diff
+- **Isolated git worktrees per Session** (or shared-clone mode), per-hunk diff
   accept/reject, atomic auto-commits, a real native PTY terminal with secret redaction.
 - **Context & code intelligence**: opt-in Tree-sitter structural indexing, `AGENTS.md` +
   `SKILL.md` layering with nearest-scope-wins resolution, a test-impact graph, a

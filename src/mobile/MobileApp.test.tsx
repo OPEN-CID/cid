@@ -13,7 +13,7 @@ let notificationHandler: ((notif: any) => void) | null = null;
 vi.mock("../lib/api", () => ({
   api: {
     connect: vi.fn(),
-    mission: { list: vi.fn(), approveTool: vi.fn(), sendMessage: vi.fn() },
+    session: { list: vi.fn(), approveTool: vi.fn(), sendMessage: vi.fn() },
     message: { list: vi.fn() },
     git: { diff: vi.fn() },
     onNotification: vi.fn((handler: (notif: any) => void) => {
@@ -25,13 +25,13 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-const mission = {
-  id: "mission-1",
+const session = {
+  id: "session-1",
   title: "Fix login bug",
   status: "blocked_on_approval",
   autonomy_level: "co_pilot",
-  session_mode: "worktree",
-  worktree_path: "/tmp/repo/.cid/worktrees/mission-1",
+  isolation_mode: "worktree",
+  worktree_path: "/tmp/repo/.cid/worktrees/session-1",
   repo_channel_id: "repo-1",
   updated_at: "2026-07-27T00:00:00Z",
 };
@@ -47,33 +47,33 @@ describe("MobileApp", () => {
   beforeEach(() => {
     notificationHandler = null;
     vi.mocked(api.connect).mockReset();
-    vi.mocked(api.mission.list).mockReset();
-    vi.mocked(api.mission.approveTool).mockReset();
-    vi.mocked(api.mission.sendMessage).mockReset();
+    vi.mocked(api.session.list).mockReset();
+    vi.mocked(api.session.approveTool).mockReset();
+    vi.mocked(api.session.sendMessage).mockReset();
     vi.mocked(api.message.list).mockReset();
     vi.mocked(api.git.diff).mockReset();
     vi.mocked(api.connect).mockResolvedValue(undefined);
     vi.mocked(api.message.list).mockResolvedValue([]);
   });
 
-  it("lists missions with the blocked-on-approval one flagged", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
+  it("lists sessions with the blocked-on-approval one flagged", async () => {
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
     render(<MobileApp />);
 
     expect(await screen.findByText("Fix login bug")).toBeInTheDocument();
     expect(screen.getByText("needs you")).toBeInTheDocument();
   });
 
-  it("opening a mission loads its thread and shows the pending approval", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
+  it("opening a session loads its thread and shows the pending approval", async () => {
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
 
     act(() => {
       notificationHandler?.({
-        method: "mission.tool_call.request",
-        params: { mission_id: "mission-1", tool_call_id: "tc-1", tool_name: "write_file", arguments: { path: "a.rs" } },
+        method: "session.tool_call.request",
+        params: { session_id: "session-1", tool_call_id: "tc-1", tool_name: "write_file", arguments: { path: "a.rs" } },
       });
     });
 
@@ -81,47 +81,47 @@ describe("MobileApp", () => {
   });
 
   it("Approve calls approveTool with approved=true and clears the card", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
-    vi.mocked(api.mission.approveTool).mockResolvedValueOnce({ ok: true });
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
+    vi.mocked(api.session.approveTool).mockResolvedValueOnce({ ok: true });
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
     act(() => {
       notificationHandler?.({
-        method: "mission.tool_call.request",
-        params: { mission_id: "mission-1", tool_call_id: "tc-1", tool_name: "write_file", arguments: {} },
+        method: "session.tool_call.request",
+        params: { session_id: "session-1", tool_call_id: "tc-1", tool_name: "write_file", arguments: {} },
       });
     });
     await screen.findByText(/Approval needed/);
 
     fireEvent.click(screen.getByText("Approve"));
 
-    await waitFor(() => expect(api.mission.approveTool).toHaveBeenCalledWith("mission-1", "tc-1", true));
+    await waitFor(() => expect(api.session.approveTool).toHaveBeenCalledWith("session-1", "tc-1", true));
     await waitFor(() => expect(screen.queryByText(/Approval needed/)).not.toBeInTheDocument());
   });
 
   it("Deny calls approveTool with approved=false", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
-    vi.mocked(api.mission.approveTool).mockResolvedValueOnce({ ok: true });
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
+    vi.mocked(api.session.approveTool).mockResolvedValueOnce({ ok: true });
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
     act(() => {
       notificationHandler?.({
-        method: "mission.tool_call.request",
-        params: { mission_id: "mission-1", tool_call_id: "tc-1", tool_name: "run_terminal", arguments: {} },
+        method: "session.tool_call.request",
+        params: { session_id: "session-1", tool_call_id: "tc-1", tool_name: "run_terminal", arguments: {} },
       });
     });
     await screen.findByText(/Approval needed/);
 
     fireEvent.click(screen.getByText("Deny"));
 
-    await waitFor(() => expect(api.mission.approveTool).toHaveBeenCalledWith("mission-1", "tc-1", false));
+    await waitFor(() => expect(api.session.approveTool).toHaveBeenCalledWith("session-1", "tc-1", false));
   });
 
   it("sending a reply calls sendMessage and clears the input", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
-    vi.mocked(api.mission.sendMessage).mockResolvedValueOnce({ ok: true });
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
+    vi.mocked(api.session.sendMessage).mockResolvedValueOnce({ ok: true });
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
@@ -130,12 +130,12 @@ describe("MobileApp", () => {
     fireEvent.change(textarea, { target: { value: "Looks good, proceed" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
-    await waitFor(() => expect(api.mission.sendMessage).toHaveBeenCalledWith("mission-1", "Looks good, proceed"));
+    await waitFor(() => expect(api.session.sendMessage).toHaveBeenCalledWith("session-1", "Looks good, proceed"));
     expect(textarea).toHaveValue("");
   });
 
   it("the diff tab fetches and shows the worktree diff", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
     vi.mocked(api.git.diff).mockResolvedValueOnce([{ path: "a.rs" }]);
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
@@ -143,12 +143,12 @@ describe("MobileApp", () => {
 
     fireEvent.click(screen.getByText("diff"));
 
-    await waitFor(() => expect(api.git.diff).toHaveBeenCalledWith("/tmp/repo/.cid/worktrees/mission-1"));
+    await waitFor(() => expect(api.git.diff).toHaveBeenCalledWith("/tmp/repo/.cid/worktrees/session-1"));
     expect(await screen.findByText(/"path": "a.rs"/)).toBeInTheDocument();
   });
 
   it("does not crash when SpeechRecognition and Notification are unavailable (jsdom default)", async () => {
-    vi.mocked(api.mission.list).mockResolvedValueOnce([mission]);
+    vi.mocked(api.session.list).mockResolvedValueOnce([session]);
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
@@ -156,14 +156,14 @@ describe("MobileApp", () => {
     expect(screen.queryByLabelText("Voice input")).not.toBeInTheDocument();
   });
 
-  it("Back returns to the mission list", async () => {
-    vi.mocked(api.mission.list).mockResolvedValue([mission]);
+  it("Back returns to the session list", async () => {
+    vi.mocked(api.session.list).mockResolvedValue([session]);
     render(<MobileApp />);
     fireEvent.click(await screen.findByText("Fix login bug"));
     await flush();
 
     fireEvent.click(screen.getByLabelText("Back"));
 
-    expect(await screen.findByText("Missions")).toBeInTheDocument();
+    expect(await screen.findByText("Sessions")).toBeInTheDocument();
   });
 });

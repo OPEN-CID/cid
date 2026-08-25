@@ -34,7 +34,7 @@ Tantivy being named in the tech-stack table. Verify all four fixes hold.
    original bug was specifically that enabling it did nothing).
 5. **Slack/Teams bridges**: plugin-style, channel-mapped triggers. Check:
    `cid-core/src/slack_bridge/mod.rs`, `cid-core/src/teams_bridge/mod.rs`.
-6. **Subagents-per-Mission**: scoped, short-lived workers inheriting the parent's
+6. **Subagents-per-Session**: scoped, short-lived workers inheriting the parent's
    worktree and tool permissions. Check: `cid-core/src/subagent/mod.rs`
    (`SubagentOrchestrator`) — and specifically confirm this file has **not** been
    corrupted or replaced with a version referencing nonexistent modules; an external

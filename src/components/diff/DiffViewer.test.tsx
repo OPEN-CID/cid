@@ -16,9 +16,9 @@ vi.mock("@/hooks/useCid", () => ({
   useCid: vi.fn(),
 }));
 
-const missionSelected = {
-  selectedMissionId: "mission-1",
-  missions: [{ id: "mission-1", title: "Test Mission", worktree_path: "/tmp/repo" }],
+const sessionSelected = {
+  selectedSessionId: "session-1",
+  sessions: [{ id: "session-1", title: "Test Session", worktree_path: "/tmp/repo" }],
   repos: [{ id: "repo-1", path: "/tmp/repo" }],
 };
 
@@ -26,19 +26,19 @@ describe("DiffViewer", () => {
   beforeEach(() => {
     vi.mocked(api.git.diff).mockReset();
     vi.mocked(api.call).mockReset();
-    vi.mocked(useCid).mockReturnValue(missionSelected as any);
+    vi.mocked(useCid).mockReturnValue(sessionSelected as any);
   });
 
-  it("shows a prompt to select a mission when none is selected", () => {
+  it("shows a prompt to select a session when none is selected", () => {
     vi.mocked(useCid).mockReturnValue({
-      selectedMissionId: null,
-      missions: [],
+      selectedSessionId: null,
+      sessions: [],
       repos: [],
     } as any);
 
     render(<DiffViewer />);
 
-    expect(screen.getByText(/Select a mission to view diff/)).toBeInTheDocument();
+    expect(screen.getByText(/Select a session to view diff/)).toBeInTheDocument();
   });
 
   it("shows a clean-working-tree message when there are no changes", async () => {

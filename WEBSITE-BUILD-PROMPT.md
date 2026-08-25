@@ -155,18 +155,18 @@ and TUI, with 201 frontend tests plus the full Rust workspace suite green as of
 that the product is tested and real, not the specific number.)
 
 **One-sentence description:** a chat-native, multi-agent software engineering platform —
-Slack-shaped mission control for shipping code with AI agents.
+Slack-shaped session control for shipping code with AI agents.
 
 **Core mental model** (use these exact terms; they are the product's real domain
 language, do not paraphrase them into something else):
 
-- **Workspace → Repo Channel → Mission Thread** — same nesting as Slack.
-- A **Mission** ("Build OAuth", "Fix #245") runs in an isolated **git worktree** by
+- **Workspace → Repo Channel → Session Thread** — same nesting as Slack.
+- A **Session** ("Build OAuth", "Fix #245") runs in an isolated **git worktree** by
   default, or a shared clone.
 - Agents: **Planner → Implementer → Reviewer** — prompt + model + tool-permission
   configurations, *not* a fixed cast of independent agents — plus ad hoc **subagents**
   for scoped parallel work.
-- **Exactly three autonomy levels per Mission**, named exactly this:
+- **Exactly three autonomy levels per Session**, named exactly this:
   - **Manual** — you drive.
   - **Co-Pilot** — every tool call is shown and requires approval. **Default.**
   - **Autonomous** — runs against a governed, per-repo command allow-list without
@@ -184,9 +184,9 @@ CID repo's actual code/tests before writing the page, per the honesty rules in B
 | Area | Detail |
 |---|---|
 | Confidence Engine | 9-signal patch scoring — symbol resolution, static analysis, type validation, architecture-rule validation, test impact, duplicate detection, dependency impact, semantic similarity, existing-reuse — shown inline before approval |
-| Git / diff | `git2-rs`-backed worktrees, per-hunk accept/reject, atomic auto-commits per logical change, checkpoint + rewind per Mission |
-| Terminal | Real native PTY per Mission, secret redaction on by default (live view and stored history) |
-| Context | Opt-in Tree-sitter structural indexing; `AGENTS.md` (Linux Foundation/AAIF standard) and `SKILL.md` (Anthropic Agent Skills) layered Workspace → Repo Channel → Mission with nearest-scope-wins; hybrid BM25 + embedding search via Tantivy |
+| Git / diff | `git2-rs`-backed worktrees, per-hunk accept/reject, atomic auto-commits per logical change, checkpoint + rewind per Session |
+| Terminal | Real native PTY per Session, secret redaction on by default (live view and stored history) |
+| Context | Opt-in Tree-sitter structural indexing; `AGENTS.md` (Linux Foundation/AAIF standard) and `SKILL.md` (Anthropic Agent Skills) layered Workspace → Repo Channel → Session with nearest-scope-wins; hybrid BM25 + embedding search via Tantivy |
 | Model routing | Anthropic, OpenAI, Google natively; one generic OpenAI-compatible endpoint slot (OpenRouter, Groq, self-hosted vLLM, most others); hardware-gated local-model detection (Ollama / LM Studio / `llama.cpp --server`); per-role model overrides |
 | Security | Least-privilege MCP servers scoped per Repo Channel; OS-native credential storage; multi-user local auth (Argon2id; Viewer < Reviewer < Developer < Admin < Owner); workspace governance over Autonomous mode, per repo, with spend caps |
 | Integrations | GitHub, GitLab, Bitbucket (issue/PR bridges); Jira and Linear (ticket linkage); Slack and Microsoft Teams bridges |
@@ -293,15 +293,15 @@ Same audience as the product itself: engineers who live in dark-mode editors.
 A short landing inside the docs shell: one-line thesis, primary CTA = **"Open the app"**
 linking to `cid.opencid.dev` (not a fake download button) and a secondary CTA = "Star on
 GitHub." A compact "why not just use an in-editor assistant" honesty section — chat-native
-and thread-shaped, worktree isolation per Mission, explicit approval gates, one Core
+and thread-shaped, worktree isolation per Session, explicit approval gates, one Core
 across surfaces. Describe what CID chose and why; do not disparage named competitors.
 
 ### `/docs/*` sidebar structure — build as titled stub pages first, fill after
 
 - **Getting Started** — What is CID · Using the web app (cid.opencid.dev + your own Core,
   cross-link to Part A's connect flow) · Installing the desktop app · Installing the
-  CLI/TUI · Your first Mission · Connecting a model provider
-- **Concepts** — Workspaces, Repo Channels & Missions · Worktrees & isolation ·
+  CLI/TUI · Your first Session · Connecting a model provider
+- **Concepts** — Workspaces, Repo Channels & Sessions · Worktrees & isolation ·
   Autonomy levels (Manual / Co-Pilot / Autonomous) · Agents & subagents · Confidence
   Engine (the 9 signals) · Context Engine (`AGENTS.md`, `SKILL.md`, indexing, search) ·
   Model routing & per-role overrides

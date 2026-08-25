@@ -11,7 +11,7 @@ Phase 2 of CID calls for a mobile companion shell. The mobile app is explicitly 
 
 - Review diffs
 - Approve/deny plan and tool-call requests
-- Check Mission status
+- Check Session status
 - Voice input
 - Push notifications
 - Read-only terminal
@@ -68,7 +68,7 @@ Build a dedicated React Native client with the same API contract pointing at Cor
 
 ### Option C: Thin Native Client
 
-Build a minimal Swift/Kotlin native client with a simple REST/WS client hitting the Core API, rendering only the Mission list, approval cards, and status — no complex UI framework at all.
+Build a minimal Swift/Kotlin native client with a simple REST/WS client hitting the Core API, rendering only the Session list, approval cards, and status — no complex UI framework at all.
 
 **Pros**:
 - Smallest binary size, fastest startup, most native feel

@@ -14,24 +14,24 @@
 - **Binary**: `cid-core` (`cid-core/src/main.rs`) — Tokio Axum WebSocket JSON-RPC 2.0 server
 - **Modules**:
   - `git` (`git2-rs` 0.19, vendored libgit2+openssl) — status, diff (via `diff.foreach` with RefCell interior mutability), commit (auto-commit per logical change), log, worktree create/list/remove (via CLI fallback `git worktree` for reliability)
-  - `pty` (`portable-pty` 0.8) — native PTY per Mission, ConPTY on Windows, Unix PTY on macOS/Linux, reader thread + broadcast channel, resize, write, kill
+  - `pty` (`portable-pty` 0.8) — native PTY per Session, ConPTY on Windows, Unix PTY on macOS/Linux, reader thread + broadcast channel, resize, write, kill
   - `mcp` — MCP client targeting 2026-07-28 spec (stateless core, Tasks, MCP Apps, OAuth) — stdio transport (spawns child via `tokio::process`) + HTTP transport (reqwest POST `tools/list` / `tools/call`), persistence via `mcp_servers` table
-  - `model` — Anthropic-only streaming client (Claude 3.5 Sonnet default, Haiku) — SSE parsing `data: ` lines, `content_block_delta` → `mission.message.delta` notifications, tool-use loop with Co-Pilot approval via `mission.tool_call.request` + 5min timeout mpsc channel; fallback simulated response if no `ANTHROPIC_API_KEY`
-  - `persistence` — rusqlite 0.32 bundled, single DB file `~/.local/share/cid/cid.db` or custom `--db`, tables: workspaces, repo_channels (path unique), missions (worktree_path, branch_name), messages (tool_calls JSON), skills, mcp_servers, settings (single row)
-  - `context` — AGENTS.md auto-detection (repo root, `.github/AGENTS.md`, `docs/AGENTS.md`), SKILL.md recursive finder, system context builder layering Workspace>Repo>Mission
+  - `model` — Anthropic-only streaming client (Claude 3.5 Sonnet default, Haiku) — SSE parsing `data: ` lines, `content_block_delta` → `session.message.delta` notifications, tool-use loop with Co-Pilot approval via `session.tool_call.request` + 5min timeout mpsc channel; fallback simulated response if no `ANTHROPIC_API_KEY`
+  - `persistence` — rusqlite 0.32 bundled, single DB file `~/.local/share/cid/cid.db` or custom `--db`, tables: workspaces, repo_channels (path unique), sessions (worktree_path, branch_name), messages (tool_calls JSON), skills, mcp_servers, settings (single row)
+  - `context` — AGENTS.md auto-detection (repo root, `.github/AGENTS.md`, `docs/AGENTS.md`), SKILL.md recursive finder, system context builder layering Workspace>Repo>Session
   - `api` — JSON-RPC 2.0 types (`types.rs` 500+ lines) + router with Axum WS handler + HTTP POST fallback `/api/rpc` + health `/health`, CORS layer allowing Any origin/method/header for browser dev loop, broadcast channel for notifications
 
 - **JSON-RPC methods** (see `cid-core/src/api/types.rs` + `router.rs`):
-  - workspace.list/get, repo.connect/list/get/disconnect/agents_md, mission.create/list/get/close/send_message/approve_tool, message.list, git.status/diff/commit/log/worktree.*, pty.create/write/resize/kill/list, mcp.server.list/add/remove, mcp.tools.list, mcp.tool.call, file.read/write/list, skills.list/save, settings.get/update, model.list
+  - workspace.list/get, repo.connect/list/get/disconnect/agents_md, session.create/list/get/close/send_message/approve_tool, message.list, git.status/diff/commit/log/worktree.*, pty.create/write/resize/kill/list, mcp.server.list/add/remove, mcp.tools.list, mcp.tool.call, file.read/write/list, skills.list/save, settings.get/update, model.list
 
 - **Notifications** (server→client):
-  - `mission.message.delta`, `mission.message.complete`, `mission.message.new`, `mission.tool_call.request/complete`, `pty.output`, `git.diff.update`
+  - `session.message.delta`, `session.message.complete`, `session.message.new`, `session.tool_call.request/complete`, `pty.output`, `git.diff.update`
 
 #### Frontend (React + TypeScript + Vite)
 - **Stack**: React 18, Vite 5, Tailwind 3.4, shadcn/ui via radix-ui, Zustand for state, Monaco editor 4.6, xterm.js 5.3 + FitAddon, lucide-react
 - **Three-pane layout** (Slack-shaped as per Part 19):
   - Left rail (280px): Workspace switcher → Repo Channel list with live status badges (running= yellow, done/review= green, blocked_on_approval= orange) → pinned Skills/Context shortcuts, + add repo flow (input path, connect via `repo.connect`), footer with Core connected indicator
-  - Center: Mission Thread chat stream (human messages, assistant, inline diff cards, plan-approval cards, inline MCP tool cards, composer with @mention placeholder, / commands, file attach), streaming delta handling via `api.onNotification`
+  - Center: Session Thread chat stream (human messages, assistant, inline diff cards, plan-approval cards, inline MCP tool cards, composer with @mention placeholder, / commands, file attach), streaming delta handling via `api.onNotification`
   - Right panel (520px, tabbed): Editor (file tree + Monaco, Save via `file.write`), Terminal (real PTY via xterm.js + `pty.create/write/resize`), Diff (per-file with hunks, additions/deletions, Accept/Reject buttons stubbed for per-hunk, Refresh), History (action log filtered by actor/type/approval, export JSON/Markdown), MCP (add server via UI stdio/HTTP, list tools, remove), Skills (AGENTS.md viewer, Skills list, Add Skill with scope workspace/repo)
   - Bottom status strip: Core connection (ws://127.0.0.1:5919), Autonomy (Co-Pilot), Model (Claude 3.5 Sonnet), Session mode, Phase tag
 - **API client**: `src/lib/api.ts` — WS + HTTP fallback, auto-reconnect with exponential backoff, notification handler set, convenience wrappers for all RPC methods
@@ -70,14 +70,14 @@ Per Build Prompt Part A hard boundary — **explicitly not in this run**, do not
 | Local models (Ollama/LM Studio/llama.cpp detection, hardware-gated picker) | Phase 1 detection, Phase 2 background model | Not built — `model.rs` fallback simulation mentions local runtime detection as future |
 | ACP host (pop out to Zed/JetBrains) | Phase 1 | Not built — editor strategy ADR notes it as Phase1+ |
 | Headless server mode | Phase 1 | Not built as polished product surface — but Core already exposes local API via WS/HTTP which is inherent to how Core works per Part C, not Phase1-gated; headless `cid-core` binary is standalone and serves that role, but without systemd/service wrapping |
-| GitHub bridge (issue→Mission, PR sync) | Phase 1 | Not built |
+| GitHub bridge (issue→Session, PR sync) | Phase 1 | Not built |
 | Web Shell (same React bundle served by Core) | Phase 2 | Not built — browser dev loop uses Vite dev server, not Core serving static bundle |
 | Slack/Teams bridges | Phase 2 | Not built |
-| Multi-agent parallelism within a Mission (subagents on worktrees) | Phase 2 | Not built — Phase0 is 3 composable roles (Planner/Implementer/Reviewer) as prompt configs, plus ad-hoc subagents concept, but implementation is single-agent loop; subagent spawning not implemented |
+| Multi-agent parallelism within a Session (subagents on worktrees) | Phase 2 | Not built — Phase0 is 3 composable roles (Planner/Implementer/Reviewer) as prompt configs, plus ad-hoc subagents concept, but implementation is single-agent loop; subagent spawning not implemented |
 | Background/ambient local model (cheap implementation) | Phase 2 | Not built |
 | Semantic/embedding Context Engine (Tantivy + embeddings + HNSW + petgraph) | Phase 2, opt-in | Not built — Structural context only: AGENTS.md detection + Skills loading, file tree annotation not yet implemented (file tree currently plain) |
 | MCP Apps rendering (server renders interactive HTML UI inline) | Phase 2 | Not built — MCP client Phase0 does basic tools/list and tools/call, but does not render MCP Apps HTML per 2026-07-28 extension |
-| Long-running MCP calls via Tasks extension (handle poll/subscribe) | Phase 2 | Not built — Tasks extension mapping to async Missions is future |
+| Long-running MCP calls via Tasks extension (handle poll/subscribe) | Phase 2 | Not built — Tasks extension mapping to async Sessions is future |
 | Sandboxing for Autonomous mode (sandbox-exec / job object / namespaced process) | Phase 2 | Not built — Phase0 is Co-Pilot only, no sandboxing needed, but noted as security gap for Autonomous future |
 | Mobile Shell | Phase 2-3 (bake-off) | Not built |
 | Slack/Teams/GitHub as full product surfaces | Phase 2-3 | Not built |
@@ -90,7 +90,7 @@ Per Build Prompt Part A hard boundary — **explicitly not in this run**, do not
 - `model/src/mod.rs` `execute_tool_with_approval` uses `app_state.clone()` which clones Arc refs (cheap) but entire AppState clone per tool call is okay Phase0; also `git_diff` notification not auto-emitted after file edits (manual Refresh button currently)
 - `git/mod.rs` `commit` uses `index.add_all(["*"])` which adds all untracked too — should respect .gitignore more carefully
 - Settings persistence stores anthropic_api_key in SQLite plaintext — per Part 14 should be OS credential storage (Keychain/Credential Manager) — noted as known issue
-- File tree in EditorPane is flat list from `file.list` not recursive tree, no Context Engine annotation badges (recently touched, open in other Mission, structurally related) — Phase1 structural context
+- File tree in EditorPane is flat list from `file.list` not recursive tree, no Context Engine annotation badges (recently touched, open in other Session, structurally related) — Phase1 structural context
 - Diff viewer's per-hunk Accept/Reject buttons are UI-only stubs not wired to `git apply` / `checkout -- patch` logic yet — Phase1?
 - Secrets redaction in terminal/history is minimal Phase0, not full Warp-style default (Part 9 says default secret redaction in live view + persisted history — we have no redaction yet)
 - `src-tauri` icons folder missing — Tauri build would fail without icons; placeholder needed
@@ -120,9 +120,9 @@ Per Build Prompt Part A hard boundary — **explicitly not in this run**, do not
 
 | Suite | Command | Result | Notes |
 |-------|---------|--------|-------|
-| Rust unit | `cargo test -p cid-core --lib --no-run` + run exe | **7 passed** | Tests: `pty::tests::test_pty_manager_new`, `context::tests::test_context_manager`, `mcp::tests::test_mcp_manager_new`, `tests::test_core_creation`, `persistence::tests::test_persistence_in_memory`, `git::tests::test_git_manager_status`, `persistence::tests::test_mission_crud`. All pass via `target/debug/deps/cid_core-*.exe`. |
+| Rust unit | `cargo test -p cid-core --lib --no-run` + run exe | **7 passed** | Tests: `pty::tests::test_pty_manager_new`, `context::tests::test_context_manager`, `mcp::tests::test_mcp_manager_new`, `tests::test_core_creation`, `persistence::tests::test_persistence_in_memory`, `git::tests::test_git_manager_status`, `persistence::tests::test_session_crud`. All pass via `target/debug/deps/cid_core-*.exe`. |
 | React component | `npm run test` (Vitest jsdom) | **2 passed** | `LeftRail.test.tsx` (renders branding + empty state), `ChatThread.test.tsx` (empty state with Flow1 instructions). Both use mocked `api` and `useCid`. |
-| Playwright E2E (Flow1 golden path) | `cargo run -p cid-core -- --port 5919` + `npx playwright test` | **1 passed (6.1s)** | Test creates temp repo (`git init`, commit README + AGENTS.md), connects via `repo.connect` RPC, creates mission via `mission.create` with worktree mode, sends message, checks messages list length >1, checks git status in worktree, verifies UI loads. Full logs in `test-results/`. |
+| Playwright E2E (Flow1 golden path) | `cargo run -p cid-core -- --port 5919` + `npx playwright test` | **1 passed (6.1s)** | Test creates temp repo (`git init`, commit README + AGENTS.md), connects via `repo.connect` RPC, creates session via `session.create` with worktree mode, sends message, checks messages list length >1, checks git status in worktree, verifies UI loads. Full logs in `test-results/`. |
 
 **Additional checks**:
 - `npm run build` (Vite production) — **passes**, 1554 modules transformed, 519kB js (144kB gzip), 19kB css
@@ -139,7 +139,7 @@ Per Build Prompt Part A hard boundary — **explicitly not in this run**, do not
 **Proposal**: **GO** for Phase 1, with conditions.
 
 **Why GO**:
-- Phase0 scope per Part 22 is genuinely complete as runnable artifact: Tauri shell skeleton + browser+Core fast loop, Workspace→Repo Channel→Mission Threads, worktree default, real PTY per Mission, diff via git2-rs, chat Anthropic-only streaming with Co-Pilot approval, MCP client add/server via UI, AGENTS.md auto-detect, Skills UI, SQLite persistence
+- Phase0 scope per Part 22 is genuinely complete as runnable artifact: Tauri shell skeleton + browser+Core fast loop, Workspace→Repo Channel→Session Threads, worktree default, real PTY per Session, diff via git2-rs, chat Anthropic-only streaming with Co-Pilot approval, MCP client add/server via UI, AGENTS.md auto-detect, Skills UI, SQLite persistence
 - All three test tiers pass: Rust unit (7), React component (2), E2E Flow1 (1)
 - Docs: README (what it is, Phase0 capability honestly described, setup for macOS+Windows, Windows+browser dev loop), CONTRIBUTING, CODE_OF_CONDUCT, ISSUE_TEMPLATE, LICENSE MIT, ADRs (7), CI workflow
 - Open-source requirements elevated to exit criteria per Part D are met
@@ -158,7 +158,7 @@ Per Build Prompt Part A hard boundary — **explicitly not in this run**, do not
 - ACP host (pop out to Zed/JetBrains)
 - Headless Core server mode (polish current standalone binary into supported `cid-core serve` with systemd/service, not just dev loop)
 - Opt-in Structural Context Engine (Tree-sitter)
-- GitHub bridge (issue → Mission)
+- GitHub bridge (issue → Session)
 - Planner/Reviewer roles added alongside Implementer
 - Autonomous mode with command allow-lists (without sandboxing yet)
 
@@ -179,7 +179,7 @@ npm install
 npm run dev
 # Open http://localhost:1420
 # Connect repo path like C:\Projects\cid (this repo itself) or any git repo
-# New Mission → worktree → task "List files in repo" → observe Co-Pilot approval flow
+# New Session → worktree → task "List files in repo" → observe Co-Pilot approval flow
 ```
 
 **Tauri** (requires BuildTools):

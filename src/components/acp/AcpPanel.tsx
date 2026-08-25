@@ -15,7 +15,7 @@ type AcpEditor = {
 
 type AcpHandoff = {
   id: string;
-  mission_id: string;
+  session_id: string;
   editor_id: string;
   status: string;
   worktree_path: string;
@@ -26,7 +26,7 @@ type AcpHandoff = {
 const ACTIVE_STATUSES = ["handed_off", "in_external_editor"];
 
 export function AcpPanel() {
-  const { selectedMissionId } = useCid();
+  const { selectedSessionId } = useCid();
   const [editors, setEditors] = useState<AcpEditor[]>([]);
   const [handoffs, setHandoffs] = useState<AcpHandoff[]>([]);
   const [loading, setLoading] = useState(false);
@@ -39,7 +39,7 @@ export function AcpPanel() {
     try {
       const [e, h] = await Promise.all([
         api.acp.editors(),
-        api.acp.handoffs(selectedMissionId ?? undefined),
+        api.acp.handoffs(selectedSessionId ?? undefined),
       ]);
       setEditors(e ?? []);
       setHandoffs(h ?? []);
@@ -48,18 +48,18 @@ export function AcpPanel() {
     } finally {
       setLoading(false);
     }
-  }, [selectedMissionId]);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const handoff = async (editorId: string) => {
-    if (!selectedMissionId) return;
+    if (!selectedSessionId) return;
     setBusyId(editorId);
     setError(null);
     try {
-      await api.acp.handoff(selectedMissionId, editorId);
+      await api.acp.handoff(selectedSessionId, editorId);
       await load();
     } catch (err) {
       setError(String(err));
@@ -89,7 +89,7 @@ export function AcpPanel() {
         <div>
           <div className="font-medium">External Editors</div>
           <div className="text-[11px] text-muted-foreground">
-            Agent Client Protocol handoff — pop this Mission out to a full IDE and take it back
+            Agent Client Protocol handoff — pop this Session out to a full IDE and take it back
           </div>
         </div>
         <button
@@ -107,9 +107,9 @@ export function AcpPanel() {
         </div>
       )}
 
-      {!selectedMissionId && (
+      {!selectedSessionId && (
         <div className="mb-3 p-2 rounded border bg-background text-[11px] text-muted-foreground">
-          Select a Mission to hand its worktree off to an editor.
+          Select a Session to hand its worktree off to an editor.
         </div>
       )}
 
@@ -156,7 +156,7 @@ export function AcpPanel() {
               )}
               <button
                 onClick={() => handoff(e.id)}
-                disabled={!e.available || !selectedMissionId || busyId === e.id}
+                disabled={!e.available || !selectedSessionId || busyId === e.id}
                 className="ml-auto text-[11px] flex items-center gap-1 px-2 py-0.5 rounded bg-primary text-primary-foreground disabled:opacity-40"
               >
                 <ExternalLink className="w-3 h-3" />

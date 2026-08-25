@@ -32,26 +32,26 @@ describe("ConfidenceCard", () => {
 
   it("scores on demand and shows the overall band", async () => {
     vi.mocked(api.confidence.score).mockResolvedValueOnce(card);
-    render(<ConfidenceCard missionId="mission-1" filePath="src/lib.rs" />);
+    render(<ConfidenceCard sessionId="session-1" filePath="src/lib.rs" />);
 
     fireEvent.click(screen.getByText("Score confidence"));
 
     expect(await screen.findByText("82/100")).toBeInTheDocument();
-    expect(api.confidence.score).toHaveBeenCalledWith("mission-1", "src/lib.rs");
+    expect(api.confidence.score).toHaveBeenCalledWith("session-1", "src/lib.rs");
   });
 
-  it("shows history for the mission when requested", async () => {
+  it("shows history for the session when requested", async () => {
     vi.mocked(api.confidence.score).mockResolvedValueOnce(card);
     vi.mocked(api.confidence.history).mockResolvedValueOnce([
       { patch_id: "patch-0", overall: 0.55, signals: [], generated_at: "2026-07-26T00:00:00Z", explanation: "" },
     ]);
-    render(<ConfidenceCard missionId="mission-1" filePath="src/lib.rs" />);
+    render(<ConfidenceCard sessionId="session-1" filePath="src/lib.rs" />);
     fireEvent.click(screen.getByText("Score confidence"));
     await screen.findByText("82/100");
 
     fireEvent.click(screen.getByLabelText("Show confidence history"));
 
-    await waitFor(() => expect(api.confidence.history).toHaveBeenCalledWith("mission-1"));
+    await waitFor(() => expect(api.confidence.history).toHaveBeenCalledWith("session-1"));
     expect(await screen.findByText("55")).toBeInTheDocument();
   });
 });

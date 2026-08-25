@@ -31,7 +31,7 @@ vi.mock("./components/terminal/TerminalPane", () => ({ TerminalPane: () => <div>
 vi.mock("./lib/api", () => ({
   api: {
     connect: vi.fn(),
-    mission: { create: vi.fn() },
+    session: { create: vi.fn() },
     model: { list: vi.fn() },
   },
 }));
@@ -42,17 +42,20 @@ vi.mock("./hooks/useCid", () => ({
 
 describe("App", () => {
   beforeEach(() => {
+    // Panel visibility and right-panel width persist to localStorage, so
+    // without this a test that reveals a panel leaks it into the next one.
+    localStorage.clear();
     vi.mocked(api.connect).mockReset();
     vi.mocked(api.connect).mockImplementation(() => new Promise(() => {})); // never resolves — offline mode
     vi.mocked(api.model.list).mockReset().mockResolvedValue([]);
-    vi.mocked(api.mission.create).mockReset().mockResolvedValue({});
+    vi.mocked(api.session.create).mockReset().mockResolvedValue({});
     vi.mocked(useCid).mockReturnValue({
       setConnected: vi.fn(),
       selectedRepoId: "repo-1",
-      selectedMissionId: null,
+      selectedSessionId: null,
       repos: [{ id: "repo-1", name: "cid" }],
-      missions: [],
-      loadMissions: vi.fn(),
+      sessions: [],
+      loadSessions: vi.fn(),
     } as any);
   });
 
@@ -61,13 +64,86 @@ describe("App", () => {
     expect(await screen.findByText("EditorPaneStub")).toBeInTheDocument();
   });
 
+  /// With no callable model CID cannot run an agent: the Planner records a
+  /// placeholder plan and the Implementer stays blocked. That used to be
+  /// invisible — worse, the status bar reported `claude-sonnet-5 (anthropic)`
+  /// on an install with no Anthropic key, because the display defaulted the
+  /// provider and id regardless of whether a key existed.
+  it("says so when no model is configured, instead of implying one is active", async () => {
+    vi.mocked(useCid).mockReturnValue({
+      setConnected: vi.fn(),
+      connected: true,
+      selectedRepoId: "repo-1",
+      selectedSessionId: "session-1",
+      repos: [{ id: "repo-1", name: "cid" }],
+      sessions: [{ id: "session-1", title: "S", autonomy_level: "co_pilot", isolation_mode: "worktree" }],
+      loadSessions: vi.fn(),
+    } as any);
+    vi.mocked(api.model.list).mockResolvedValue([
+      { id: "claude-sonnet-5", provider: "anthropic", available: false, default: true },
+    ] as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("No model configured.")).toBeInTheDocument();
+    expect(screen.getByText("none configured")).toBeInTheDocument();
+    expect(screen.queryByText("claude-sonnet-5")).not.toBeInTheDocument();
+  });
+
+  it("shows no banner and names the real model once one is callable", async () => {
+    vi.mocked(useCid).mockReturnValue({
+      setConnected: vi.fn(),
+      connected: true,
+      selectedRepoId: "repo-1",
+      selectedSessionId: "session-1",
+      repos: [{ id: "repo-1", name: "cid" }],
+      sessions: [{ id: "session-1", title: "S", autonomy_level: "co_pilot", isolation_mode: "worktree" }],
+      loadSessions: vi.fn(),
+    } as any);
+    vi.mocked(api.model.list).mockResolvedValue([
+      { id: "claude-sonnet-5", provider: "anthropic", available: true, default: true },
+    ] as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("claude-sonnet-5")).toBeInTheDocument();
+    expect(screen.queryByText("No model configured.")).not.toBeInTheDocument();
+  });
+
   it("switching tabs renders the corresponding panel", async () => {
     render(<App />);
     await screen.findByText("EditorPaneStub");
 
-    fireEvent.click(screen.getByText("diff"));
+    fireEvent.click(screen.getByText("Diff"));
 
     expect(await screen.findByText("DiffViewerStub")).toBeInTheDocument();
+  });
+
+  it("hidden panels are absent from the tab bar but reachable via the ＋ menu", async () => {
+    render(<App />);
+    await screen.findByText("EditorPaneStub");
+
+    // Default is the minimal set — History is one of the nine hidden ones.
+    expect(screen.queryByText("History")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Choose panels"));
+    fireEvent.click(screen.getByLabelText("History"));
+    // Close the menu so the only remaining "History" is the tab itself.
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.getByText("History")).toBeInTheDocument();
+  });
+
+  it("the last visible panel cannot be hidden, so the pane is never blank", async () => {
+    render(<App />);
+    await screen.findByText("EditorPaneStub");
+
+    fireEvent.click(screen.getByLabelText("Choose panels"));
+    fireEvent.click(screen.getByLabelText("Terminal"));
+    fireEvent.click(screen.getByLabelText("Diff"));
+
+    const editorToggle = screen.getByLabelText("Editor") as HTMLInputElement;
+    expect(editorToggle.disabled).toBe(true);
   });
 
   it("Ctrl+K opens the command palette, and its tab commands switch tabs", async () => {
@@ -89,14 +165,14 @@ describe("App", () => {
     expect(await screen.findByText("ProvidersPanelStub")).toBeInTheDocument();
   });
 
-  it("shows the selected repo's name and the mission title in the center header", async () => {
+  it("shows the selected repo's name and the session title in the center header", async () => {
     vi.mocked(useCid).mockReturnValue({
       setConnected: vi.fn(),
       selectedRepoId: "repo-1",
-      selectedMissionId: "mission-1",
+      selectedSessionId: "session-1",
       repos: [{ id: "repo-1", name: "cid" }],
-      missions: [{ id: "mission-1", title: "Fix the thing" }],
-      loadMissions: vi.fn(),
+      sessions: [{ id: "session-1", title: "Fix the thing" }],
+      loadSessions: vi.fn(),
     } as any);
     render(<App />);
 
@@ -115,25 +191,25 @@ describe("App", () => {
     expect(screen.getByLabelText("Restore panel")).toBeInTheDocument();
   });
 
-  it("New Mission opens the creation modal, and Cancel closes it", async () => {
+  it("New Session opens the creation modal, and Cancel closes it", async () => {
     render(<App />);
     await screen.findByText("EditorPaneStub");
 
-    fireEvent.click(screen.getByText("New Mission"));
-    expect(await screen.findByText(/New Mission/i, { selector: "h2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("New Session"));
+    expect(await screen.findByText(/New Session/i, { selector: "h2" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Cancel"));
-    expect(screen.queryByText(/New Mission/i, { selector: "h2" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/New Session/i, { selector: "h2" })).not.toBeInTheDocument();
   });
 
   it("Task Description is optional — a title alone is enough to submit", async () => {
     render(<App />);
     await screen.findByText("EditorPaneStub");
-    fireEvent.click(screen.getByText("New Mission"));
-    await screen.findByText(/New Mission/i, { selector: "h2" });
+    fireEvent.click(screen.getByText("New Session"));
+    await screen.findByText(/New Session/i, { selector: "h2" });
 
     expect(screen.getByText("Task Description (optional)")).toBeInTheDocument();
-    const createButton = screen.getByText("Create Mission");
+    const createButton = screen.getByText("Create Session");
     expect(createButton).toBeDisabled();
 
     fireEvent.change(screen.getByPlaceholderText(/e.g., Build OAuth/), { target: { value: "Fix #245" } });
@@ -144,11 +220,11 @@ describe("App", () => {
       await Promise.resolve();
     });
 
-    const payload = vi.mocked(api.mission.create).mock.calls[0][0] as { task?: string };
+    const payload = vi.mocked(api.session.create).mock.calls[0][0] as { task?: string };
     expect(payload.task).toBeUndefined();
   });
 
-  it("the Model dropdown loads from model.list and passes provider/id through to mission.create", async () => {
+  it("the Model dropdown loads from model.list and passes provider/id through to session.create", async () => {
     // Field names mirror the real `model.list` wire response verified against
     // a running Core (`available`, not `enabled`) — a fixture that invents a
     // field cannot fail when the component reads the wrong one.
@@ -159,8 +235,8 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("EditorPaneStub");
-    fireEvent.click(screen.getByText("New Mission"));
-    await screen.findByText(/New Mission/i, { selector: "h2" });
+    fireEvent.click(screen.getByText("New Session"));
+    await screen.findByText(/New Session/i, { selector: "h2" });
 
     await act(async () => {
       await Promise.resolve();
@@ -182,22 +258,22 @@ describe("App", () => {
     expect(screen.getByText(/1,000,000 token context/)).toBeInTheDocument();
 
     await act(async () => {
-      fireEvent.click(screen.getByText("Create Mission"));
+      fireEvent.click(screen.getByText("Create Session"));
       await Promise.resolve();
     });
 
-    const payload = vi.mocked(api.mission.create).mock.calls[0][0] as { model_provider?: string; model_id?: string };
+    const payload = vi.mocked(api.session.create).mock.calls[0][0] as { model_provider?: string; model_id?: string };
     expect(payload.model_provider).toBe("anthropic");
     expect(payload.model_id).toBe("claude-sonnet-5");
   });
 
-  it("degrades to just the default option when model.list fails, without blocking mission creation", async () => {
+  it("degrades to just the default option when model.list fails, without blocking session creation", async () => {
     vi.mocked(api.model.list).mockRejectedValueOnce(new Error("offline"));
 
     render(<App />);
     await screen.findByText("EditorPaneStub");
-    fireEvent.click(screen.getByText("New Mission"));
-    await screen.findByText(/New Mission/i, { selector: "h2" });
+    fireEvent.click(screen.getByText("New Session"));
+    await screen.findByText(/New Session/i, { selector: "h2" });
 
     await act(async () => {
       await Promise.resolve();
@@ -208,11 +284,11 @@ describe("App", () => {
 
     fireEvent.change(screen.getByPlaceholderText(/e.g., Build OAuth/), { target: { value: "Fix #245" } });
     await act(async () => {
-      fireEvent.click(screen.getByText("Create Mission"));
+      fireEvent.click(screen.getByText("Create Session"));
       await Promise.resolve();
     });
 
-    expect(api.mission.create).toHaveBeenCalled();
+    expect(api.session.create).toHaveBeenCalled();
   });
 
   it("shows the keyboard shortcuts reference on '?'", async () => {

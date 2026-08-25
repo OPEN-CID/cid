@@ -11,7 +11,7 @@ graph stack on day one.
 - **Phase 1 ("Structural")**: Tree-sitter symbol/import/reference indexing
   (`cid-core/src/context_engine/mod.rs`, `cid-core/src/analyzer/mod.rs`), off by default
   per Repo Channel.
-- **Phase 1**: `AGENTS.md`/`SKILL.md` auto-loaded as Mission context
+- **Phase 1**: `AGENTS.md`/`SKILL.md` auto-loaded as Session context
   (`cid-core/src/skills/mod.rs`, `cid-core/src/context/mod.rs`).
 - **Phase 2 ("Semantic")**: embeddings + Tantivy BM25 hybrid retrieval, dependency graph,
   git-blame ownership overlay (`cid-core/src/semantic_engine/mod.rs`).

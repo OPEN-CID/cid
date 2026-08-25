@@ -47,7 +47,7 @@ was actually built, not as an open TODO.
 extends it to the network-facing RPCs.
 
 - Give `handle_file_read`, `handle_file_write`, and `handle_file_list`
-  (`cid-core/src/api/router.rs:1328-1372`) a required repo/mission scope, and resolve every
+  (`cid-core/src/api/router.rs:1328-1372`) a required repo/session scope, and resolve every
   incoming path through the **same** confinement helper the model tools use. Do not write a
   second implementation — `CLAUDE.md`'s standing rule about duplicate implementations
   exists because §1.2 found three copies of the system-prompt builder with only one of them
@@ -67,7 +67,7 @@ dependency in `049-Extensibility-And-Sync-Roadmap.md` §3.
 
 **Built as:** `cid-core/src/path_confine.rs` — a shared `resolve_confined_path` (single
 root) and `resolve_confined_path_in_any` (first-matching of several roots, since these
-RPCs have no Mission to scope to — only "some connected repo"), reused by
+RPCs have no Session to scope to — only "some connected repo"), reused by
 `model::ExecutionContext::resolve_confined_path` rather than duplicated. 8 unit tests
 plus 2 E2E cases (`tests/e2e/health-check.spec.ts`).
 
@@ -178,7 +178,7 @@ compounds with the Semantic Engine that already exists.
 
 - New `cid-core/src/lsp/` module: `lsp-types` for the protocol, a supervised child process
   per (repo, language), stdio JSON-RPC framing with request-id correlation, timeouts, and
-  lifecycle cleanup on mission close.
+  lifecycle cleanup on session close.
 - **Reuse the MCP stdio transport pattern** from `cid-core/src/mcp/mod.rs` — §2.1 already
   built real duplex stdio JSON-RPC framing with exactly these requirements. A second
   hand-rolled framing implementation is the mistake `CLAUDE.md` warns about.
@@ -205,7 +205,7 @@ After an Implementer tool batch, attach the affected files' diagnostics to the n
 sees that its edit broke the build *before* the Reviewer runs, instead of after a terminal
 round trip.
 
-**Test:** a mission whose edit introduces a type error must receive the diagnostic in its
+**Test:** a session whose edit introduces a type error must receive the diagnostic in its
 next turn's context. Assert on the constructed context, not on model behavior.
 
 ---
@@ -241,10 +241,10 @@ group folded into a surface that already existed.
 |---|---|---|
 | Role profiles (6) | `RoleProfilesPanel.tsx`, rendered inside `AutonomyPanel` | Full create/edit/delete UI, workspace- or repo-scoped, tool-permission checkboxes. |
 | Test-impact + doc graph + blame (7) | `SemanticInsights.tsx`, three new tabs on `RepoHealthPanel` | `test_impact.for_symbol`/`.entries`, `docs.for_symbol`/`.stale`, and blame (which also now calls `load_blame` to cache what `git_blame` just computed — the pairing those two RPCs were clearly meant for). `index_file` closed separately: `EditorPane` re-indexes a file on save when the Semantic Engine is enabled for that repo. `test_impact.for_symbols` (the batch/union variant) was missed in the original pass — found orphaned in a later audit and closed the same way, with a "look up covering tests for several symbols at once" affordance on the same tab, not a new surface. |
-| Decisions + deployment (5) | `DecisionsPanel.tsx`, new "decisions" Mission-thread tab | ADRs relevant to the Mission (`decisions.for_mission`) plus a "show all repo ADRs" expansion (`decisions.list`); deployment log + a manual record form. `deployment.webhook` deliberately left unwired — it's the inbound path a real CI system POSTs to, not a user action, same shape as the Slack/Teams `trigger_mission` decision below. |
-| Slack / Teams (6, minus the two `trigger_mission`) | `TeamIntegrationsPanel.tsx`, rendered inside `ProvidersPanel` | `configure`/`config.get` for both. `slack.trigger_mission`/`teams.trigger_mission` deliberately left unwired — real inbound bot-event handlers, not settings actions; forcing a UI onto them would have been decorative. |
+| Decisions + deployment (5) | `DecisionsPanel.tsx`, new "decisions" Session-thread tab | ADRs relevant to the Session (`decisions.for_session`) plus a "show all repo ADRs" expansion (`decisions.list`); deployment log + a manual record form. `deployment.webhook` deliberately left unwired — it's the inbound path a real CI system POSTs to, not a user action, same shape as the Slack/Teams `trigger_session` decision below. |
+| Slack / Teams (6, minus the two `trigger_session`) | `TeamIntegrationsPanel.tsx`, rendered inside `ProvidersPanel` | `configure`/`config.get` for both. `slack.trigger_session`/`teams.trigger_session` deliberately left unwired — real inbound bot-event handlers, not settings actions; forcing a UI onto them would have been decorative. |
 | `code.analyze_*` / `search_symbols` (4, minus `analyze_directory`) | Absorbed into Wave 4's `RepoSearchPanel` (`search_symbols`) and `OutlinePanel` (`analyze_file`, `get_imports`'s data folded into the same call) | `code.analyze_directory` stays unwired — it's already used internally by `search_symbols`'s handler; a standalone UI for it added nothing `search_symbols` didn't already cover. |
-| `confidence.history`, `mission.review.list` | Expanded `ConfidenceCard` / `ReviewCard` in place | A "History" toggle on each, mission-scoped (confidence scores aren't stored per-file, so the label says so honestly rather than implying a filter that doesn't exist). |
+| `confidence.history`, `session.review.list` | Expanded `ConfidenceCard` / `ReviewCard` in place | A "History" toggle on each, session-scoped (confidence scores aren't stored per-file, so the label says so honestly rather than implying a filter that doesn't exist). |
 | `mcp.task.subscribe`, `workspace.get` | **Left unwired — a real decision, not an oversight** | `subscribe` is a literal alias for `poll` in the current backend (`self.poll(task_id).await`), and `mcp.task.create` is never called from anywhere in the agent's real tool-execution loop — the whole MCP Tasks feature has no producer yet. A "view tasks" panel would show a permanently empty list: wiring the UI first would be cosmetic, not real. The right fix is routing long-running MCP tool calls through `create_task` in `model/mod.rs`'s dispatch path — that's new agent-loop integration work, not a panel, and belongs in a future pass once there's something to view. `workspace.get` stays unwired for the same reason `049-...md` gates cross-network sync: no multi-workspace UI exists anywhere in the app to call it from. |
 
 Each wired surface has a component test asserting the real RPC call (`RoleProfilesPanel.test.tsx`,
@@ -256,14 +256,14 @@ coverage of these can still be added later without contradicting this.
 ### 5.2 Accessibility (F10) — DONE (with one named gap)
 
 Real work, not a lint pass: `useFocusTrap` (a shared hook — Tab-cycling + Escape) applied
-to every modal (`MissionCreationModal`, `EditorPane`'s close-tab prompt, `DialogHost`'s
+to every modal (`SessionCreationModal`, `EditorPane`'s close-tab prompt, `DialogHost`'s
 confirm/info dialogs, the new command palette, the new keyboard-shortcuts reference).
-`aria-live="polite"` + `role="log"` added around the Mission thread's streaming messages.
+`aria-live="polite"` + `role="log"` added around the Session thread's streaming messages.
 A sweep for icon-only buttons with no `aria-label` found and fixed 8 real instances
 (`WebShell`, `ChatThread`, `LeftRail` ×2, `SemanticInsights` ×3, `AutonomyPanel`) — one of
 which (LeftRail's settings button) turned out to have **no `onClick` at all**, wired for
 real via a small `cid:open-settings` DOM event `App.tsx` listens for. `Ctrl+K` command
-palette built (`CommandPalette.tsx`) covering tab switches, new-mission, theme toggle,
+palette built (`CommandPalette.tsx`) covering tab switches, new-session, theme toggle,
 maximize, and the shortcuts reference; `?` opens the reference directly.
 `vitest-axe` added, with 2 real smoke tests — one of which (the confirm dialog) **caught
 and fixed a real bug**: `aria-describedby` alone with no accessible name.
@@ -298,7 +298,7 @@ skipped, given xterm/mobile complexity) both got real coverage too, via faked
 ### 5.5 i18n scaffolding (F11) — DONE at scaffolding scope, as specified
 
 `src/lib/i18n.ts`: a real `t()` lookup + English catalogue, applied to the shared UI
-chrome (`DialogHost`, `CommandPalette`, `MissionCreationModal`, the shortcuts reference,
+chrome (`DialogHost`, `CommandPalette`, `SessionCreationModal`, the shortcuts reference,
 `EditorPane`'s close-tab prompt) rather than every component — English string values kept
 byte-identical to what was hardcoded before, so this added the seam with zero behavior or
 test change. Per-component body copy (Settings/Autonomy/Health form labels, etc.) is
@@ -322,7 +322,7 @@ review specifically re-examined and left closed.
 | Deferred | Why it stays closed |
 |---|---|
 | **Native rendering engine** | `018-Native-Editor.md`'s evidence is unchanged. Nothing in this review is rendering-bound; every editor finding is missing *features*, not slow ones. |
-| **Debugger / DAP (F14)** | A full subsystem serving a workflow — step-through debugging — that is not CID's loop. Revisit only if real usage shows users leaving CID mid-mission specifically to debug. |
+| **Debugger / DAP (F14)** | A full subsystem serving a workflow — step-through debugging — that is not CID's loop. Revisit only if real usage shows users leaving CID mid-session specifically to debug. |
 | **Test explorer** | Wave 3's diagnostics deliver most of the same feedback earlier and more cheaply. Reconsider after Wave 3 ships, with evidence. |
 | **Enterprise / air-gapped, hosted cloud, deploy integrations** | Unchanged from `041-Roadmap.md`; nothing in this review bears on them. |
 

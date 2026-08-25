@@ -66,7 +66,7 @@ graph TB
   (`cid-core/src/api/router.rs`) for the router to use per-request.
 - **Transport**: JSON-RPC 2.0 over HTTP POST (`/api/rpc`) and WebSocket (`/ws`) — the same
   wire shape MCP and ACP already use (Part 15's deliberate consistency choice). WS carries
-  push notifications (`mission.message.delta`, `mission.tool_call.request`, `pty.output`,
+  push notifications (`session.message.delta`, `session.tool_call.request`, `pty.output`,
   etc.); HTTP is request/response for everything else.
 - **Desktop Shell**: Tauri v2, wraps the same React bundle as the Web Shell.
 - **Web Shell**: `src/components/WebShell.tsx` — connection banner, health dashboard,

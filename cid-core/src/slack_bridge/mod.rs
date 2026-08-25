@@ -1,8 +1,8 @@
 //! Phase 2 Slack Bridge
 //!
 //! HTTP webhook-based bridge (no full Slack SDK needed for Phase 2).
-//! Slack message/reaction → Mission trigger.
-//! Mission status/approval → Slack channel post.
+//! Slack message/reaction → Session trigger.
+//! Session status/approval → Slack channel post.
 //! Slash command `/cid` support.
 //!
 //! Config per Workspace: SlackConfig with webhook_url, signing_secret, bot_token.
@@ -56,7 +56,7 @@ impl SlackBridge {
         guard.get(workspace_id).cloned()
     }
 
-    pub async fn trigger_mission(
+    pub async fn trigger_session(
         &self,
         params: SlackTriggerParams,
     ) -> anyhow::Result<SlackTrigger> {
@@ -83,7 +83,7 @@ impl SlackBridge {
             triggered_at: now_utc(),
             parsed_command: command,
             parsed_args: args,
-            mission_id: None,
+            session_id: None,
         };
 
         let mut guard = self.triggers.write().await;
@@ -159,14 +159,14 @@ impl SlackBridge {
         }
     }
 
-    pub async fn link_trigger_to_mission(
+    pub async fn link_trigger_to_session(
         &self,
         trigger_id: &str,
-        mission_id: &str,
+        session_id: &str,
     ) -> anyhow::Result<()> {
         let mut guard = self.triggers.write().await;
         if let Some(trigger) = guard.get_mut(trigger_id) {
-            trigger.mission_id = Some(mission_id.to_string());
+            trigger.session_id = Some(session_id.to_string());
             let clone = trigger.clone();
             drop(guard);
             self.emit_event("slack.trigger.linked", &clone);
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trigger_mission() {
+    async fn test_trigger_session() {
         let (tx, _rx) = broadcast::channel(10);
         let bridge = SlackBridge::new(tx);
 
@@ -295,7 +295,7 @@ mod tests {
         };
 
         let trigger = bridge
-            .trigger_mission(SlackTriggerParams {
+            .trigger_session(SlackTriggerParams {
                 message: msg,
                 workspace_id: Some("ws-1".to_string()),
             })
@@ -334,7 +334,7 @@ mod tests {
         };
 
         let result = bridge
-            .trigger_mission(SlackTriggerParams {
+            .trigger_session(SlackTriggerParams {
                 message: msg,
                 workspace_id: Some("ws-1".to_string()),
             })
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_link_trigger_to_mission() {
+    async fn test_link_trigger_to_session() {
         let (tx, _rx) = broadcast::channel(10);
         let bridge = SlackBridge::new(tx);
 
@@ -361,7 +361,7 @@ mod tests {
         };
 
         let trigger = bridge
-            .trigger_mission(SlackTriggerParams {
+            .trigger_session(SlackTriggerParams {
                 message: msg,
                 workspace_id: None,
             })
@@ -369,11 +369,11 @@ mod tests {
             .unwrap();
 
         bridge
-            .link_trigger_to_mission(&trigger.id, "mission-1")
+            .link_trigger_to_session(&trigger.id, "session-1")
             .await
             .unwrap();
 
         let triggers = bridge.list_triggers().await;
-        assert_eq!(triggers[0].mission_id, Some("mission-1".to_string()));
+        assert_eq!(triggers[0].session_id, Some("session-1".to_string()));
     }
 }

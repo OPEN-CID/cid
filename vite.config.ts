@@ -29,7 +29,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          monaco: ["@monaco-editor/react", "monaco-editor"],
+          // `monaco-editor` deliberately absent. Naming it here forces it into
+          // an eagerly-reachable chunk, and once Monaco was actually bundled
+          // (rather than fetched from a CDN — see src/lib/monaco-setup.ts) that
+          // put a 4 MB `modulepreload` in index.html on first paint, undoing
+          // the React.lazy split in App.tsx. Left unlisted, it lands inside the
+          // lazily-imported EditorPane chunk and is only fetched when the
+          // Editor tab is first opened.
           xterm: ["@xterm/xterm", "@xterm/addon-fit"],
           vendor: ["react", "react-dom", "zustand"],
         },

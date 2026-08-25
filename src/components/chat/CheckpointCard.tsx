@@ -2,39 +2,39 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { History, RotateCcw, Loader2, AlertTriangle } from "lucide-react";
 
-type MissionCheckpoint = {
+type SessionCheckpoint = {
   id: string;
-  mission_id: string;
+  session_id: string;
   sha: string;
   label: string;
   created_at: string;
 };
 
 /**
- * review_prompt.md §3.2: checkpoints are auto-recorded on the Mission's
+ * review_prompt.md §3.2: checkpoints are auto-recorded on the Session's
  * worktree before every turn (ModelManager::auto_checkpoint), but had no UI
  * — a bad turn could only be undone by hand-editing git. Only renders for
- * worktree-mode Missions, since shared-clone Missions have nothing to
+ * worktree-mode Sessions, since shared-clone Sessions have nothing to
  * checkpoint against.
  */
-export function CheckpointCard({ missionId, refreshOn }: { missionId: string; refreshOn?: number }) {
+export function CheckpointCard({ sessionId, refreshOn }: { sessionId: string; refreshOn?: number }) {
   const [hasWorktree, setHasWorktree] = useState(false);
-  const [checkpoints, setCheckpoints] = useState<MissionCheckpoint[]>([]);
+  const [checkpoints, setCheckpoints] = useState<SessionCheckpoint[]>([]);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const mission = await api.mission.get(missionId);
-      setHasWorktree(!!mission?.worktree_path);
-      const list = await api.mission.checkpointList(missionId);
+      const session = await api.session.get(sessionId);
+      setHasWorktree(!!session?.worktree_path);
+      const list = await api.session.checkpointList(sessionId);
       setCheckpoints(list ?? []);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
-  }, [missionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     load();
@@ -44,7 +44,7 @@ export function CheckpointCard({ missionId, refreshOn }: { missionId: string; re
     setBusyId(checkpointId);
     setError(null);
     try {
-      await api.mission.checkpointRewind(missionId, checkpointId, true);
+      await api.session.checkpointRewind(sessionId, checkpointId, true);
       setConfirmingId(null);
       await load();
     } catch (e) {
@@ -104,7 +104,7 @@ export function CheckpointCard({ missionId, refreshOn }: { missionId: string; re
               <button
                 onClick={() => setConfirmingId(cp.id)}
                 className="shrink-0 text-[10px] flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted hover:bg-muted/70"
-                title="Rewind the Mission's worktree to this checkpoint"
+                title="Rewind the Session's worktree to this checkpoint"
               >
                 <RotateCcw className="w-3 h-3" /> Rewind
               </button>

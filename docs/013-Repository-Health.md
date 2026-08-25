@@ -3,7 +3,7 @@
 ## Vision
 
 The Action History panel (Part 13) — a transparent, filterable, exportable log of every
-tool call, terminal command, file edit, and approval decision a Mission's agents made —
+tool call, terminal command, file edit, and approval decision a Session's agents made —
 plus the health signals (stale docs, test coverage gaps) the Phase 4 graphs surface.
 
 ## Goals
@@ -26,8 +26,8 @@ Named here explicitly as unbuilt rather than silently assumed.
 
 ## Architecture
 
-History entries are persisted per-Mission (`ChatMessage` with `tool_calls`,
-`MissionReview`, `ConfidenceScore`, `DeploymentRecord` — all queryable per-Mission and
+History entries are persisted per-Session (`ChatMessage` with `tool_calls`,
+`SessionReview`, `ConfidenceScore`, `DeploymentRecord` — all queryable per-Session and
 surfaced in the thread/History panel together).
 
 ## Data Structures
@@ -46,7 +46,7 @@ SQLite `messages` table, `tool_calls` embedded as JSON per message.
 
 ## Performance Targets
 
-Not separately benchmarked — bounded by message list size per Mission, which is small at
+Not separately benchmarked — bounded by message list size per Session, which is small at
 current usage scale.
 
 ## Tradeoffs
@@ -61,7 +61,7 @@ for the underlying data sources.
 
 ## Security
 
-History is per-Mission and inherits the same access boundary as the Mission itself — no
+History is per-Session and inherits the same access boundary as the Session itself — no
 separate access control layer, a reasonable scope for a single-Workspace-at-a-time
 product.
 
@@ -77,7 +77,7 @@ detection remains unbuilt.
 
 ## Acceptance Criteria
 
-Every tool call a Mission's agents make is visible in the History panel with actor,
+Every tool call a Session's agents make is visible in the History panel with actor,
 action, and result — the transparency baseline Cline established, per the founding
 brief's Part 13.
 

@@ -9,7 +9,7 @@ checkpoint reports and ADRs, not an aspirational future plan.
 
 **Phase 0 — "A real single-agent coding assistant in a Slack-shaped UI."** Desktop app
 (Tauri v2, macOS+Windows), one Workspace/Repo Channel at a time, worktree/shared-clone
-Session Mode, real PTY terminal, `git2-rs` diff viewer with per-hunk accept/reject,
+Isolation, real PTY terminal, `git2-rs` diff viewer with per-hunk accept/reject,
 Anthropic-only chat with a real tool-use loop under Co-Pilot autonomy, basic MCP client,
 `AGENTS.md` auto-detection, SQLite persistence. See `docs/CHECKPOINT-Phase0-Final.md`.
 
@@ -23,7 +23,7 @@ Phase 0 golden path was not implemented despite being the stated exit criterion.
 `docs/CHECKPOINT-Phase1.md`.
 
 **Phase 2 — "A real multi-surface platform."** Web shell, Slack/Teams bridges,
-multi-agent-per-Mission subagents, background/ambient local model, Semantic Context
+multi-agent-per-Session subagents, background/ambient local model, Semantic Context
 Engine (Tantivy + embeddings + dependency graph), MCP Apps/Tasks, sandboxing, Linux CI.
 **Also corrected in this pass**: the sandbox boundary test was a tautology and Windows
 Job Objects don't confine the filesystem (ADR 0011); the sandbox was never applied to
@@ -49,7 +49,7 @@ shell (ADR 0014); this 45-document backfill.
 
 **Phase 5 — complete.** Dependency audit (`045-Dependency-Audit.md`), contributor
 experience (`CONTRIBUTING.md`, devcontainer decision/ADR 0016, CI extension closing the
-coverage gap named in `036-CI-CD.md`, `CODEOWNERS`, PR template), vibe-coding Mission
+coverage gap named in `036-CI-CD.md`, `CODEOWNERS`, PR template), vibe-coding Session
 preset, persona-coverage audit (manual/Co-Pilot/Autonomous/CLI-first/GUI-first/
 diff-review-first — cid-tui's missing diff view flagged, not silently fixed mid-audit).
 **Also found and fixed in this pass, via actually running the E2E suite rather than

@@ -19,19 +19,19 @@ plan-approval gate were both unwired despite being reported done. Verify the fix
    literal Phase 0 golden path and was found completely unimplemented in an earlier
    session despite being reported done. Check: `cid-core/src/roles/mod.rs`
    (`RoleRunner::generate_plan`, `implementer_is_gated`), the plan-approval check at the
-   top of `handle_mission_send_message` in `router.rs`. Run
-   `co_pilot_mission_is_gated_until_a_plan_is_approved`,
+   top of `handle_session_send_message` in `router.rs`. Run
+   `co_pilot_session_is_gated_until_a_plan_is_approved`,
    `editing_an_approved_plan_revokes_the_approval`,
    `rejecting_a_plan_keeps_the_gate_closed`, and `manual_autonomy_has_no_plan_gate` in
    `api_integration.rs` — all four should exist and pass.
 4. **Reviewer pass produces a real, structured verdict**, not a stub. Check:
    `RoleRunner::run_review`/`latest_review`, `parse_findings`/`verdict_for` in
-   `roles/mod.rs` (17+ unit tests), `mission.review.run`/`.get`/`.list` RPC methods.
+   `roles/mod.rs` (17+ unit tests), `session.review.run`/`.get`/`.list` RPC methods.
 5. **Full `SKILL.md` support** (not just a single markdown snippet). Check:
    `cid-core/src/skills/mod.rs`, `skills.bundles.list`/`skills.bundle.write`/
    `skills.resolve` RPC methods, the layered-resolution tests
    (`skills_resolve_returns_a_layered_context_stack`,
-   `skills_resolve_puts_mission_context_last`) in `api_integration.rs`.
+   `skills_resolve_puts_session_context_last`) in `api_integration.rs`.
 6. **Headless Core server mode** — Core runs with no shell attached, driven entirely over
    RPC. Trivially true by construction (Core is a Tokio daemon with no GUI dependency),
    but confirm no code path assumes a frontend is present (e.g., a panic or silent no-op
@@ -39,7 +39,7 @@ plan-approval gate were both unwired despite being reported done. Verify the fix
 7. **Opt-in Structural Context Engine** (Tree-sitter), off by default per repo. Check:
    `cid-core/src/context_engine/mod.rs`, the `context_engine_is_off_by_default_and_toggles_per_repo`
    test.
-8. **GitHub bridge**: issue → Mission trigger, PR open/status sync. Check:
+8. **GitHub bridge**: issue → Session trigger, PR open/status sync. Check:
    `cid-core/src/github/mod.rs`.
 9. **Autonomous mode with command allow-lists, unsandboxed** (Phase 1's stated boundary,
    not a defect — kernel sandboxing is Phase 2). Check: `cid-core/src/autonomy/mod.rs`,

@@ -19,16 +19,16 @@ problem found, and the prompt's own instruction is "don't churn dependencies for
   `cargo test --workspace --exclude cid --all-features` in all three jobs; `lint-rust`'s clippy
   step extended to `-p cid-core -p cid-tui`. Verified locally against the exact command CI runs.
 
-**Vibe-coding Mission preset** — `vibe: bool` on `mission.create`
+**Vibe-coding Session preset** — `vibe: bool` on `session.create`
 (`cid-core/src/api/types.rs`). When set, `RoleRunner::generate_vibe_plan` writes a minimal
 one-line plan and immediately marks it `Approved` (`approved_by: "vibe-preset"`), so the
-Implementer is unblocked the moment the Mission is created — no separate plan-approval round
+Implementer is unblocked the moment the Session is created — no separate plan-approval round
 trip. This shortens *planning* only: Co-Pilot's per-tool-call approval, the diff viewer, and
-History are untouched, and the Mission still runs at whatever autonomy level was requested.
-Wired into the frontend (`MissionCreationModal` in `src/App.tsx`) as a checkbox with an inline
+History are untouched, and the Session still runs at whatever autonomy level was requested.
+Wired into the frontend (`SessionCreationModal` in `src/App.tsx`) as a checkbox with an inline
 explanation. 2 unit tests (`roles::tests::vibe_plan_*`) + 3 integration tests
-(`vibe_preset_mission_starts_with_an_already_approved_plan`,
-`vibe_preset_does_not_bypass_tool_call_approval`, `non_vibe_mission_still_uses_the_full_planner`).
+(`vibe_preset_session_starts_with_an_already_approved_plan`,
+`vibe_preset_does_not_bypass_tool_call_approval`, `non_vibe_session_still_uses_the_full_planner`).
 
 **Persona-coverage audit** (Part 34's explicit instruction: confirm manual editing, Co-Pilot
 review, full Autonomous, CLI-first, GUI/editor-first, and diff-review-first are genuinely served):
@@ -38,7 +38,7 @@ review, full Autonomous, CLI-first, GUI/editor-first, and diff-review-first are 
 | Manual editing | Yes | Monaco/CodeMirror editor panes, Manual autonomy level does no autonomous tool calls |
 | Co-Pilot review | Yes | Per-tool-call approval in `model/mod.rs`'s execution loop; approval cards render in desktop/web/mobile; cid-tui approves over the same WS event stream |
 | Full Autonomous | Yes | Governance-gated (`governance/mod.rs`: who can enable it, spend caps, command allow-list); human reviews the final diff, not each step |
-| CLI-first | **Partially** | cid-tui covers chat, mission status, and approvals over a real Core connection — but has no diff view (see below); a CLI-only user must switch surfaces to review a diff |
+| CLI-first | **Partially** | cid-tui covers chat, session status, and approvals over a real Core connection — but has no diff view (see below); a CLI-only user must switch surfaces to review a diff |
 | GUI/editor-first | Yes | Monaco full-file editing, ACP pop-out to Zed/JetBrains (`acp/mod.rs`) for deeper IDE power |
 | Diff-review-first | Yes | `DiffViewer.tsx` does real per-hunk accept/reject over `git.hunk.apply`, not just a read-only view (hunk-reject is whole-file `git checkout HEAD --` pending true `git apply -R` per-hunk reversal in Phase 1+, documented inline) |
 
@@ -67,7 +67,7 @@ E2E suite against a live Core, per the operating rule that a stub or an untested
   which cascaded into ~10 downstream failures. Fixed via `fileURLToPath(import.meta.url)`.
   `mcp.server.remove` was called with `server_id` in both E2E files, but the real API (and the
   real frontend) uses `id` — fixed the tests to match the real, working contract rather than
-  changing the contract. `pty.list` was called with no `mission_id` (a required param) and
+  changing the contract. `pty.list` was called with no `session_id` (a required param) and
   `git.status` was pointed at a non-repo directory — both errored at the RPC level in a way the
   tests' `.catch(() => null)` didn't detect, so they silently "passed" without checking anything;
   fixed to exercise the real success path.

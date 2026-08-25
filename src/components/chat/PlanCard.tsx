@@ -4,9 +4,9 @@ import { Check, X, Pencil, RefreshCw, Loader2 } from "lucide-react";
 
 type PlanStatus = "draft" | "approved" | "rejected";
 
-type MissionPlan = {
+type SessionPlan = {
   id: string;
-  mission_id: string;
+  session_id: string;
   content: string;
   status: PlanStatus;
   approved_by?: string | null;
@@ -20,11 +20,11 @@ const STATUS_STYLE: Record<PlanStatus, string> = {
 };
 
 /**
- * The plan-approval card from Flow 1 step 3 — rendered inline in the Mission
+ * The plan-approval card from Flow 1 step 3 — rendered inline in the Session
  * thread rather than in a modal, because the plan is part of the conversation.
  */
-export function PlanCard({ missionId }: { missionId: string }) {
-  const [plan, setPlan] = useState<MissionPlan | null>(null);
+export function PlanCard({ sessionId }: { sessionId: string }) {
+  const [plan, setPlan] = useState<SessionPlan | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -33,23 +33,23 @@ export function PlanCard({ missionId }: { missionId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await api.call("mission.plan.get", { mission_id: missionId });
+      const res = await api.call("session.plan.get", { session_id: sessionId });
       setPlan(res?.plan ?? null);
       setBlockedReason(res?.implementer_blocked_reason ?? null);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
-  }, [missionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     load();
     const unsub = api.onNotification((n) => {
-      if (n.method === "mission.plan.changed" && n.params?.mission_id === missionId) load();
-      if (n.method === "mission.blocked" && n.params?.mission_id === missionId) load();
+      if (n.method === "session.plan.changed" && n.params?.session_id === sessionId) load();
+      if (n.method === "session.blocked" && n.params?.session_id === sessionId) load();
     });
     return () => unsub();
-  }, [load, missionId]);
+  }, [load, sessionId]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -65,12 +65,12 @@ export function PlanCard({ missionId }: { missionId: string }) {
   };
 
   const generate = () =>
-    act(() => api.call("mission.plan.generate", { mission_id: missionId, force: !!plan }));
-  const approve = () => act(() => api.call("mission.plan.approve", { mission_id: missionId }));
-  const reject = () => act(() => api.call("mission.plan.reject", { mission_id: missionId }));
+    act(() => api.call("session.plan.generate", { session_id: sessionId, force: !!plan }));
+  const approve = () => act(() => api.call("session.plan.approve", { session_id: sessionId }));
+  const reject = () => act(() => api.call("session.plan.reject", { session_id: sessionId }));
   const save = () =>
     act(async () => {
-      await api.call("mission.plan.update", { mission_id: missionId, content: draft });
+      await api.call("session.plan.update", { session_id: sessionId, content: draft });
       setEditing(false);
     });
 

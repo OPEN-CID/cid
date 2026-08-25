@@ -7,16 +7,16 @@ import { execSync } from "child_process";
 /**
  * Phase 0 golden-path E2E test — Flow 1 from Build Prompt Part 20:
  * 1. Connect local repo
- * 2. New Mission (worktree default, Co-Pilot)
+ * 2. New Session (worktree default, Co-Pilot)
  * 3. Planner response + approve
  * 4. Implementer executes with approval
  * 5. Diff accumulates
- * 6. Mission done → review → merge/PR
+ * 6. Session done → review → merge/PR
  *
  * This test drives the fully integrated Stack against a real throwaway git repo.
  */
 
-test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", () => {
+test.describe("Flow 1 — First Session on a new repo (Phase 0 golden path)", () => {
   let tempRepoPath: string;
 
   test.beforeAll(() => {
@@ -89,20 +89,20 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
       console.log("[E2E] Repo name not visible in UI, but API says connected — continuing");
     });
 
-    // 3. Create mission via API
-    const missionResp = await page.evaluate(async ({ repoId }) => {
+    // 3. Create session via API
+    const sessionResp = await page.evaluate(async ({ repoId }) => {
       const res = await fetch("http://127.0.0.1:5919/api/rpc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: "2",
-          method: "mission.create",
+          method: "session.create",
           params: {
             repo_channel_id: repoId,
             title: "Add hello world file",
             task: "Create a file hello.txt with content 'Hello from CID E2E' and commit it",
-            session_mode: "worktree",
+            isolation_mode: "worktree",
             autonomy_level: "co_pilot",
           },
         }),
@@ -110,51 +110,51 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
       return res.json();
     }, { repoId });
 
-    expect(missionResp.result).toBeDefined();
-    const missionId = missionResp.result.id;
-    console.log(`[E2E] Created mission ${missionId}, worktree: ${missionResp.result.worktree_path}`);
+    expect(sessionResp.result).toBeDefined();
+    const sessionId = sessionResp.result.id;
+    console.log(`[E2E] Created session ${sessionId}, worktree: ${sessionResp.result.worktree_path}`);
 
-    // Verify mission appears in list
-    const missionsList = await page.evaluate(async (repoId) => {
+    // Verify session appears in list
+    const sessionsList = await page.evaluate(async (repoId) => {
       const res = await fetch("http://127.0.0.1:5919/api/rpc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: "3",
-          method: "mission.list",
+          method: "session.list",
           params: { repo_channel_id: repoId },
         }),
       });
       return res.json();
     }, repoId);
 
-    expect(missionsList.result.length).toBeGreaterThan(0);
+    expect(sessionsList.result.length).toBeGreaterThan(0);
 
     // 4. Send message (user task) — triggers simulated agent if no ANTHROPIC_API_KEY
-    const msgResp = await page.evaluate(async (missionId) => {
+    const msgResp = await page.evaluate(async (sessionId) => {
       const res = await fetch("http://127.0.0.1:5919/api/rpc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: "4",
-          method: "mission.send_message",
+          method: "session.send_message",
           params: {
-            mission_id: missionId,
+            session_id: sessionId,
             content: "Please create hello.txt with content 'Hello from CID E2E'",
           },
         }),
       });
       return res.json();
-    }, missionId);
+    }, sessionId);
 
     expect(msgResp.result).toBeDefined();
 
     // Wait for assistant response (simulated)
     await page.waitForTimeout(2000);
 
-    const messagesResp = await page.evaluate(async (missionId) => {
+    const messagesResp = await page.evaluate(async (sessionId) => {
       const res = await fetch("http://127.0.0.1:5919/api/rpc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -162,17 +162,17 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
           jsonrpc: "2.0",
           id: "5",
           method: "message.list",
-          params: { mission_id: missionId },
+          params: { session_id: sessionId },
         }),
       });
       return res.json();
-    }, missionId);
+    }, sessionId);
 
     expect(messagesResp.result.length).toBeGreaterThan(1);
     console.log(`[E2E] Messages: ${messagesResp.result.length}`);
 
     // 5. Check git status in worktree (if worktree created)
-    if (missionResp.result.worktree_path) {
+    if (sessionResp.result.worktree_path) {
       const statusResp = await page.evaluate(async (worktreePath) => {
         const res = await fetch("http://127.0.0.1:5919/api/rpc", {
           method: "POST",
@@ -185,7 +185,7 @@ test.describe("Flow 1 — First Mission on a new repo (Phase 0 golden path)", ()
           }),
         });
         return res.json();
-      }, missionResp.result.worktree_path);
+      }, sessionResp.result.worktree_path);
 
       console.log(`[E2E] Worktree status: ${JSON.stringify(statusResp)}`);
     }

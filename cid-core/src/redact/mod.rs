@@ -1,7 +1,7 @@
 /*!
  * Secret redaction for terminal output and stored history (Part 9, Part 14).
  *
- * Applied before command output is written to a Mission's history, streamed to
+ * Applied before command output is written to a Session's history, streamed to
  * a shell, or handed back to a model as tool output — so a credential echoed by
  * a build script does not end up in the transcript or in a model's context.
  *

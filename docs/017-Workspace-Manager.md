@@ -2,7 +2,7 @@
 
 ## Vision
 
-The top-level container: Workspace → Repo Channel → Mission Thread navigation, plus (from
+The top-level container: Workspace → Repo Channel → Session Thread navigation, plus (from
 Phase 3) multi-user membership and governance policy scoped to a Workspace.
 
 ## Goals
@@ -26,8 +26,8 @@ product design (Part 24's default), not a technical ceiling.
 graph TB
   WS["Workspace"] --> Policy["GovernanceManager<br/>WorkspacePolicy"]
   WS --> Repo["RepoChannel"]
-  Repo --> Mission["Mission"]
-  Policy -->|checked before| Autonomous["Autonomous-mode Mission creation"]
+  Repo --> Session["Session"]
+  Policy -->|checked before| Autonomous["Autonomous-mode Session creation"]
   Policy -->|checked before| Approve["Plan approval"]
   Policy -->|checked before| Merge["Merge/PR"]
 ```
@@ -69,12 +69,12 @@ after a restart reflects defaults until an Admin re-configures. A real, named li
 
 Every governance check requires a valid session and enforces the actor's role — verified
 by `only_an_admin_can_change_governance_policy` and
-`creating_an_autonomous_mission_is_refused_by_default_policy`.
+`creating_an_autonomous_session_is_refused_by_default_policy`.
 
 ## Testing
 
 13 unit tests in `governance/mod.rs`; 6 integration tests in `api_integration.rs`
-covering the real enforcement points (Mission creation, plan approval).
+covering the real enforcement points (Session creation, plan approval).
 
 ## Implementation Order
 

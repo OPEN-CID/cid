@@ -48,7 +48,7 @@ async function flushAsyncWork() {
 describe("HistoryPanel", () => {
   beforeEach(() => {
     notificationHandler = null;
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.message.list).mockReset().mockResolvedValue([]);
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -58,10 +58,10 @@ describe("HistoryPanel", () => {
     (global as any).URL.revokeObjectURL = vi.fn();
   });
 
-  it("prompts to select a mission when none is selected", () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: null } as any);
+  it("prompts to select a session when none is selected", () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: null } as any);
     render(<HistoryPanel />);
-    expect(screen.getByText("Select a mission to view history")).toBeInTheDocument();
+    expect(screen.getByText("Select a session to view history")).toBeInTheDocument();
   });
 
   it("shows the empty state once loading finishes with no persisted tool calls", async () => {
@@ -84,7 +84,7 @@ describe("HistoryPanel", () => {
     render(<HistoryPanel />);
     await flushAsyncWork();
 
-    expect(api.message.list).toHaveBeenCalledWith("mission-1");
+    expect(api.message.list).toHaveBeenCalledWith("session-1");
     expect(screen.getByText("Assistant")).toBeInTheDocument();
     expect(screen.getByText("write_file")).toBeInTheDocument();
     expect(screen.getByText("src/a.ts")).toBeInTheDocument();
@@ -97,28 +97,28 @@ describe("HistoryPanel", () => {
     render(<HistoryPanel />);
     await flushAsyncWork();
 
-    emit({ method: "mission.tool_call.request", params: { mission_id: "mission-1", tool_name: "run_terminal", arguments: { command: "npm test" } } });
+    emit({ method: "session.tool_call.request", params: { session_id: "session-1", tool_name: "run_terminal", arguments: { command: "npm test" } } });
 
     expect(screen.getByText("Assistant")).toBeInTheDocument();
     expect(screen.getByText("run_terminal")).toBeInTheDocument();
     expect(screen.getByText("pending approval")).toBeInTheDocument();
   });
 
-  it("ignores notifications for a different mission", async () => {
+  it("ignores notifications for a different session", async () => {
     render(<HistoryPanel />);
     await flushAsyncWork();
 
-    emit({ method: "mission.tool_call.request", params: { mission_id: "mission-2", tool_name: "write_file" } });
+    emit({ method: "session.tool_call.request", params: { session_id: "session-2", tool_name: "write_file" } });
 
     expect(screen.getByText(/No history yet/)).toBeInTheDocument();
   });
 
-  it("filters noisy streaming notifications (pty.output, mission.message.delta)", async () => {
+  it("filters noisy streaming notifications (pty.output, session.message.delta)", async () => {
     render(<HistoryPanel />);
     await flushAsyncWork();
 
-    emit({ method: "pty.output", params: { mission_id: "mission-1", pty_id: "pty-1" } });
-    emit({ method: "mission.message.delta", params: { mission_id: "mission-1" } });
+    emit({ method: "pty.output", params: { session_id: "session-1", pty_id: "pty-1" } });
+    emit({ method: "session.message.delta", params: { session_id: "session-1" } });
 
     expect(screen.getByText(/No history yet/)).toBeInTheDocument();
   });

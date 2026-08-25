@@ -13,17 +13,17 @@ not open a public issue for an unpatched vulnerability.
 
 ## 1. The Autonomous-mode worktree boundary
 
-When a Mission runs in **Autonomous** mode, terminal commands go through
+When a Session runs in **Autonomous** mode, terminal commands go through
 `SandboxManager`, which enforces the boundary in two layers.
 
 ### Layer 1 — command path policy (all platforms)
 
 Before a process is spawned, the command and its arguments are scanned for path-shaped
 tokens. Any token that is absolute, or climbs out with `..`, is resolved and checked
-against the Mission's worktree. Anything landing outside is refused before execution.
+against the Session's worktree. Anything landing outside is refused before execution.
 Read-only system locations (`/usr`, `/bin`, `C:\Windows`, `C:\Program Files`) are exempt
-so that invoking an interpreter is not mistaken for an escape. Separately, a Mission's
-`run_terminal` working directory is clamped into the Mission root, so a model-supplied
+so that invoking an interpreter is not mistaken for an escape. Separately, a Session's
+`run_terminal` working directory is clamped into the Session root, so a model-supplied
 `workdir` cannot redirect execution elsewhere.
 
 This layer is deterministic and covers the common case. It **cannot see a path that a
@@ -118,7 +118,7 @@ checked against the Repo Channel's command allow-list. **A scope with no configu
 allow-list denies everything** — the default is closed, not open. Commands not matching an
 allow-listed pattern fall back to a human approval request rather than executing.
 
-Subagents inherit the parent Mission's worktree and permissions; they get no additional
+Subagents inherit the parent Session's worktree and permissions; they get no additional
 reach.
 
 ---
@@ -202,7 +202,7 @@ See [ADR 0012](docs/adr/0012-core-access-control.md).
 - Provider API keys are stored in OS-native credential storage (Windows Credential
   Manager, macOS Keychain, Secret Service) via the `keyring` crate. `settings.get` returns
   a redacted form (`sk-…abcd`) — the full value never reaches the frontend.
-- Terminal output and stored Mission history are passed through `redact::redact_secrets`
+- Terminal output and stored Session history are passed through `redact::redact_secrets`
   before being persisted, streamed to a shell, or returned to a model as tool output. It
   covers key/value credential forms and the recognisable provider key formats (Anthropic,
   OpenAI, GitHub, Google, Slack, AWS) plus bearer headers.
@@ -250,17 +250,17 @@ carries today.
   build on, so what a Repo Channel's Skills panel shows and what the model actually
   receives are the same sanitized text, not two implementations that can drift apart.
 - **A human review gate on `AGENTS.md`.** `AGENTS.md` is repo-authored instructions that
-  would otherwise load straight into every Mission's system prompt on first connect. It
+  would otherwise load straight into every Session's system prompt on first connect. It
   is now detected and shown to the user, but excluded from the system prompt until a
   human explicitly approves it (`repo.agents_md.approve`; the frontend's
   `AgentsMdReviewCard`). **Known limitation:** approval does not currently re-arm if
   `AGENTS.md` changes later — a repo approved once stays approved even if a subsequent
   `git pull` changes its `AGENTS.md`. Re-review on content change is not yet implemented.
-- **Provenance marking in History.** Once untrusted content has entered a Mission's
+- **Provenance marking in History.** Once untrusted content has entered a Session's
   context (an approved `AGENTS.md`/`SKILL.md`, or any prior `read_file`/`list_files`/
-  `git_diff`/`git_status`/`mcp_call` result), every subsequent tool call in that Mission
+  `git_diff`/`git_status`/`mcp_call` result), every subsequent tool call in that Session
   carries a `provenance` marker, shown in the message History panel. **This is
-  deliberately coarse** — a Mission-wide flag, not per-argument taint tracking. It tells
+  deliberately coarse** — a Session-wide flag, not per-argument taint tracking. It tells
   you untrusted content was *somewhere* in context when a call was made, not that the
   call was actually influenced by it. Treat it as a hint to review, not a verdict.
 
@@ -291,7 +291,7 @@ carries today.
 
 These are network-facing RPCs the Editor and the repo-connect picker call directly over
 `/api/rpc` — a different trust boundary from the model's own tool calls (§1), since a
-caller here has no Mission worktree to confine to.
+caller here has no Session worktree to confine to.
 
 - **`file.read`/`file.write`/`file.list` are confined to connected repos.** Every path is
   resolved via `path_confine::resolve_confined_path_in_any` against the list of every

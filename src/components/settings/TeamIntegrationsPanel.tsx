@@ -45,7 +45,7 @@ const csv = (s: string) => s.split(",").map((v) => v.trim()).filter(Boolean);
 
 // 051-Editor-Excellence-Roadmap.md Wave 5.1d: slack.configure/config.get and
 // their Teams equivalents had no way to be set from anywhere but a
-// hand-crafted RPC call. `trigger_mission` on both bridges stays unwired
+// hand-crafted RPC call. `trigger_session` on both bridges stays unwired
 // deliberately — it's the inbound path a real Slack/Teams event drives, not
 // a user-facing settings action (same shape as deployment.webhook).
 export function TeamIntegrationsPanel() {

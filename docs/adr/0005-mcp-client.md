@@ -18,5 +18,5 @@
   - Phase0 covers basic MCP client exit criteria: add server via UI, agent can call its tools, calls render as inline cards and log to History (Parts 8,13)
   - Simulated stdio response is honest stub per Part 0 rule 2 — must be stated in checkpoint as stubbed, belonging to Phase1 for full implementation
   - Security: MCP servers are enabled per Repo Channel, not globally; secrets used by MCP servers should be stored in OS credential storage (Keychain/Credential Manager) Phase2+, not SQLite plaintext per Part 14 — Phase0 stores config JSON as-is, so user should avoid putting secrets in config and use env vars instead
-  - Long-running calls via Tasks extension maps naturally onto async Missions — a long tool call gets handle, thread shows "running", human can navigate away — Phase2+
+  - Long-running calls via Tasks extension maps naturally onto async Sessions — a long tool call gets handle, thread shows "running", human can navigate away — Phase2+
 - **References**: Build Prompt Parts 2 (protocol notes), 8 (MCP integration), 13 (History), 14 (security), 22 Phase0 scope.

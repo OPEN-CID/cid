@@ -12,9 +12,9 @@ type ReviewFinding = {
   description: string;
 };
 
-type MissionReview = {
+type SessionReview = {
   id: string;
-  mission_id: string;
+  session_id: string;
   verdict: ReviewVerdict;
   findings: ReviewFinding[];
   raw_output: string;
@@ -45,26 +45,26 @@ const SEVERITY_ICON: Record<ReviewSeverity, JSX.Element> = {
  * The Reviewer pass from Flow 1 step 6 — a second pass over the Implementer's
  * accumulated diff before it's presented for approval or opened as a PR
  * (Part 5). Mirrors PlanCard's shape: no modal, rendered inline in the
- * Mission thread. review_prompt.md §4: `mission.review.run/get/list` existed,
+ * Session thread. review_prompt.md §4: `session.review.run/get/list` existed,
  * were tested, and had zero frontend surface — the Reviewer, one of the
  * three founding roles, was unreachable from any UI.
  */
-export function ReviewCard({ missionId }: { missionId: string }) {
-  const [review, setReview] = useState<MissionReview | null>(null);
+export function ReviewCard({ sessionId }: { sessionId: string }) {
+  const [review, setReview] = useState<SessionReview | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<MissionReview[] | null>(null);
+  const [history, setHistory] = useState<SessionReview[] | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await api.missionReview.get(missionId);
+      const res = await api.sessionReview.get(sessionId);
       setReview(res ?? null);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
-  }, [missionId]);
+  }, [sessionId]);
 
   useEffect(() => {
     load();
@@ -74,7 +74,7 @@ export function ReviewCard({ missionId }: { missionId: string }) {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.missionReview.run(missionId);
+      const result = await api.sessionReview.run(sessionId);
       setReview(result ?? null);
     } catch (e) {
       setError(String(e));
@@ -83,12 +83,12 @@ export function ReviewCard({ missionId }: { missionId: string }) {
     }
   };
 
-  // 051-Editor-Excellence-Roadmap.md Wave 5.1f: mission.review.list had a
-  // real backend and no caller — every past review run for this Mission, not
+  // 051-Editor-Excellence-Roadmap.md Wave 5.1f: session.review.list had a
+  // real backend and no caller — every past review run for this Session, not
   // just the latest.
   const loadHistory = async () => {
     try {
-      const reviews: MissionReview[] = await api.missionReview.list(missionId);
+      const reviews: SessionReview[] = await api.sessionReview.list(sessionId);
       setHistory(reviews || []);
     } catch (e) {
       toast.error(`Failed to load review history: ${e}`);

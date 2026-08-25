@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+// Side-effect import: pins Monaco to the bundled copy instead of a CDN fetch.
+// Must precede the first <Editor> render — see the module for why.
+import "@/lib/monaco-setup";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { useCid } from "@/hooks/useCid";
+import { useSessionRepoPath } from "@/hooks/useSessionRepoPath";
 import { api } from "@/lib/api";
 import { useTheme } from "@/theme/useTheme";
 import { useFocusTrap } from "@/lib/useFocusTrap";
@@ -91,7 +94,10 @@ type FileEntry = { name: string; path: string; is_dir: boolean; is_file: boolean
 
 function visibleEntries(entries: FileEntry[]): FileEntry[] {
   return entries
-    .filter((e) => !(e.is_dir && IGNORED_DIR_NAMES.has(e.name)))
+    // Not `is_dir && ignored`: inside a Session's linked worktree `.git` is a
+    // *file* holding a `gitdir:` pointer, so the directory-only test let it
+    // through and the tree listed it as an openable document.
+    .filter((e) => !IGNORED_DIR_NAMES.has(e.name))
     .sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name) : a.is_dir ? -1 : 1));
 }
 
@@ -199,59 +205,78 @@ function FileTree({ rootPath, activePath, onOpenFile }: { rootPath: string; acti
   );
 }
 
-type SearchHit = { file_path: string; line?: number; name?: string; kind?: string };
+type SearchHit = {
+  file_path: string;
+  line: number;
+  line_text: string;
+  match_start?: number | null;
+  match_end?: number | null;
+};
 
-// 051 Wave 4.5: a UI over context_engine.search (when the repo's Context
-// Engine is enabled) falling back to code.search_symbols — both already
-// shipped, neither previously reachable from anywhere in the frontend.
+/// Splits a matched line so the matched span can be highlighted, using the
+/// byte offsets the backend already computed rather than re-running the match
+/// in the browser (which would disagree with the server on case rules).
+function HighlightedLine({ hit }: { hit: SearchHit }) {
+  const { line_text, match_start, match_end } = hit;
+  if (match_start == null || match_end == null || match_end <= match_start) {
+    return <span className="truncate">{line_text}</span>;
+  }
+  return (
+    <span className="truncate">
+      {line_text.slice(0, match_start)}
+      <mark className="bg-primary/30 text-foreground rounded-sm px-0.5">
+        {line_text.slice(match_start, match_end)}
+      </mark>
+      {line_text.slice(match_end)}
+    </span>
+  );
+}
+
+// Backed by `search.text` — ripgrep's engine in Core. This previously called
+// code.search_symbols, which walked and tree-sitter parsed every file in the
+// repo including target/ and node_modules/ (218 seconds on CID's own repo, so
+// the panel just sat on "Searching…"). Symbol search still exists for the
+// outline; this box is for finding text, which is what people type into it.
 function RepoSearchPanel({ repoPath, onOpenAt }: { repoPath: string; onOpenAt: (path: string, line?: number) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(false);
-  const [source, setSource] = useState<"context_engine" | "symbols" | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (query.trim().length < 2) {
       setResults([]);
-      setSource(null);
+      setElapsedMs(null);
+      setTruncated(false);
+      setError(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
     const run = async () => {
       try {
-        const status = await api.contextEngine.status(repoPath).catch(() => null);
-        if (status?.enabled) {
-          const res = await api.contextEngine.search(repoPath, query);
-          if (cancelled) return;
-          setSource("context_engine");
-          setResults((res?.results || []).map((r: { file_path: string; line: number; name: string; kind: string }) => ({
-            file_path: r.file_path,
-            line: r.line,
-            name: r.name,
-            kind: r.kind,
-          })));
-        } else {
-          const res = await api.code.searchSymbols(repoPath, query);
-          if (cancelled) return;
-          setSource("symbols");
-          setResults(
-            (res?.results || []).map((r: { file_path: string; symbol: { line: number; name: string; kind: string } }) => ({
-              file_path: r.file_path,
-              line: r.symbol?.line,
-              name: r.symbol?.name,
-              kind: r.symbol?.kind,
-            }))
-          );
-        }
+        const res = (await api.search.text(repoPath, query)) as {
+          hits?: SearchHit[];
+          truncated?: boolean;
+          elapsed_ms?: number;
+        } | null;
+        if (cancelled) return;
+        setError(null);
+        setResults(res?.hits ?? []);
+        setTruncated(Boolean(res?.truncated));
+        setElapsedMs(res?.elapsed_ms ?? null);
       } catch (e) {
-        console.error(e);
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setError(String(e));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
-    const t = setTimeout(run, 250);
+    const t = setTimeout(run, 150);
     return () => {
       cancelled = true;
       clearTimeout(t);
@@ -267,31 +292,35 @@ function RepoSearchPanel({ repoPath, onOpenAt }: { repoPath: string; onOpenAt: (
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search symbols across the repo…"
+            placeholder="Search text across the repo…"
+            aria-label="Search text across the repo"
             className="w-full bg-background border rounded pl-7 pr-2 py-1 text-xs"
           />
         </div>
-        {source && (
+        {elapsedMs !== null && !loading && !error && (
           <div className="text-[10px] text-muted-foreground mt-1">
-            via {source === "context_engine" ? "Context Engine" : "code analyzer (Context Engine off — enable it for ranked results)"}
+            {truncated ? `first ${results.length} matches` : `${results.length} match${results.length === 1 ? "" : "es"}`} in {elapsedMs}ms
           </div>
         )}
       </div>
       <div className="flex-1 overflow-y-auto p-1">
         {loading && <div className="text-[11px] text-muted-foreground p-2">Searching…</div>}
-        {!loading && query.trim().length >= 2 && results.length === 0 && (
+        {error && <div className="text-[11px] text-red-400 p-2">{error}</div>}
+        {!loading && !error && query.trim().length >= 2 && results.length === 0 && (
           <div className="text-[11px] text-muted-foreground p-2">No matches</div>
         )}
         {results.map((r, i) => (
           <button
             key={`${r.file_path}-${r.line}-${i}`}
             onClick={() => onOpenAt(r.file_path, r.line)}
-            className="w-full text-left px-2 py-1 rounded text-xs hover:bg-accent"
+            className="w-full text-left px-2 py-1 rounded text-xs hover:bg-accent block"
           >
-            <div className="truncate font-medium">{r.name || r.file_path.split(/[/\\]/).pop()}</div>
+            <div className="flex gap-1.5 font-mono text-[11px]">
+              <span className="text-muted-foreground shrink-0 tabular-nums">{r.line}</span>
+              <HighlightedLine hit={r} />
+            </div>
             <div className="truncate text-[10px] text-muted-foreground">
-              {r.file_path}
-              {r.line ? `:${r.line}` : ""} {r.kind ? `· ${r.kind}` : ""}
+              {r.file_path.split(/[/\\]/).slice(-2).join("/")}
             </div>
           </button>
         ))}
@@ -301,7 +330,35 @@ function RepoSearchPanel({ repoPath, onOpenAt }: { repoPath: string; onOpenAt: (
 }
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-type OpenTab = { path: string; content: string; savedContent: string; saveStatus: SaveStatus };
+/// `readOnlyReason` set means the buffer is not the file's real contents, so
+/// writing it back would destroy data. Every save path must check it.
+type ReadOnlyReason = "binary" | "too_large" | "error";
+type OpenTab = {
+  path: string;
+  content: string;
+  savedContent: string;
+  saveStatus: SaveStatus;
+  readOnlyReason?: ReadOnlyReason;
+  size?: number;
+};
+
+function formatBytes(n?: number): string {
+  if (n == null) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function readOnlyMessage(tab: OpenTab): string {
+  switch (tab.readOnlyReason) {
+    case "binary":
+      return `Binary file (${formatBytes(tab.size)}) — not shown, and not editable here.`;
+    case "too_large":
+      return `File is too large to open in the editor (${formatBytes(tab.size)}).`;
+    default:
+      return tab.content;
+  }
+}
 type OutlineSymbol = { name: string; kind: string; line: number };
 
 // 051 Wave 5.1e: a UI over code.analyze_file — previously reachable only
@@ -390,7 +447,10 @@ function CloseTabModal({ fileName, onSaveAndClose, onDiscardAndClose, onCancel }
 }
 
 export function EditorPane() {
-  const { selectedRepoId, repos } = useCid();
+  // The Session's working tree, not the main checkout. Editing the main repo
+  // while a worktree Session was selected is why a saved change never appeared
+  // in the Diff panel — see useSessionRepoPath.
+  const repoPath = useSessionRepoPath();
   const theme = useTheme((s) => s.theme);
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -401,7 +461,6 @@ export function EditorPane() {
   const pendingLine = useRef<number | undefined>(undefined);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
-  const selectedRepo = repos.find((r) => r.id === selectedRepoId);
   const activeTab = tabs.find((t) => t.path === activePath) || null;
   const isDirty = (t: OpenTab) => t.content !== t.savedContent;
   const anyDirty = tabs.some(isDirty);
@@ -410,12 +469,14 @@ export function EditorPane() {
     setShowOutline(false);
   }, [activePath]);
 
-  // Reset the whole tab set when the connected repo changes — an open file
-  // from a different repo has no meaning here.
+  // Reset the whole tab set when the working tree changes — a path from another
+  // repo, or from another Session's worktree, has no meaning here. Keyed on the
+  // resolved path rather than the repo id so that switching between two
+  // Sessions on the *same* repo (different worktrees) also clears stale tabs.
   useEffect(() => {
     setTabs([]);
     setActivePath(null);
-  }, [selectedRepoId]);
+  }, [repoPath]);
 
   // A dirty editor must not be lost to an accidental tab/window close.
   useEffect(() => {
@@ -439,13 +500,39 @@ export function EditorPane() {
       }
       setLoadingPath(path);
       try {
-        const data = await api.file.read(path);
-        setTabs((prev) => [...prev, { path, content: data.content, savedContent: data.content, saveStatus: "idle" }]);
+        const data = (await api.file.read(path)) as {
+          content: string;
+          binary?: boolean;
+          too_large?: boolean;
+          size?: number;
+        };
+        // Opened read-only rather than as an error. `.coverage` is a SQLite
+        // database, and previously the raw "stream did not contain valid UTF-8"
+        // was shown as the file's *contents* — which meant Save would then
+        // write that sentence over the real bytes.
+        setTabs((prev) => [
+          ...prev,
+          {
+            path,
+            content: data.content ?? "",
+            savedContent: data.content ?? "",
+            saveStatus: "idle",
+            readOnlyReason: data.binary
+              ? "binary"
+              : data.too_large
+              ? "too_large"
+              : undefined,
+            size: data.size,
+          },
+        ]);
         setActivePath(path);
       } catch (e) {
         console.error(e);
         const message = `Failed to read file: ${e}`;
-        setTabs((prev) => [...prev, { path, content: message, savedContent: message, saveStatus: "idle" }]);
+        setTabs((prev) => [
+          ...prev,
+          { path, content: message, savedContent: message, saveStatus: "idle", readOnlyReason: "error" },
+        ]);
         setActivePath(path);
       } finally {
         setLoadingPath(null);
@@ -476,9 +563,12 @@ export function EditorPane() {
   };
 
   const saveTab = useCallback(async (path: string) => {
-    setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saveStatus: "saving" } : t)));
     const tab = tabs.find((t) => t.path === path);
     if (!tab) return;
+    // The buffer for one of these is a placeholder, never the file's bytes —
+    // writing it back would truncate a binary or a large file to a sentence.
+    if (tab.readOnlyReason) return;
+    setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saveStatus: "saving" } : t)));
     try {
       await api.file.write(path, tab.content);
       setTabs((prev) =>
@@ -491,10 +581,10 @@ export function EditorPane() {
       // stub being absent in older tests) can never flip a successful save's
       // status to "error".
       try {
-        if (selectedRepo) {
-          const status = await api.semanticEngine.status(selectedRepo.path);
+        if (repoPath) {
+          const status = await api.semanticEngine.status(repoPath);
           if (status?.enabled) {
-            await api.semanticEngine.indexFile(selectedRepo.path, path, tab.content);
+            await api.semanticEngine.indexFile(repoPath, path, tab.content);
           }
         }
       } catch (e) {
@@ -504,7 +594,7 @@ export function EditorPane() {
       console.error(e);
       setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saveStatus: "error" } : t)));
     }
-  }, [tabs, selectedRepo]);
+  }, [tabs, repoPath]);
 
   // Ctrl+S / Cmd+S saves the active tab.
   useEffect(() => {
@@ -571,15 +661,15 @@ export function EditorPane() {
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
           {leftView === "files" ? (
-            selectedRepo ? (
+            repoPath ? (
               <div className="space-y-0.5 p-1">
-                <FileTree rootPath={selectedRepo.path} activePath={activePath} onOpenFile={(p) => openFile(p)} />
+                <FileTree rootPath={repoPath} activePath={activePath} onOpenFile={(p) => openFile(p)} />
               </div>
             ) : (
               <div className="text-[11px] text-muted-foreground p-2">No repo selected</div>
             )
-          ) : selectedRepo ? (
-            <RepoSearchPanel repoPath={selectedRepo.path} onOpenAt={(p, line) => openFile(p, line)} />
+          ) : repoPath ? (
+            <RepoSearchPanel repoPath={repoPath} onOpenAt={(p, line) => openFile(p, line)} />
           ) : (
             <div className="text-[11px] text-muted-foreground p-2">No repo selected</div>
           )}
@@ -620,6 +710,9 @@ export function EditorPane() {
         {activeTab && (
           <div className="h-8 border-b flex items-center px-3 text-xs bg-card gap-2 shrink-0">
             <span className="truncate text-muted-foreground">{activeTab.path}</span>
+            {activeTab.readOnlyReason && (
+              <span className="text-[10px] px-1 rounded bg-muted text-muted-foreground shrink-0">read-only</span>
+            )}
             {activeTab.saveStatus === "saved" && <span className="text-[11px] text-muted-foreground">Saved</span>}
             {activeTab.saveStatus === "error" && <span className="text-[11px] text-destructive">Save failed</span>}
             <button
@@ -632,7 +725,9 @@ export function EditorPane() {
             </button>
             <button
               onClick={() => saveTab(activeTab.path)}
-              disabled={activeTab.saveStatus === "saving" || !isDirty(activeTab)}
+              disabled={
+                activeTab.saveStatus === "saving" || !isDirty(activeTab) || !!activeTab.readOnlyReason
+              }
               className="bg-primary text-primary-foreground px-2 py-0.5 rounded disabled:opacity-50"
             >
               {activeTab.saveStatus === "saving" ? "Saving…" : "Save"}
@@ -651,6 +746,11 @@ export function EditorPane() {
         <div className="flex-1">
           {loadingPath ? (
             <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+          ) : activeTab && activeTab.readOnlyReason && activeTab.readOnlyReason !== "error" ? (
+            <div className="h-full flex flex-col items-center justify-center gap-1 text-sm text-muted-foreground p-6 text-center">
+              <span>{readOnlyMessage(activeTab)}</span>
+              <span className="text-[11px]">The file is untouched — saving is disabled for it.</span>
+            </div>
           ) : activeTab ? (
             <Editor
               path={activeTab.path}

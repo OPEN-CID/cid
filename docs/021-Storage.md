@@ -9,7 +9,7 @@ Phase 0–4 workload actually needed the extra engines (Part 18).
 ## Goals
 
 - **SQLite** (`cid-core/src/persistence/mod.rs`): every structured domain entity —
-  workspaces, repo channels, missions, messages, plans, reviews, skills, MCP servers,
+  workspaces, repo channels, sessions, messages, plans, reviews, skills, MCP servers,
   settings, GitHub/forge/tracker configs, users, sessions, role profiles, confidence
   scores, deployment records. One file, ACID, `rusqlite` with the `bundled` feature (no
   system SQLite dependency).
@@ -59,7 +59,7 @@ limitation for a project at this stage, not a considered-and-rejected alternativ
 
 **One SQLite connection behind a `Mutex`** (`Persistence.conn: Mutex<Connection>`) —
 serializes all writes. Acceptable at current concurrency levels (a single desktop user, a
-handful of concurrent Missions); would need connection pooling or WAL-mode tuning at
+handful of concurrent Sessions); would need connection pooling or WAL-mode tuning at
 higher concurrency, not yet needed.
 
 ## Failure Modes

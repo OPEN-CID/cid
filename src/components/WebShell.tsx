@@ -17,10 +17,10 @@ import {
 
 type ConnectionStatus = "connected" | "connecting" | "disconnected" | "error";
 
-/// Mirrors what /health actually returns. `uptime`, `active_missions`, and
+/// Mirrors what /health actually returns. `uptime`, `active_sessions`, and
 /// `platform` used to be read off that response and rendered as 0/0/unknown on
 /// every install, because Core has never sent them — uptime is real now, and
-/// the mission count comes from the store, which does have it.
+/// the session count comes from the store, which does have it.
 interface HealthInfo {
   uptimeSeconds: number;
   connectedClients: number;
@@ -206,13 +206,13 @@ export function ConnectionBanner() {
 
 /** Health dashboard showing Core stats */
 export function HealthDashboard() {
-  const { connected, missions } = useCid();
+  const { connected, sessions } = useCid();
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [showDashboard, setShowDashboard] = useState(false);
 
-  // MissionStatus serializes snake_case (cid-core/src/api/types.rs) — these are
+  // SessionStatus serializes snake_case (cid-core/src/api/types.rs) — these are
   // its three terminal states, everything else is still in flight.
-  const activeMissions = missions.filter(
+  const activeSessions = sessions.filter(
     (m) => !["done", "failed", "closed"].includes(m.status),
   ).length;
 
@@ -296,7 +296,7 @@ export function HealthDashboard() {
                     <Activity className="w-3 h-3" />
                     Active (this repo)
                   </span>
-                  <span className="font-medium">{activeMissions}</span>
+                  <span className="font-medium">{activeSessions}</span>
                 </div>
               </>
             )}

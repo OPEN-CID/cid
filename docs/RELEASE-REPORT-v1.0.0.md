@@ -6,7 +6,7 @@ scripted one after this.
 ## 1. What v1.0 includes
 
 Everything in `docs/041-Roadmap.md`'s Phases 0–6 summary and `README.md`'s feature list:
-the Workspace → Repo Channel → Mission Thread model; Planner/Implementer/Reviewer with
+the Workspace → Repo Channel → Session Thread model; Planner/Implementer/Reviewer with
 Manual/Co-Pilot/Autonomous autonomy and a vibe-coding preset; the 9-signal Confidence
 Engine; git worktrees with per-hunk diff review and a real PTY terminal; opt-in
 Tree-sitter/semantic context, `AGENTS.md`/`SKILL.md` layering, test-impact and
@@ -48,7 +48,7 @@ Every "Known issues" entry across `docs/CHECKPOINT-Phase0.md` through
 | 18 | Access token has no rotation without a restart; traffic is plain HTTP absent a TLS-terminating proxy | Phase 2 | **Accepted limitation** — reasonable for a self-hosted, typically-loopback tool; document as an operational recommendation (put a TLS proxy in front for any non-loopback deployment) rather than a code fix. |
 | 19 | Embeddings are a deterministic hash-based projection, not a learned model | Phase 2 | **Accepted limitation** — a real background-model integration for true embeddings is a scoped future improvement, not started. |
 | 20 | Mobile shell never run on real iOS/Android hardware or the Tauri mobile runtime | Phase 3 | **Still open** — cannot be closed without physical devices; honestly restated in `docs/048-Platform-Verification.md`. Push notifications and voice input are the specific highest-risk areas. |
-| 21 | Governance checked only at Mission creation/plan approval, not merge time or mid-Mission autonomy switches | Phase 3 | **Tracked, not fixed this pass** — `governance.check.merge` exists as a callable RPC but nothing invokes it automatically at a real merge decision point. Scoped as a near-term patch, not attempted in this Release pass (real wiring, not a one-line fix). |
+| 21 | Governance checked only at Session creation/plan approval, not merge time or mid-Session autonomy switches | Phase 3 | **Tracked, not fixed this pass** — `governance.check.merge` exists as a callable RPC but nothing invokes it automatically at a real merge decision point. Scoped as a near-term patch, not attempted in this Release pass (real wiring, not a one-line fix). |
 | 22 | Spend tracking has no automatic recording from real model calls | Phase 3 | **Tracked, not fixed this pass** — `governance.spend.record` is real and tested but nothing in the model-router path calls it after an actual API call; needs per-provider token-cost data threaded through every call site. Same reasoning as #21: real scope, not attempted here. |
 | 23 | Forge/tracker credentials not validated against live GitLab/Bitbucket/Jira/Linear accounts | Phase 3 | **Accepted limitation** — no network access to live third-party accounts in the build environment; response-shape parsing is tested against realistic fixtures. |
 | 24 | Performance numbers are a floor, not a ceiling proof (no large-repo/disk-backed-SQLite/Tauri-startup measurement) | Phase 3 | **Accepted limitation** — real numbers, honestly scoped as partial evidence. |

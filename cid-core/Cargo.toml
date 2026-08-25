@@ -61,6 +61,15 @@ dirs = "5.0"
 dunce = "1.0"
 keyring = "3.5"
 walkdir = "2.5"
+# ripgrep's own engine, used for repo-wide text search. `ignore` gives the
+# parallel, .gitignore-aware walk; grep-searcher/grep-regex are the same
+# line-matching core ripgrep (and VS Code, which ships it) runs on. Chosen
+# over hand-rolling a walk because the previous search read and tree-sitter
+# parsed every file in target/ and node_modules/ and took 218 seconds.
+ignore = "0.4"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
 glob = "0.3"
 globset = "0.4"
 notify = "6.1"

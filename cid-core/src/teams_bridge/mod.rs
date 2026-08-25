@@ -1,8 +1,8 @@
 //! Phase 2 Teams Bridge
 //!
 //! Microsoft Teams incoming webhook connector pattern.
-//! Teams message → Mission trigger.
-//! Mission status → Teams channel (Adaptive Card format).
+//! Teams message → Session trigger.
+//! Session status → Teams channel (Adaptive Card format).
 //!
 //! Config per Workspace: TeamsConfig with webhook_url.
 
@@ -53,7 +53,7 @@ impl TeamsBridge {
         guard.get(workspace_id).cloned()
     }
 
-    pub async fn trigger_mission(
+    pub async fn trigger_session(
         &self,
         params: TeamsTriggerParams,
     ) -> anyhow::Result<serde_json::Value> {
@@ -269,8 +269,8 @@ mod tests {
         let bridge = TeamsBridge::new(tx);
 
         let card = bridge.build_adaptive_card(
-            "Mission Complete",
-            "The mission has finished successfully.",
+            "Session Complete",
+            "The session has finished successfully.",
             Some(vec![
                 ("Status".to_string(), "Done".to_string()),
                 ("Branch".to_string(), "cid/abc123".to_string()),
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trigger_mission() {
+    async fn test_trigger_session() {
         let (tx, _rx) = broadcast::channel(10);
         let bridge = TeamsBridge::new(tx);
 
@@ -337,7 +337,7 @@ mod tests {
         };
 
         let result = bridge
-            .trigger_mission(TeamsTriggerParams {
+            .trigger_session(TeamsTriggerParams {
                 message: msg,
                 workspace_id: Some("ws-1".to_string()),
             })
@@ -371,7 +371,7 @@ mod tests {
         };
 
         let result = bridge
-            .trigger_mission(TeamsTriggerParams {
+            .trigger_session(TeamsTriggerParams {
                 message: msg,
                 workspace_id: Some("ws-1".to_string()),
             })

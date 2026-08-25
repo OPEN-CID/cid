@@ -27,7 +27,7 @@ choice — git backend (`git2-rs` over `gitoxide`, ADR 0002), the minimal local-
 as an ADR with what was chosen, what was given up, and why.
 
 **Human-in-the-loop is enforced, not suggested.** The plan-approval gate lives in Core
-(`cid-core/src/roles/mod.rs`), checked before `mission.send_message` does anything —
+(`cid-core/src/roles/mod.rs`), checked before `session.send_message` does anything —
 not a UI convention a client could bypass.
 
 ## Non-Goals

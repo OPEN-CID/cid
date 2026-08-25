@@ -16,10 +16,10 @@ vi.mock("./RepoBrowserDialog", () => ({
 let useCidMock = {
   repos: [] as { id: string; name: string; path: string }[],
   selectedRepoId: null as string | null,
-  missions: [] as { id: string; title: string; status: string }[],
-  selectedMissionId: null as string | null,
+  sessions: [] as { id: string; title: string; status: string }[],
+  selectedSessionId: null as string | null,
   selectRepo: vi.fn(),
-  selectMission: vi.fn(),
+  selectSession: vi.fn(),
   loadRepos: vi.fn(),
   connected: true,
 };
@@ -33,10 +33,10 @@ describe("LeftRail", () => {
     useCidMock = {
       repos: [],
       selectedRepoId: null,
-      missions: [],
-      selectedMissionId: null,
+      sessions: [],
+      selectedSessionId: null,
       selectRepo: vi.fn(),
-      selectMission: vi.fn(),
+      selectSession: vi.fn(),
       loadRepos: vi.fn(),
       connected: true,
     };

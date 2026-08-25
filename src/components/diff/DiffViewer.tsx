@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useCid } from "@/hooks/useCid";
+import { useSessionRepoPath } from "@/hooks/useSessionRepoPath";
 import { api } from "@/lib/api";
 import { ConfidenceCard } from "../confidence/ConfidenceCard";
 
@@ -12,14 +13,15 @@ type DiffFile = {
 };
 
 export function DiffViewer() {
-  const { selectedMissionId, missions, repos } = useCid();
+  const { selectedSessionId } = useCid();
   const [diff, setDiff] = useState<DiffFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<"unified" | "split">("unified");
   const [actionLog, setActionLog] = useState<Record<string, string>>({});
 
-  const mission = missions.find((m) => m.id === selectedMissionId);
-  const repoPath = mission?.worktree_path || (mission ? repos.find((r) => r.id === mission.repo_channel_id)?.path : null);
+  // Shared with the Editor so the two cannot drift apart again — they did, and
+  // saved edits silently failed to appear here. See the hook.
+  const repoPath = useSessionRepoPath();
 
   const loadDiff = useCallback(async () => {
     if (!repoPath) return;
@@ -42,14 +44,14 @@ export function DiffViewer() {
     // Re-subscribing whenever `loadDiff` changes (i.e. `repoPath` changes)
     // matters, not just satisfies the lint rule — without it this closure
     // kept calling a stale `loadDiff` bound to the previous repoPath if the
-    // repo changed without selectedMissionId also changing.
+    // repo changed without selectedSessionId also changing.
     const unsub = api.onNotification((notif) => {
       if (notif.method === "git.diff.update") {
         loadDiff();
       }
     });
     return () => unsub();
-  }, [selectedMissionId, loadDiff]);
+  }, [selectedSessionId, loadDiff]);
 
   const handleHunkAction = async (filePath: string, hunk: DiffFile["hunks"][number], action: "accept" | "reject") => {
     if (!repoPath) return;
@@ -97,8 +99,8 @@ export function DiffViewer() {
     }
   };
 
-  if (!selectedMissionId) {
-    return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a mission to view diff</div>;
+  if (!selectedSessionId) {
+    return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a session to view diff</div>;
   }
 
   return (
@@ -129,7 +131,7 @@ export function DiffViewer() {
         {loading ? (
           <div className="p-4 text-sm text-muted-foreground">Loading diff...</div>
         ) : diff.length === 0 ? (
-          <div className="p-4 text-sm text-muted-foreground">No changes detected — clean working tree. Make edits in Mission thread or via terminal.</div>
+          <div className="p-4 text-sm text-muted-foreground">No changes detected — clean working tree. Make edits in Session thread or via terminal.</div>
         ) : (
           <div className="divide-y">
             {diff.map((file) => (
@@ -154,7 +156,7 @@ export function DiffViewer() {
                     </button>
                   </div>
                 </div>
-                {selectedMissionId && <ConfidenceCard missionId={selectedMissionId} filePath={file.path} />}
+                {selectedSessionId && <ConfidenceCard sessionId={selectedSessionId} filePath={file.path} />}
                 <div className="bg-background rounded border overflow-hidden mt-2">
                   {file.hunks.map((hunk) => (
                     <div key={hunk.id} className="border-b last:border-0">

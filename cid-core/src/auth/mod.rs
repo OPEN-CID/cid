@@ -72,7 +72,7 @@ pub struct User {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
+pub struct AuthSession {
     pub token: String,
     pub user_id: String,
     pub username: String,
@@ -168,7 +168,7 @@ impl AuthManager {
         self.persistence.create_user(&username, &hash, role)
     }
 
-    pub fn login(&self, username: &str, password: &str) -> Result<Session> {
+    pub fn login(&self, username: &str, password: &str) -> Result<AuthSession> {
         let username = normalize_username(username)?;
 
         {
@@ -201,9 +201,9 @@ impl AuthManager {
         let token = generate_session_token();
         let expires_at = Utc::now() + chrono::Duration::hours(SESSION_TTL_HOURS);
         self.persistence
-            .create_session(&token, &user.id, expires_at)?;
+            .create_auth_session(&token, &user.id, expires_at)?;
 
-        Ok(Session {
+        Ok(AuthSession {
             token,
             user_id: user.id,
             username: user.username,
@@ -213,20 +213,20 @@ impl AuthManager {
     }
 
     /// Resolve a session token. Expired sessions are deleted as they are found.
-    pub fn resolve_session(&self, token: &str) -> Result<Option<Session>> {
-        let session = match self.persistence.find_session(token)? {
+    pub fn resolve_session(&self, token: &str) -> Result<Option<AuthSession>> {
+        let session = match self.persistence.find_auth_session(token)? {
             Some(s) => s,
             None => return Ok(None),
         };
         if session.expires_at <= Utc::now() {
-            let _ = self.persistence.delete_session(token);
+            let _ = self.persistence.delete_auth_session(token);
             return Ok(None);
         }
         Ok(Some(session))
     }
 
     pub fn logout(&self, token: &str) -> Result<()> {
-        self.persistence.delete_session(token)
+        self.persistence.delete_auth_session(token)
     }
 
     pub fn list_users(&self) -> Result<Vec<User>> {
@@ -235,7 +235,7 @@ impl AuthManager {
 
     /// Change a user's role. Refuses to remove the last Owner, which would
     /// leave the Workspace with nobody able to administer it.
-    pub fn set_role(&self, actor: &Session, target_user_id: &str, role: Role) -> Result<User> {
+    pub fn set_role(&self, actor: &AuthSession, target_user_id: &str, role: Role) -> Result<User> {
         require(actor, Role::Admin, "change roles")?;
 
         let target = self.persistence.get_user(target_user_id)?;
@@ -248,7 +248,12 @@ impl AuthManager {
         self.persistence.set_user_role(target_user_id, role)
     }
 
-    pub fn set_active(&self, actor: &Session, target_user_id: &str, active: bool) -> Result<User> {
+    pub fn set_active(
+        &self,
+        actor: &AuthSession,
+        target_user_id: &str,
+        active: bool,
+    ) -> Result<User> {
         require(actor, Role::Admin, "activate or deactivate accounts")?;
         let target = self.persistence.get_user(target_user_id)?;
         if !active && target.role == Role::Owner && self.count_owners()? <= 1 {
@@ -257,7 +262,8 @@ impl AuthManager {
         if !active {
             // Revoke live sessions so deactivation takes effect immediately
             // rather than at the end of the session TTL.
-            self.persistence.delete_sessions_for_user(target_user_id)?;
+            self.persistence
+                .delete_auth_sessions_for_user(target_user_id)?;
         }
         self.persistence.set_user_active(target_user_id, active)
     }
@@ -265,7 +271,7 @@ impl AuthManager {
     /// Change a password. Users may change their own; an Admin may reset another's.
     pub fn change_password(
         &self,
-        actor: &Session,
+        actor: &AuthSession,
         target_user_id: &str,
         new_password: &str,
     ) -> Result<()> {
@@ -277,7 +283,8 @@ impl AuthManager {
         self.persistence.set_user_password(target_user_id, &hash)?;
         // Every existing session for that user stops working, so a reset
         // actually locks out whoever was signed in.
-        self.persistence.delete_sessions_for_user(target_user_id)?;
+        self.persistence
+            .delete_auth_sessions_for_user(target_user_id)?;
         Ok(())
     }
 
@@ -292,7 +299,7 @@ impl AuthManager {
 }
 
 /// Fail with a message naming the action, rather than a bare "forbidden".
-pub fn require(session: &Session, required: Role, action: &str) -> Result<()> {
+pub fn require(session: &AuthSession, required: Role, action: &str) -> Result<()> {
     if session.role.satisfies(required) {
         Ok(())
     } else {
@@ -366,8 +373,8 @@ mod tests {
         AuthManager::new(p)
     }
 
-    fn session_for(role: Role) -> Session {
-        Session {
+    fn session_for(role: Role) -> AuthSession {
+        AuthSession {
             token: "t".into(),
             user_id: "u".into(),
             username: "u".into(),

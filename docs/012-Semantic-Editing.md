@@ -2,7 +2,7 @@
 
 ## Vision
 
-The editing surfaces a human uses inside a Mission: inline quick edits in the thread,
+The editing surfaces a human uses inside a Session: inline quick edits in the thread,
 a full file editor, and — via ACP — a full external IDE when the task calls for it. Not a
 from-scratch editing engine; see `018-Native-Editor.md` for why.
 
@@ -14,7 +14,7 @@ from-scratch editing engine; see `018-Native-Editor.md` for why.
   never built — there is no `codemirror` dependency anywhere in this repository. Monaco
   is the only editor CID actually ships. `DiffViewer.tsx`'s per-hunk accept/reject is a
   read-only diff view with accept/reject buttons, not an inline editable surface.
-- **Pop-out via ACP**: a Mission's session can hand off to Zed or a JetBrains IDE for
+- **Pop-out via ACP**: a Session's session can hand off to Zed or a JetBrains IDE for
   someone who wants deeper IDE power, and hand back — `023-MCP.md`'s sibling protocol,
   covered in `cid-core/src/acp/mod.rs`.
 - **Per-hunk accept/reject**: `git.hunk.apply` RPC. Reject performs a real per-hunk
@@ -31,7 +31,7 @@ A native rendering engine. See `018-Native-Editor.md`.
 
 ```mermaid
 graph LR
-  Thread["Mission Thread"] -->|per-hunk accept/reject| Diff["DiffViewer<br/>read-only diff view"]
+  Thread["Session Thread"] -->|per-hunk accept/reject| Diff["DiffViewer<br/>read-only diff view"]
   Panel["Right Panel"] -->|full file| Monaco["Monaco"]
   Panel -->|hand off| ACP["AcpHostManager<br/>spawn external editor"]
   ACP -->|take back| Thread
@@ -49,7 +49,7 @@ RPC: `acp.{editors.list,handoff,take_back,handoffs.list,handoff.get,handoff.remo
 
 ## Storage Layout
 
-Handoffs tracked in-memory (`Arc<RwLock<HashMap>>` in `AcpHostManager`) — a Mission's
+Handoffs tracked in-memory (`Arc<RwLock<HashMap>>` in `AcpHostManager`) — a Session's
 handoff history doesn't need to survive a Core restart, since the external editor
 process itself doesn't either.
 
@@ -74,13 +74,13 @@ A handoff to an editor that isn't actually installed fails with a clear message
 
 ## Security
 
-Spawning an external editor process uses `tokio::process::Command` with the Mission's
+Spawning an external editor process uses `tokio::process::Command` with the Session's
 worktree path as an argument — no shell interpolation, so a crafted worktree path can't
 inject additional arguments.
 
 ## Testing
 
-`acp_editors_list_returns_known_editor_ids`, `acp_handoff_rejects_unknown_mission`, and
+`acp_editors_list_returns_known_editor_ids`, `acp_handoff_rejects_unknown_session`, and
 related tests in `api_integration.rs`; `acp/mod.rs`'s own unit tests for editor
 detection.
 
@@ -91,7 +91,7 @@ Monaco embedding (Phase 0) → ACP host (Phase 1) → real per-hunk reverse-appl
 
 ## Acceptance Criteria
 
-A detected, installed external editor can be handed a Mission's worktree and receive
+A detected, installed external editor can be handed a Session's worktree and receive
 control; taking back marks the handoff Returned without forcibly killing the external
 process (a deliberate choice — the user may still want that editor open).
 

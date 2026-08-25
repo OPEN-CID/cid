@@ -73,6 +73,7 @@ pub struct AppState {
     pub teams_bridge: Arc<TeamsBridge>,
     pub mcp_tasks_manager: Arc<McpTasksManager>,
     pub semantic_engine: Arc<SemanticEngine>,
+    pub local_runtime_manager: Arc<crate::local_models::manager::LocalRuntimeManager>,
     pub sandbox_manager: Arc<SandboxManager>,
     pub access_policy: Arc<AccessPolicy>,
     /// Live count of connected WebSocket clients, surfaced on /health.
@@ -222,7 +223,7 @@ impl Drop for ClientGuard {
 
 /// Fixed WS handler with proper per-client response handling
 /// - Per-client sink via Arc<Mutex<SplitSink>> for direct responses
-/// - Broadcast channel only for notifications (pty.output, mission.message.delta, etc)
+/// - Broadcast channel only for notifications (pty.output, session.message.delta, etc)
 /// - No more broadcasting responses to all clients
 async fn handle_ws(socket: WebSocket, state: AppState) {
     use std::sync::atomic::Ordering;
@@ -328,13 +329,13 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "repo.agents_md.write" => handle_repo_agents_md_write(params, state).await,
         "repo.agents_md.approve" => handle_repo_agents_md_approve(params, state).await,
 
-        // Mission
-        "mission.create" => handle_mission_create(params, state).await,
-        "mission.list" => handle_mission_list(params, state).await,
-        "mission.get" => handle_mission_get(params, state).await,
-        "mission.close" => handle_mission_close(params, state).await,
-        "mission.send_message" => handle_mission_send_message(params, state).await,
-        "mission.approve_tool" => handle_mission_approve_tool(params, state).await,
+        // Session
+        "session.create" => handle_session_create(params, state).await,
+        "session.list" => handle_session_list(params, state).await,
+        "session.get" => handle_session_get(params, state).await,
+        "session.close" => handle_session_close(params, state).await,
+        "session.send_message" => handle_session_send_message(params, state).await,
+        "session.approve_tool" => handle_session_approve_tool(params, state).await,
 
         // Messages
         "message.list" => handle_message_list(params, state).await,
@@ -382,6 +383,12 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "model.chat" => handle_model_chat(params, state).await,
 
         // Local runtimes (Phase 1)
+        "local.system.capabilities" => handle_local_system_capabilities(params).await,
+        "local.models.recommended" => handle_local_models_recommended(params).await,
+        "local.runtime.status" => handle_local_runtime_status(state).await,
+        "local.runtime.start" => handle_local_runtime_start(state).await,
+        "local.runtime.stop" => handle_local_runtime_stop(state).await,
+        "local.model.pull" => handle_local_model_pull(params, state).await,
         "local.runtime.list" => handle_local_runtime_list(state).await,
         "local.runtime.detect" => handle_local_runtime_detect(params, state).await,
 
@@ -390,7 +397,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "github.config.get" => handle_github_config_get(params, state).await,
         "github.issues.list" => handle_github_issues_list(params, state).await,
         "github.issue.get" => handle_github_issue_get(params, state).await,
-        "github.issue.to_mission" => handle_github_issue_to_mission(params, state).await,
+        "github.issue.to_session" => handle_github_issue_to_session(params, state).await,
         "github.pr.list" => handle_github_pr_list(params, state).await,
         "github.pr.create" => handle_github_pr_create(params, state).await,
         "github.pr.status" => handle_github_pr_status(params, state).await,
@@ -416,6 +423,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         // Code Analysis (Phase 2)
         "code.analyze_file" => handle_code_analyze_file(params, state).await,
         "code.analyze_directory" => handle_code_analyze_directory(params, state).await,
+        "search.text" => handle_search_text(params, state).await,
         "code.search_symbols" => handle_code_search_symbols(params, state).await,
         "code.get_imports" => handle_code_get_imports(params, state).await,
 
@@ -434,12 +442,12 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         // Slack Bridge (Phase 2)
         "slack.configure" => handle_slack_configure(params, state).await,
         "slack.config.get" => handle_slack_config_get(params, state).await,
-        "slack.trigger_mission" => handle_slack_trigger_mission(params, state).await,
+        "slack.trigger_session" => handle_slack_trigger_session(params, state).await,
 
         // Teams Bridge (Phase 2)
         "teams.configure" => handle_teams_configure(params, state).await,
         "teams.config.get" => handle_teams_config_get(params, state).await,
-        "teams.trigger_mission" => handle_teams_trigger_mission(params, state).await,
+        "teams.trigger_session" => handle_teams_trigger_session(params, state).await,
 
         // MCP Tasks (Phase 2)
         "mcp.task.create" => handle_mcp_task_create(params, state).await,
@@ -497,7 +505,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
 
         // Decisions view + deployment record (Phase 4, Part A)
         "decisions.list" => handle_decisions_list(params, state).await,
-        "decisions.for_mission" => handle_decisions_for_mission(params, state).await,
+        "decisions.for_session" => handle_decisions_for_session(params, state).await,
         "deployment.record" => handle_deployment_record(params, state).await,
         "deployment.webhook" => handle_deployment_webhook(params, state).await,
         "deployment.list" => handle_deployment_list(params, state).await,
@@ -512,7 +520,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "forge.disconnect" => handle_forge_disconnect(params, state).await,
         "forge.issues.list" => handle_forge_issues_list(params, state).await,
         "forge.issue.get" => handle_forge_issue_get(params, state).await,
-        "forge.issue.to_mission" => handle_forge_issue_to_mission(params, state).await,
+        "forge.issue.to_session" => handle_forge_issue_to_session(params, state).await,
         "forge.change_request.create" => handle_forge_cr_create(params, state).await,
         "forge.change_request.list" => handle_forge_cr_list(params, state).await,
         "forge.change_request.status" => handle_forge_cr_status(params, state).await,
@@ -524,7 +532,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "tracker.link" => handle_tracker_link(params, state).await,
         "tracker.links.list" => handle_tracker_links_list(params, state).await,
         "tracker.unlink" => handle_tracker_unlink(params, state).await,
-        "tracker.issue.to_mission" => handle_tracker_issue_to_mission(params, state).await,
+        "tracker.issue.to_session" => handle_tracker_issue_to_session(params, state).await,
         "tracker.comment" => handle_tracker_comment(params, state).await,
 
         // Accounts, sessions, roles (Phase 3, ADR 0013)
@@ -549,24 +557,24 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "governance.spend.summary" => handle_governance_spend_summary(params, state).await,
 
         // Planner / Reviewer (Part 5, Flow 1 steps 3 and 6)
-        "mission.plan.generate" => handle_mission_plan_generate(params, state).await,
-        "mission.plan.get" => handle_mission_plan_get(params, state).await,
-        "mission.plan.update" => handle_mission_plan_update(params, state).await,
-        "mission.plan.approve" => handle_mission_plan_approve(params, state).await,
-        "mission.plan.reject" => handle_mission_plan_reject(params, state).await,
-        "mission.review.run" => handle_mission_review_run(params, state).await,
-        "mission.review.get" => handle_mission_review_get(params, state).await,
-        "mission.review.list" => handle_mission_review_list(params, state).await,
+        "session.plan.generate" => handle_session_plan_generate(params, state).await,
+        "session.plan.get" => handle_session_plan_get(params, state).await,
+        "session.plan.update" => handle_session_plan_update(params, state).await,
+        "session.plan.approve" => handle_session_plan_approve(params, state).await,
+        "session.plan.reject" => handle_session_plan_reject(params, state).await,
+        "session.review.run" => handle_session_review_run(params, state).await,
+        "session.review.get" => handle_session_review_get(params, state).await,
+        "session.review.list" => handle_session_review_list(params, state).await,
 
         // Context compaction (Part 6/review_prompt.md §3.1): a usage
         // indicator plus the `/compact` composer command's backend.
-        "mission.context.usage" => handle_mission_context_usage(params, state).await,
-        "mission.context.compact" => handle_mission_context_compact(params, state).await,
+        "session.context.usage" => handle_session_context_usage(params, state).await,
+        "session.context.compact" => handle_session_context_compact(params, state).await,
 
         // Checkpoint/rewind (review_prompt.md §3.2), built on the git
-        // worktree every Mission already has.
-        "mission.checkpoint.list" => handle_mission_checkpoint_list(params, state).await,
-        "mission.checkpoint.rewind" => handle_mission_checkpoint_rewind(params, state).await,
+        // worktree every Session already has.
+        "session.checkpoint.list" => handle_session_checkpoint_list(params, state).await,
+        "session.checkpoint.rewind" => handle_session_checkpoint_rewind(params, state).await,
 
         // Skills — multi-file SKILL.md bundles and resolution stack
         "skills.bundles.list" => handle_skills_bundles_list(params, state).await,
@@ -792,7 +800,7 @@ async fn handle_repo_agents_md_write(
 
 /// review_prompt.md §1.2 point 2: the human-review gate for a repo's
 /// AGENTS.md. `handle_repo_connect` detects and surfaces AGENTS.md content
-/// but never approves it — a Mission on this repo will not include it in the
+/// but never approves it — a Session on this repo will not include it in the
 /// system prompt (see `ModelManager::process_message_with_role`) until this
 /// RPC is called, which happens when the user dismisses the frontend's
 /// one-time review card.
@@ -806,18 +814,18 @@ async fn handle_repo_agents_md_approve(
     Ok(serde_json::to_value(repo)?)
 }
 
-async fn handle_mission_create(
+async fn handle_session_create(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let p: crate::api::types::CreateMissionParams = serde_json::from_value(params.clone())?;
+    let p: crate::api::types::CreateSessionParams = serde_json::from_value(params.clone())?;
 
     if p.title.trim().is_empty() {
-        anyhow::bail!("Mission title must not be empty");
+        anyhow::bail!("Session title must not be empty");
     }
 
     // Governance gate: Autonomous mode is a Workspace policy decision, not a
-    // per-Mission preference. Enforced here so no shell can bypass it.
+    // per-Session preference. Enforced here so no shell can bypass it.
     if p.autonomy_level == Some(crate::api::types::AutonomyLevel::Autonomous) {
         let repo = state.persistence.get_repo_channel(&p.repo_channel_id)?;
         let actor = require_session(&params, state)?;
@@ -830,7 +838,7 @@ async fn handle_mission_create(
         }
     }
 
-    // task 2: a Mission must never be created with an empty task, because
+    // task 2: a Session must never be created with an empty task, because
     // the Planner prompt (`ModelManager::process_message_with_role` ->
     // `SkillsManager::build_system_context`) depends on it — falling back to
     // the (already-validated non-empty) title is the intended behavior for
@@ -841,42 +849,42 @@ async fn handle_mission_create(
         p.task.clone()
     };
 
-    let mission = state.persistence.create_mission(
+    let session = state.persistence.create_session(
         &p.repo_channel_id,
         &p.title,
         &task,
-        p.session_mode
-            .unwrap_or(crate::api::types::SessionMode::Worktree),
+        p.isolation_mode
+            .unwrap_or(crate::api::types::IsolationMode::Worktree),
         p.autonomy_level
             .unwrap_or(crate::api::types::AutonomyLevel::CoPilot),
     )?;
 
-    let mission = if p.model_provider.is_some() || p.model_id.is_some() {
-        state.persistence.update_mission_model(
-            &mission.id,
+    let session = if p.model_provider.is_some() || p.model_id.is_some() {
+        state.persistence.update_session_model(
+            &session.id,
             p.model_provider.clone(),
             p.model_id.clone(),
         )?
     } else {
-        mission
+        session
     };
 
     // If worktree mode, create worktree via git manager
-    let mission = if mission.session_mode == crate::api::types::SessionMode::Worktree {
+    let session = if session.isolation_mode == crate::api::types::IsolationMode::Worktree {
         let repo = state.persistence.get_repo_channel(&p.repo_channel_id)?;
-        let branch_name = format!("cid/{}", &mission.id[..8]);
+        let branch_name = format!("cid/{}", &session.id[..8]);
         let worktree_base = state
             .persistence
             .get_settings()?
             .worktree_root
             .unwrap_or_else(|| format!("{}/.cid/worktrees", repo.path));
-        let worktree_path = format!("{}/{}", worktree_base, mission.id);
+        let worktree_path = format!("{}/{}", worktree_base, session.id);
         match state
             .git_manager
             .create_worktree(&repo.path, &branch_name, &worktree_path)
         {
-            Ok(_) => state.persistence.update_mission_worktree(
-                &mission.id,
+            Ok(_) => state.persistence.update_session_worktree(
+                &session.id,
                 Some(worktree_path),
                 Some(branch_name),
             )?,
@@ -885,82 +893,82 @@ async fn handle_mission_create(
                     "Failed to create worktree: {}, falling back to shared mode",
                     e
                 );
-                mission
+                session
             }
         }
     } else {
-        mission
+        session
     };
 
     // Vibe-coding preset (Phase 5): a minimal plan is generated and
     // auto-approved synchronously, so the gate is already open by the time
     // this response reaches the caller — no need to wait on a
-    // mission.plan.changed notification for a quick, low-stakes Mission.
+    // session.plan.changed notification for a quick, low-stakes Session.
     if p.vibe {
-        if let Err(e) = state.role_runner.generate_vibe_plan(&mission.id) {
+        if let Err(e) = state.role_runner.generate_vibe_plan(&session.id) {
             error!(
-                "Vibe plan generation failed for mission {}: {:?}",
-                mission.id, e
+                "Vibe plan generation failed for session {}: {:?}",
+                session.id, e
             );
         }
-    } else if mission.autonomy_level != crate::api::types::AutonomyLevel::Manual {
+    } else if session.autonomy_level != crate::api::types::AutonomyLevel::Manual {
         // Flow 1 step 3: the Planner proposes a plan in-thread as soon as the
-        // Mission exists. Run it in the background so creation stays
-        // responsive; the thread gets the plan via mission.plan.changed.
+        // Session exists. Run it in the background so creation stays
+        // responsive; the thread gets the plan via session.plan.changed.
         let state_clone = state.clone();
-        let mission_id = mission.id.clone();
+        let session_id = session.id.clone();
         tokio::spawn(async move {
             match state_clone
                 .role_runner
-                .generate_plan(&mission_id, false)
+                .generate_plan(&session_id, false)
                 .await
             {
                 Ok(plan) => {
-                    let _ = state_clone.persistence.update_mission_status(
-                        &mission_id,
-                        crate::api::types::MissionStatus::BlockedOnApproval,
+                    let _ = state_clone.persistence.update_session_status(
+                        &session_id,
+                        crate::api::types::SessionStatus::BlockedOnApproval,
                     );
                     if let Ok(v) = serde_json::to_value(&plan) {
-                        broadcast_notification(&state_clone, "mission.plan.changed", v);
+                        broadcast_notification(&state_clone, "session.plan.changed", v);
                     }
                 }
-                Err(e) => error!("Planner failed for mission {}: {:?}", mission_id, e),
+                Err(e) => error!("Planner failed for session {}: {:?}", session_id, e),
             }
         });
     }
 
-    Ok(serde_json::to_value(mission)?)
+    Ok(serde_json::to_value(session)?)
 }
 
-async fn handle_mission_list(
+async fn handle_session_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let repo_channel_id: Option<String> = params
         .get("repo_channel_id")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let missions = state
+    let sessions = state
         .persistence
-        .list_missions(repo_channel_id.as_deref())?;
-    Ok(serde_json::to_value(missions)?)
+        .list_sessions(repo_channel_id.as_deref())?;
+    Ok(serde_json::to_value(sessions)?)
 }
 
-async fn handle_mission_get(
+async fn handle_session_get(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let id: String = serde_json::from_value(params.get("id").cloned().unwrap_or_default())?;
-    let mission = state.persistence.get_mission(&id)?;
-    Ok(serde_json::to_value(mission)?)
+    let session = state.persistence.get_session(&id)?;
+    Ok(serde_json::to_value(session)?)
 }
 
-async fn handle_mission_close(
+async fn handle_session_close(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let id: String = serde_json::from_value(params.get("id").cloned().unwrap_or_default())?;
 
-    // Flow 1 step 6: a Mission marked done gets an automatic Reviewer pass before
+    // Flow 1 step 6: a Session marked done gets an automatic Reviewer pass before
     // it closes, unless the caller explicitly opts out.
     let run_review = params
         .get("skip_review")
@@ -969,36 +977,36 @@ async fn handle_mission_close(
         .unwrap_or(true);
     if run_review {
         let state_clone = state.clone();
-        let mission_id = id.clone();
+        let session_id = id.clone();
         tokio::spawn(async move {
-            let diff = mission_diff(&state_clone, &mission_id).unwrap_or_default();
-            match state_clone.role_runner.run_review(&mission_id, &diff).await {
+            let diff = session_diff(&state_clone, &session_id).unwrap_or_default();
+            match state_clone.role_runner.run_review(&session_id, &diff).await {
                 Ok(review) => {
                     if let Ok(v) = serde_json::to_value(&review) {
-                        broadcast_notification(&state_clone, "mission.review.completed", v);
+                        broadcast_notification(&state_clone, "session.review.completed", v);
                     }
                 }
-                Err(e) => error!("Reviewer failed for mission {}: {:?}", mission_id, e),
+                Err(e) => error!("Reviewer failed for session {}: {:?}", session_id, e),
             }
         });
     }
 
-    let mission = state
+    let session = state
         .persistence
-        .update_mission_status(&id, crate::api::types::MissionStatus::Closed)?;
-    Ok(serde_json::to_value(mission)?)
+        .update_session_status(&id, crate::api::types::SessionStatus::Closed)?;
+    Ok(serde_json::to_value(session)?)
 }
 
-/// Read a Mission's diff from its own working directory — its worktree when it
-/// has one, otherwise the repo channel's path for shared-clone Missions.
-fn mission_diff(state: &AppState, mission_id: &str) -> anyhow::Result<String> {
-    let mission = state.persistence.get_mission(mission_id)?;
-    let path = match mission.worktree_path.clone() {
+/// Read a Session's diff from its own working directory — its worktree when it
+/// has one, otherwise the repo channel's path for shared-clone Sessions.
+fn session_diff(state: &AppState, session_id: &str) -> anyhow::Result<String> {
+    let session = state.persistence.get_session(session_id)?;
+    let path = match session.worktree_path.clone() {
         Some(wt) => wt,
         None => {
             state
                 .persistence
-                .get_repo_channel(&mission.repo_channel_id)?
+                .get_repo_channel(&session.repo_channel_id)?
                 .path
         }
     };
@@ -1006,14 +1014,14 @@ fn mission_diff(state: &AppState, mission_id: &str) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(&diff)?)
 }
 
-async fn handle_mission_send_message(
+async fn handle_session_send_message(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: crate::api::types::SendMessageParams = serde_json::from_value(params)?;
     // Save user message
     let user_msg = state.persistence.create_message(
-        &p.mission_id,
+        &p.session_id,
         crate::api::types::MessageRole::User,
         &p.content,
         vec![],
@@ -1021,40 +1029,40 @@ async fn handle_mission_send_message(
 
     // Plan-approval gate (Part 5, Flow 1 step 3): outside Manual autonomy the
     // Implementer does not run until a plan exists and a human has approved it.
-    if let Some(reason) = state.role_runner.implementer_is_gated(&p.mission_id)? {
+    if let Some(reason) = state.role_runner.implementer_is_gated(&p.session_id)? {
         let note = format!(
-            "{reason}\n\nRun `mission.plan.generate`, edit the plan if needed, then approve it."
+            "{reason}\n\nRun `session.plan.generate`, edit the plan if needed, then approve it."
         );
         state.persistence.create_message(
-            &p.mission_id,
+            &p.session_id,
             crate::api::types::MessageRole::System,
             &note,
             vec![],
         )?;
-        let _ = state.persistence.update_mission_status(
-            &p.mission_id,
-            crate::api::types::MissionStatus::BlockedOnApproval,
+        let _ = state.persistence.update_session_status(
+            &p.session_id,
+            crate::api::types::SessionStatus::BlockedOnApproval,
         );
         broadcast_notification(
             state,
-            "mission.blocked",
-            serde_json::json!({ "mission_id": p.mission_id, "reason": reason }),
+            "session.blocked",
+            serde_json::json!({ "session_id": p.session_id, "reason": reason }),
         );
         return Ok(serde_json::json!({ "message": user_msg, "blocked": true, "reason": reason }));
     }
 
     // Trigger agent loop in background
     let state_clone = state.clone();
-    let mission_id = p.mission_id.clone();
+    let session_id = p.session_id.clone();
     tokio::spawn(async move {
         if let Err(e) = state_clone
             .model_manager
-            .process_message(&mission_id, &p.content, state_clone.clone())
+            .process_message(&session_id, &p.content, state_clone.clone())
             .await
         {
             error!("Model processing failed: {:?}", e);
             let _ = state_clone.persistence.create_message(
-                &mission_id,
+                &session_id,
                 crate::api::types::MessageRole::System,
                 &format!("Error: {:?}", e),
                 vec![],
@@ -1065,14 +1073,14 @@ async fn handle_mission_send_message(
     Ok(serde_json::to_value(user_msg)?)
 }
 
-async fn handle_mission_approve_tool(
+async fn handle_session_approve_tool(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: crate::api::types::ToolApprovalParams = serde_json::from_value(params)?;
     state
         .model_manager
-        .approve_tool_call(&p.mission_id, &p.tool_call_id, p.approved)
+        .approve_tool_call(&p.session_id, &p.tool_call_id, p.approved)
         .await?;
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -1081,9 +1089,9 @@ async fn handle_message_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id: String =
-        serde_json::from_value(params.get("mission_id").cloned().unwrap_or_default())?;
-    let messages = state.persistence.list_messages(&mission_id)?;
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
+    let messages = state.persistence.list_messages(&session_id)?;
     Ok(serde_json::to_value(messages)?)
 }
 
@@ -1298,16 +1306,25 @@ async fn handle_pty_create(
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: crate::api::types::PtyCreateParams = serde_json::from_value(params)?;
-    let mission = state.persistence.get_mission(&p.mission_id)?;
+    let session = state.persistence.get_session(&p.session_id)?;
     let repo = state
         .persistence
-        .get_repo_channel(&mission.repo_channel_id)?;
-    let workdir = mission.worktree_path.unwrap_or(repo.path);
+        .get_repo_channel(&session.repo_channel_id)?;
+    // `Repo` deliberately ignores the worktree: it is how you inspect the base
+    // branch while a Session is running. Nothing done there is part of the
+    // Session, which is why the UI labels it distinctly.
+    let workdir = match p.workdir {
+        crate::api::types::PtyWorkdir::Repo => repo.path.clone(),
+        crate::api::types::PtyWorkdir::Session => {
+            session.worktree_path.unwrap_or(repo.path.clone())
+        }
+    };
     let pty = state.pty_manager.create_pty(
-        &p.mission_id,
+        &p.session_id,
         &workdir,
         p.cols.unwrap_or(120),
         p.rows.unwrap_or(30),
+        p.workdir,
     )?;
 
     // Subscribe to output and broadcast via event_tx - single task per PTY, not per subscriber leak
@@ -1366,9 +1383,9 @@ async fn handle_pty_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id: String =
-        serde_json::from_value(params.get("mission_id").cloned().unwrap_or_default())?;
-    let list = state.pty_manager.list(&mission_id);
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
+    let list = state.pty_manager.list(&session_id);
     Ok(serde_json::to_value(list)?)
 }
 
@@ -1426,10 +1443,10 @@ async fn handle_mcp_tool_call(
 
 // File
 //
-// review_prompt.md §1.1 confined the model's own file tools to a Mission's
+// review_prompt.md §1.1 confined the model's own file tools to a Session's
 // worktree; it did not touch these RPCs, which the Editor pane calls directly
 // over the network socket (050-Gold-Standard-Review.md F1). A caller here has
-// no Mission root to confine to, so the boundary is "inside some repo the
+// no Session root to confine to, so the boundary is "inside some repo the
 // user has actually connected" — resolved against every connected repo
 // channel via `path_confine::resolve_confined_path_in_any`, which is the same
 // primitive (not a second implementation of it) the model tools use.
@@ -1451,9 +1468,39 @@ async fn handle_file_read(
     let p: crate::api::types::FileReadParams = serde_json::from_value(params)?;
     let roots = connected_repo_roots(state)?;
     let resolved = crate::path_confine::resolve_confined_path_in_any(&roots, &p.path)?;
-    let content = tokio::fs::read_to_string(&resolved).await?;
-    Ok(serde_json::json!({ "path": p.path, "content": content }))
+
+    // A repo legitimately contains files that are not editable text — `.coverage`
+    // (a SQLite database), images, compiled artifacts. `read_to_string` failed on
+    // those with a raw "stream did not contain valid UTF-8", which surfaced to
+    // the user as an error rather than as a fact about the file. Reporting it as
+    // a *property* lets the Editor say so and, more importantly, refuse to write
+    // an empty string back over the file's real bytes.
+    let size = tokio::fs::metadata(&resolved).await?.len();
+    if size > MAX_EDITABLE_FILE_BYTES {
+        return Ok(serde_json::json!({
+            "path": p.path, "content": "", "size": size, "binary": false, "too_large": true,
+        }));
+    }
+
+    let bytes = tokio::fs::read(&resolved).await?;
+    // A NUL byte is valid UTF-8 but never appears in source a human edits; it is
+    // the same heuristic ripgrep uses to classify a file as binary.
+    let text = String::from_utf8(bytes).ok().filter(|s| !s.contains('\0'));
+
+    match text {
+        Some(content) => Ok(serde_json::json!({
+            "path": p.path, "content": content, "size": size, "binary": false, "too_large": false,
+        })),
+        None => Ok(serde_json::json!({
+            "path": p.path, "content": "", "size": size, "binary": true, "too_large": false,
+        })),
+    }
 }
+
+/// Above this, a file is reported rather than loaded. The Editor holds the whole
+/// buffer in memory and ships it back on save, so opening a multi-hundred-MB
+/// artifact is never what the user meant.
+const MAX_EDITABLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 async fn handle_file_write(
     params: serde_json::Value,
@@ -1839,13 +1886,13 @@ async fn handle_model_chat(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id: String =
-        serde_json::from_value(params.get("mission_id").cloned().unwrap_or_default())?;
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
     let content: String =
         serde_json::from_value(params.get("content").cloned().unwrap_or_default())?;
     state
         .model_manager
-        .process_message(&mission_id, &content, state.clone())
+        .process_message(&session_id, &content, state.clone())
         .await?;
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -1856,6 +1903,91 @@ async fn handle_model_chat(
 
 /// List all local runtimes (Ollama, LM Studio, llama.cpp) with their models.
 /// Stateless detection, always probes live endpoints with 2s timeout.
+/// What this machine can actually run. Measured, not guessed — see
+/// `local_models::system`.
+async fn handle_local_system_capabilities(
+    params: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::to_value(detect_capability(&params).await?)?)
+}
+
+/// Shared by both capability callers. GPU detection shells out — a CIM query on
+/// Windows costs seconds — so the result is cached and only an explicit
+/// `force` (the Rescan button) re-probes.
+async fn detect_capability(
+    params: &serde_json::Value,
+) -> anyhow::Result<crate::local_models::system::SystemCapability> {
+    let force = params
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok(tokio::task::spawn_blocking(move || {
+        if force {
+            crate::local_models::system::SystemCapability::detect_fresh()
+        } else {
+            crate::local_models::system::SystemCapability::detect_cached()
+        }
+    })
+    .await?)
+}
+
+/// The curated local-model list, each entry classified against this machine's
+/// real memory budget, so the UI can show *why* something is not offered rather
+/// than just omitting it.
+async fn handle_local_models_recommended(
+    params: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let cap = detect_capability(&params).await?;
+    let models = crate::local_models::catalog::recommendations(&cap);
+    Ok(serde_json::json!({ "system": cap, "models": models }))
+}
+
+async fn handle_local_runtime_status(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::to_value(
+        state.local_runtime_manager.status().await,
+    )?)
+}
+
+async fn handle_local_runtime_start(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::to_value(
+        state.local_runtime_manager.start().await?,
+    )?)
+}
+
+async fn handle_local_runtime_stop(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::to_value(
+        state.local_runtime_manager.stop().await?,
+    )?)
+}
+
+/// Download a model, streaming the runtime's own progress lines out as
+/// notifications. A 20 GB pull is normal here, so the call must not look frozen
+/// while it runs.
+async fn handle_local_model_pull(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let model_id = required_str(&params, "model_id")?;
+
+    let event_tx = state.event_tx.clone();
+    let id_for_task = model_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::local_models::manager::LocalRuntimeManager::pull_blocking(&id_for_task, |line| {
+            let notif = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "local.model.pull.progress",
+                "params": { "model_id": id_for_task, "line": line },
+            });
+            // A dropped progress line is not worth failing the download over.
+            let _ = event_tx.send(notif.to_string());
+        })
+    })
+    .await?;
+
+    result?;
+    Ok(serde_json::json!({ "model_id": model_id, "pulled": true }))
+}
+
 async fn handle_local_runtime_list(_state: &AppState) -> anyhow::Result<serde_json::Value> {
     let detector = LocalRuntimeDetector::new();
     let runtimes = detector.detect_all().await;
@@ -1990,19 +2122,19 @@ async fn handle_github_issue_get(
     Ok(serde_json::to_value(issue)?)
 }
 
-async fn handle_github_issue_to_mission(
+async fn handle_github_issue_to_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     // Try typed params first
     if let Ok(p) =
-        serde_json::from_value::<crate::api::types::GitHubIssueToMissionParams>(params.clone())
+        serde_json::from_value::<crate::api::types::GitHubIssueToSessionParams>(params.clone())
     {
-        let mission = state
+        let session = state
             .github_manager
-            .issue_to_mission(&p.repo_path, p.issue_number, p.session_mode)
+            .issue_to_session(&p.repo_path, p.issue_number, p.isolation_mode)
             .await?;
-        return Ok(serde_json::to_value(mission)?);
+        return Ok(serde_json::to_value(session)?);
     }
 
     // Manual fallback
@@ -2016,15 +2148,15 @@ async fn handle_github_issue_to_mission(
         .or_else(|| params.get("number"))
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("issue_number required"))?;
-    let session_mode: Option<crate::api::types::SessionMode> = params
-        .get("session_mode")
+    let isolation_mode: Option<crate::api::types::IsolationMode> = params
+        .get("isolation_mode")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    let mission = state
+    let session = state
         .github_manager
-        .issue_to_mission(&repo_path, issue_number, session_mode)
+        .issue_to_session(&repo_path, issue_number, isolation_mode)
         .await?;
-    Ok(serde_json::to_value(mission)?)
+    Ok(serde_json::to_value(session)?)
 }
 
 async fn handle_github_pr_list(
@@ -2081,7 +2213,7 @@ async fn handle_github_pr_create(
     };
 
     // Governance gate (Part 14): opening a PR is a merge decision, gated by
-    // `can_merge` the same way `mission.create`'s Autonomous-mode branch
+    // `can_merge` the same way `session.create`'s Autonomous-mode branch
     // already gates that decision. Only enforced once a Workspace has
     // actually bootstrapped auth (an Owner account exists) — matching
     // `handle_auth_register`'s own conditional pattern — so the default
@@ -2113,7 +2245,7 @@ async fn handle_github_pr_create(
             p.base_branch.as_deref(),
         )
         .await?;
-    // Emit notification for PR created (sync back into Mission thread if needed)
+    // Emit notification for PR created (sync back into Session thread if needed)
     let notif = crate::api::types::JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
         method: "github.pr.created".to_string(),
@@ -2295,8 +2427,44 @@ async fn handle_code_analyze_directory(
         .ok_or_else(|| anyhow::anyhow!("dir_path required"))?
         .to_string();
 
-    let result = state.analyzer.analyze_directory(&dir_path)?;
+    let analyzer = state.analyzer.clone();
+    let result =
+        tokio::task::spawn_blocking(move || analyzer.analyze_directory(&dir_path)).await??;
     Ok(serde_json::to_value(result)?)
+}
+
+/// Repo-wide text search on ripgrep's engine (`crate::search`).
+///
+/// Confined to connected repo roots exactly like the `file.*` RPCs — this
+/// takes a caller-supplied path and reads file contents, so without it any
+/// client could grep the whole filesystem.
+async fn handle_search_text(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let repo_path = required_str(&params, "repo_path")?;
+    let query = required_str(&params, "query")?;
+
+    let roots = connected_repo_roots(state)?;
+    let resolved = crate::path_confine::resolve_confined_path_in_any(&roots, &repo_path)?;
+
+    let opts = crate::search::SearchOptions {
+        limit: params
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(1, 2_000))
+            .unwrap_or(500),
+        regex: params
+            .get("regex")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        case_sensitive: params.get("case_sensitive").and_then(|v| v.as_bool()),
+    };
+
+    let outcome =
+        tokio::task::spawn_blocking(move || crate::search::search_text(&resolved, &query, &opts))
+            .await??;
+    Ok(serde_json::to_value(outcome)?)
 }
 
 async fn handle_code_search_symbols(
@@ -2314,7 +2482,12 @@ async fn handle_code_search_symbols(
         .ok_or_else(|| anyhow::anyhow!("query required"))?
         .to_string();
 
-    let files = state.analyzer.analyze_directory(&dir_path)?;
+    // Walking and tree-sitter parsing a repo is CPU-bound and unbounded in
+    // duration; doing it inline held a Tokio worker for the whole call.
+    let analyzer = state.analyzer.clone();
+    let walk_path = dir_path.clone();
+    let files =
+        tokio::task::spawn_blocking(move || analyzer.analyze_directory(&walk_path)).await??;
     let mut matching: Vec<serde_json::Value> = Vec::new();
 
     for file in &files {
@@ -2578,12 +2751,12 @@ async fn handle_slack_config_get(
     }
 }
 
-async fn handle_slack_trigger_mission(
+async fn handle_slack_trigger_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: SlackTriggerParams = serde_json::from_value(params)?;
-    let trigger = state.slack_bridge.trigger_mission(p).await?;
+    let trigger = state.slack_bridge.trigger_session(p).await?;
     Ok(serde_json::to_value(trigger)?)
 }
 
@@ -2618,12 +2791,12 @@ async fn handle_teams_config_get(
     }
 }
 
-async fn handle_teams_trigger_mission(
+async fn handle_teams_trigger_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: TeamsTriggerParams = serde_json::from_value(params)?;
-    let result = state.teams_bridge.trigger_mission(p).await?;
+    let result = state.teams_bridge.trigger_session(p).await?;
     Ok(result)
 }
 
@@ -3040,28 +3213,28 @@ async fn handle_decisions_list(
     ))?)
 }
 
-/// ADRs relevant to a specific Mission — matched against its task
+/// ADRs relevant to a specific Session — matched against its task
 /// description and plan content, per the module's "explicit reference wins"
-/// rule (see `decisions::adrs_relevant_to_mission`).
-async fn handle_decisions_for_mission(
+/// rule (see `decisions::adrs_relevant_to_session`).
+async fn handle_decisions_for_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let mission = state.persistence.get_mission(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let session = state.persistence.get_session(&session_id)?;
     let repo = state
         .persistence
-        .get_repo_channel(&mission.repo_channel_id)?;
+        .get_repo_channel(&session.repo_channel_id)?;
 
     let plan_text = state
         .role_runner
-        .get_plan(&mission_id)?
+        .get_plan(&session_id)?
         .map(|p| p.content)
         .unwrap_or_default();
-    let texts = [mission.task_description.as_str(), plan_text.as_str()];
+    let texts = [session.task_description.as_str(), plan_text.as_str()];
 
     Ok(serde_json::to_value(
-        crate::decisions::adrs_relevant_to_mission(&repo.path, &texts),
+        crate::decisions::adrs_relevant_to_session(&repo.path, &texts),
     )?)
 }
 
@@ -3079,7 +3252,7 @@ async fn handle_deployment_record(
 }
 
 /// CI-triggered deployment entry — same shape, tagged with its real source so
-/// the Mission thread can distinguish "someone typed this in" from "a real CI
+/// the Session thread can distinguish "someone typed this in" from "a real CI
 /// run reported it."
 async fn handle_deployment_webhook(
     params: serde_json::Value,
@@ -3097,26 +3270,26 @@ async fn handle_deployment_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     Ok(serde_json::to_value(
-        state.deployment_log.for_mission(&mission_id)?,
+        state.deployment_log.for_session(&session_id)?,
     )?)
 }
 
 // ============ Confidence Engine ============
 
-/// Score a patch and log the result against a Mission.
+/// Score a patch and log the result against a Session.
 ///
 /// Callers can supply `new_content` directly (a patch not yet on disk) or
 /// omit it and pass `target_file` alone, in which case the file's current
 /// content on disk — as the Implementer already wrote it — is scored. The
 /// latter is the common case: by the time a diff is ready for review, the
-/// file already exists in the Mission's worktree.
+/// file already exists in the Session's worktree.
 async fn handle_confidence_score(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let target_file = required_str(&params, "target_file")?;
     let diff = params
         .get("diff")
@@ -3124,11 +3297,11 @@ async fn handle_confidence_score(
         .unwrap_or("")
         .to_string();
 
-    let mission = state.persistence.get_mission(&mission_id)?;
+    let session = state.persistence.get_session(&session_id)?;
     let repo = state
         .persistence
-        .get_repo_channel(&mission.repo_channel_id)?;
-    let root = mission
+        .get_repo_channel(&session.repo_channel_id)?;
+    let root = session
         .worktree_path
         .clone()
         .unwrap_or_else(|| repo.path.clone());
@@ -3156,7 +3329,7 @@ async fn handle_confidence_score(
     let card = state.confidence_engine.score_patch(&patch, &root)?;
     state
         .persistence
-        .save_confidence_score(&mission_id, &target_file, &card)?;
+        .save_confidence_score(&session_id, &target_file, &card)?;
 
     let summary = format!(
         "**Confidence**: {:.0}/100 for `{}` — {}",
@@ -3165,7 +3338,7 @@ async fn handle_confidence_score(
         card.verdict()
     );
     state.persistence.create_message(
-        &mission_id,
+        &session_id,
         crate::api::types::MessageRole::System,
         &summary,
         vec![],
@@ -3179,9 +3352,9 @@ async fn handle_confidence_history(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     Ok(serde_json::to_value(
-        state.persistence.list_confidence_scores(&mission_id)?,
+        state.persistence.list_confidence_scores(&session_id)?,
     )?)
 }
 
@@ -3266,7 +3439,7 @@ async fn handle_forge_issue_get(
     )?)
 }
 
-async fn handle_forge_issue_to_mission(
+async fn handle_forge_issue_to_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
@@ -3275,15 +3448,15 @@ async fn handle_forge_issue_to_mission(
         .get("issue_number")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| anyhow::anyhow!("issue_number is required"))?;
-    let session_mode = params
-        .get("session_mode")
+    let isolation_mode = params
+        .get("isolation_mode")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let mission = state
+    let session = state
         .forge_manager
-        .issue_to_mission(&repo_path, number, session_mode)
+        .issue_to_session(&repo_path, number, isolation_mode)
         .await?;
-    broadcast_notification(state, "mission.created", serde_json::to_value(&mission)?);
-    Ok(serde_json::to_value(mission)?)
+    broadcast_notification(state, "session.created", serde_json::to_value(&session)?);
+    Ok(serde_json::to_value(session)?)
 }
 
 async fn handle_forge_cr_create(
@@ -3396,7 +3569,7 @@ async fn handle_tracker_link(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let tracker = tracker_of(&params)?;
     let key = required_str(&params, "issue_key")?;
     // The config is optional: without it the link is still recorded, just
@@ -3404,7 +3577,7 @@ async fn handle_tracker_link(
     let config = tracker_config_of(&params).ok();
     let link = state
         .tracker_manager
-        .link(&mission_id, tracker, &key, config.as_ref())
+        .link(&session_id, tracker, &key, config.as_ref())
         .await?;
     broadcast_notification(state, "tracker.link.changed", serde_json::to_value(&link)?);
     Ok(serde_json::to_value(link)?)
@@ -3414,9 +3587,9 @@ async fn handle_tracker_links_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     Ok(serde_json::to_value(
-        state.tracker_manager.links_for_mission(&mission_id)?,
+        state.tracker_manager.links_for_session(&session_id)?,
     )?)
 }
 
@@ -3429,22 +3602,22 @@ async fn handle_tracker_unlink(
     Ok(serde_json::json!({ "ok": true }))
 }
 
-async fn handle_tracker_issue_to_mission(
+async fn handle_tracker_issue_to_session(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let repo_path = required_str(&params, "repo_path")?;
     let config = tracker_config_of(&params)?;
     let key = required_str(&params, "issue_key")?;
-    let session_mode = params
-        .get("session_mode")
+    let isolation_mode = params
+        .get("isolation_mode")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let mission = state
+    let session = state
         .tracker_manager
-        .issue_to_mission(&repo_path, &config, &key, session_mode)
+        .issue_to_session(&repo_path, &config, &key, isolation_mode)
         .await?;
-    broadcast_notification(state, "mission.created", serde_json::to_value(&mission)?);
-    Ok(serde_json::to_value(mission)?)
+    broadcast_notification(state, "session.created", serde_json::to_value(&session)?);
+    Ok(serde_json::to_value(session)?)
 }
 
 async fn handle_tracker_comment(
@@ -3467,7 +3640,7 @@ async fn handle_tracker_comment(
 fn require_session(
     params: &serde_json::Value,
     state: &AppState,
-) -> anyhow::Result<crate::auth::Session> {
+) -> anyhow::Result<crate::auth::AuthSession> {
     let token = required_str(params, "session_token")?;
     state
         .auth_manager
@@ -3666,12 +3839,12 @@ async fn handle_governance_spend_check(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let usd = params.get("usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let decision =
         state
             .governance_manager
-            .check_spend(&workspace_id_of(&params), &mission_id, usd);
+            .check_spend(&workspace_id_of(&params), &session_id, usd);
     Ok(serde_json::to_value(decision)?)
 }
 
@@ -3679,7 +3852,7 @@ async fn handle_governance_spend_record(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let usd = params
         .get("usd")
         .and_then(|v| v.as_f64())
@@ -3691,7 +3864,7 @@ async fn handle_governance_spend_record(
     let record =
         state
             .governance_manager
-            .record_spend(&workspace_id_of(&params), &mission_id, usd, note);
+            .record_spend(&workspace_id_of(&params), &session_id, usd, note);
     Ok(serde_json::to_value(record)?)
 }
 
@@ -3700,22 +3873,22 @@ async fn handle_governance_spend_summary(
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let workspace_id = workspace_id_of(&params);
-    let mission_id = params.get("mission_id").and_then(|v| v.as_str());
+    let session_id = params.get("session_id").and_then(|v| v.as_str());
     Ok(serde_json::json!({
         "workspace_id": workspace_id,
         "workspace_spend_24h_usd": state.governance_manager.workspace_spend_24h(&workspace_id),
-        "mission_spend_usd": mission_id.map(|m| state.governance_manager.mission_spend(m)),
-        "records": state.governance_manager.spend_records(mission_id),
+        "session_spend_usd": session_id.map(|m| state.governance_manager.session_spend(m)),
+        "records": state.governance_manager.spend_records(session_id),
     }))
 }
 
 // ============ Planner / Reviewer ============
 
-async fn handle_mission_plan_generate(
+async fn handle_session_plan_generate(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let force = params
         .get("force")
         .and_then(|v| v.as_bool())
@@ -3723,53 +3896,53 @@ async fn handle_mission_plan_generate(
 
     let _ = state
         .persistence
-        .update_mission_status(&mission_id, crate::api::types::MissionStatus::Planning);
-    let plan = state.role_runner.generate_plan(&mission_id, force).await?;
-    let _ = state.persistence.update_mission_status(
-        &mission_id,
-        crate::api::types::MissionStatus::BlockedOnApproval,
+        .update_session_status(&session_id, crate::api::types::SessionStatus::Planning);
+    let plan = state.role_runner.generate_plan(&session_id, force).await?;
+    let _ = state.persistence.update_session_status(
+        &session_id,
+        crate::api::types::SessionStatus::BlockedOnApproval,
     );
 
-    broadcast_notification(state, "mission.plan.changed", serde_json::to_value(&plan)?);
+    broadcast_notification(state, "session.plan.changed", serde_json::to_value(&plan)?);
     Ok(serde_json::to_value(plan)?)
 }
 
-async fn handle_mission_plan_get(
+async fn handle_session_plan_get(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let plan = state.role_runner.get_plan(&mission_id)?;
-    let gate = state.role_runner.implementer_is_gated(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let plan = state.role_runner.get_plan(&session_id)?;
+    let gate = state.role_runner.implementer_is_gated(&session_id)?;
     Ok(serde_json::json!({ "plan": plan, "implementer_blocked_reason": gate }))
 }
 
-async fn handle_mission_plan_update(
+async fn handle_session_plan_update(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let content = required_str(&params, "content")?;
-    let plan = state.role_runner.update_plan(&mission_id, &content)?;
-    broadcast_notification(state, "mission.plan.changed", serde_json::to_value(&plan)?);
+    let plan = state.role_runner.update_plan(&session_id, &content)?;
+    broadcast_notification(state, "session.plan.changed", serde_json::to_value(&plan)?);
     Ok(serde_json::to_value(plan)?)
 }
 
-async fn handle_mission_plan_approve(
+async fn handle_session_plan_approve(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
 
     // When a session is supplied, the approver's role is checked against
     // Workspace policy and their username is recorded as the approver — an
     // audit trail needs a person, not a free-text string.
     let approved_by = if params.get("session_token").is_some() {
         let actor = require_session(&params, state)?;
-        let mission = state.persistence.get_mission(&mission_id)?;
+        let session = state.persistence.get_session(&session_id)?;
         let repo = state
             .persistence
-            .get_repo_channel(&mission.repo_channel_id)?;
+            .get_repo_channel(&session.repo_channel_id)?;
         let decision = state
             .governance_manager
             .can_approve_plan(&actor, &repo.workspace_id);
@@ -3786,36 +3959,36 @@ async fn handle_mission_plan_approve(
 
     let plan = state
         .role_runner
-        .approve_plan(&mission_id, approved_by.as_deref())?;
-    broadcast_notification(state, "mission.plan.changed", serde_json::to_value(&plan)?);
+        .approve_plan(&session_id, approved_by.as_deref())?;
+    broadcast_notification(state, "session.plan.changed", serde_json::to_value(&plan)?);
     Ok(serde_json::to_value(plan)?)
 }
 
-async fn handle_mission_plan_reject(
+async fn handle_session_plan_reject(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let reason = params.get("reason").and_then(|v| v.as_str());
-    let plan = state.role_runner.reject_plan(&mission_id, reason)?;
-    broadcast_notification(state, "mission.plan.changed", serde_json::to_value(&plan)?);
+    let plan = state.role_runner.reject_plan(&session_id, reason)?;
+    broadcast_notification(state, "session.plan.changed", serde_json::to_value(&plan)?);
     Ok(serde_json::to_value(plan)?)
 }
 
-/// Run the Reviewer over the Mission's current diff. The diff is read from the
-/// Mission's own worktree so a review can't accidentally cover another Mission.
-async fn handle_mission_review_run(
+/// Run the Reviewer over the Session's current diff. The diff is read from the
+/// Session's own worktree so a review can't accidentally cover another Session.
+async fn handle_session_review_run(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let mission = state.persistence.get_mission(&mission_id)?;
-    let path = match mission.worktree_path.clone() {
+    let session_id = required_str(&params, "session_id")?;
+    let session = state.persistence.get_session(&session_id)?;
+    let path = match session.worktree_path.clone() {
         Some(wt) => wt,
         None => {
             state
                 .persistence
-                .get_repo_channel(&mission.repo_channel_id)?
+                .get_repo_channel(&session.repo_channel_id)?
                 .path
         }
     };
@@ -3829,73 +4002,73 @@ async fn handle_mission_review_run(
             .unwrap_or_default(),
     };
 
-    let review = state.role_runner.run_review(&mission_id, &diff).await?;
+    let review = state.role_runner.run_review(&session_id, &diff).await?;
     let _ = state
         .persistence
-        .update_mission_status(&mission_id, crate::api::types::MissionStatus::Review);
+        .update_session_status(&session_id, crate::api::types::SessionStatus::Review);
     broadcast_notification(
         state,
-        "mission.review.completed",
+        "session.review.completed",
         serde_json::to_value(&review)?,
     );
     Ok(serde_json::to_value(review)?)
 }
 
-async fn handle_mission_review_get(
+async fn handle_session_review_get(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let review = state.role_runner.latest_review(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let review = state.role_runner.latest_review(&session_id)?;
     Ok(serde_json::to_value(review)?)
 }
 
-async fn handle_mission_review_list(
+async fn handle_session_review_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let reviews = state.persistence.list_mission_reviews(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let reviews = state.persistence.list_session_reviews(&session_id)?;
     Ok(serde_json::to_value(reviews)?)
 }
 
-async fn handle_mission_context_usage(
+async fn handle_session_context_usage(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let usage = state.model_manager.context_usage(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let usage = state.model_manager.context_usage(&session_id)?;
     Ok(serde_json::to_value(usage)?)
 }
 
-async fn handle_mission_context_compact(
+async fn handle_session_context_compact(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let digest = state.model_manager.compact_context_now(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let digest = state.model_manager.compact_context_now(&session_id)?;
     Ok(serde_json::json!({ "digest": digest }))
 }
 
-async fn handle_mission_checkpoint_list(
+async fn handle_session_checkpoint_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
-    let checkpoints = state.persistence.list_checkpoints(&mission_id)?;
+    let session_id = required_str(&params, "session_id")?;
+    let checkpoints = state.persistence.list_checkpoints(&session_id)?;
     Ok(serde_json::to_value(checkpoints)?)
 }
 
-/// Rewinds a Mission's worktree to an earlier checkpoint — `git reset
+/// Rewinds a Session's worktree to an earlier checkpoint — `git reset
 /// --hard` to that checkpoint's commit, discarding everything after it in
 /// this worktree. Requires an explicit `confirm: true`, not just a
 /// checkpoint id, since this is exactly the class of hard-to-reverse action
 /// that should never happen from a single accidental click.
-async fn handle_mission_checkpoint_rewind(
+async fn handle_session_checkpoint_rewind(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let mission_id = required_str(&params, "mission_id")?;
+    let session_id = required_str(&params, "session_id")?;
     let checkpoint_id = required_str(&params, "checkpoint_id")?;
     let confirmed = params
         .get("confirm")
@@ -3903,26 +4076,26 @@ async fn handle_mission_checkpoint_rewind(
         .unwrap_or(false);
     if !confirmed {
         anyhow::bail!(
-            "Rewinding discards every change made after this checkpoint in the Mission's \
+            "Rewinding discards every change made after this checkpoint in the Session's \
              worktree. Pass confirm: true to proceed."
         );
     }
 
     let checkpoint = state.persistence.get_checkpoint(&checkpoint_id)?;
-    if checkpoint.mission_id != mission_id {
-        anyhow::bail!("Checkpoint {checkpoint_id} does not belong to Mission {mission_id}");
+    if checkpoint.session_id != session_id {
+        anyhow::bail!("Checkpoint {checkpoint_id} does not belong to Session {session_id}");
     }
-    let mission = state.persistence.get_mission(&mission_id)?;
-    let worktree = mission
+    let session = state.persistence.get_session(&session_id)?;
+    let worktree = session
         .worktree_path
-        .ok_or_else(|| anyhow::anyhow!("Mission {mission_id} has no worktree to rewind"))?;
+        .ok_or_else(|| anyhow::anyhow!("Session {session_id} has no worktree to rewind"))?;
 
     state.git_manager.reset_hard(&worktree, &checkpoint.sha)?;
 
     broadcast_notification(
         state,
-        "mission.checkpoint.rewound",
-        serde_json::json!({ "mission_id": mission_id, "checkpoint": checkpoint }),
+        "session.checkpoint.rewound",
+        serde_json::json!({ "session_id": session_id, "checkpoint": checkpoint }),
     );
 
     Ok(serde_json::to_value(checkpoint)?)
@@ -3935,27 +4108,27 @@ async fn handle_acp_editors_list(state: &AppState) -> anyhow::Result<serde_json:
     Ok(serde_json::to_value(editors)?)
 }
 
-/// Hand a Mission's working directory off to an external ACP-capable editor.
-/// The path comes from the Mission's worktree, falling back to its repo channel
-/// for shared-clone Missions.
+/// Hand a Session's working directory off to an external ACP-capable editor.
+/// The path comes from the Session's worktree, falling back to its repo channel
+/// for shared-clone Sessions.
 async fn handle_acp_handoff(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let p: crate::api::types::AcpHandoffParams = serde_json::from_value(params)?;
-    let mission = state.persistence.get_mission(&p.mission_id)?;
-    let path = match mission.worktree_path.clone() {
+    let session = state.persistence.get_session(&p.session_id)?;
+    let path = match session.worktree_path.clone() {
         Some(wt) => wt,
         None => {
             state
                 .persistence
-                .get_repo_channel(&mission.repo_channel_id)?
+                .get_repo_channel(&session.repo_channel_id)?
                 .path
         }
     };
     let handoff = state
         .acp_manager
-        .handoff(&p.mission_id, &p.editor_id, &path)
+        .handoff(&p.session_id, &p.editor_id, &path)
         .await?;
     broadcast_notification(
         state,
@@ -3983,8 +4156,8 @@ async fn handle_acp_handoffs_list(
     params: serde_json::Value,
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
-    let handoffs = match params.get("mission_id").and_then(|v| v.as_str()) {
-        Some(mission_id) => state.acp_manager.list_handoffs_for_mission(mission_id),
+    let handoffs = match params.get("session_id").and_then(|v| v.as_str()) {
+        Some(session_id) => state.acp_manager.list_handoffs_for_session(session_id),
         None => state.acp_manager.list_handoffs(),
     };
     Ok(serde_json::to_value(handoffs)?)
@@ -4039,7 +4212,7 @@ async fn handle_skills_bundle_write(
     Ok(serde_json::json!({ "path": path, "written": true }))
 }
 
-/// Return the resolved context stack for a repo — the Workspace → Repo → Mission
+/// Return the resolved context stack for a repo — the Workspace → Repo → Session
 /// layering from Part 12, with each layer visible separately so the UI can show
 /// which layer a given instruction came from.
 async fn handle_skills_resolve(
@@ -4047,8 +4220,8 @@ async fn handle_skills_resolve(
     state: &AppState,
 ) -> anyhow::Result<serde_json::Value> {
     let repo_path = required_str(&params, "repo_path")?;
-    let mission_context = params
-        .get("mission_context")
+    let session_context = params
+        .get("session_context")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -4063,7 +4236,7 @@ async fn handle_skills_resolve(
         &workspace_skills,
         &repo_skills,
         agents_md.as_deref(),
-        mission_context.as_deref(),
+        session_context.as_deref(),
     );
 
     Ok(serde_json::json!({
@@ -4073,7 +4246,7 @@ async fn handle_skills_resolve(
             "repo_skills": repo_skills,
             "repo_skill_bundles": repo_bundles,
             "agents_md": agents_md,
-            "mission_context": mission_context,
+            "session_context": session_context,
         }
     }))
 }

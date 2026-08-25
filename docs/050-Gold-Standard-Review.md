@@ -190,7 +190,7 @@ dependency, and no protocol code in `cid-core`.
 **F6 — §4's orphaned-RPC closure is overstated: 33 of 178 methods are still unreachable.**
 `CLAUDE.md`'s snapshot lists "§4 orphaned RPCs wired to UI" as done. Re-running the
 review's own detection command finds 33 methods with no string-literal match anywhere in
-`src/`. Real progress *was* made — the Reviewer (`mission.review.run/get`) and the Context
+`src/`. Real progress *was* made — the Reviewer (`session.review.run/get`) and the Context
 Engine (`enable`/`disable`) are genuinely wired now, and those were the two named
 priorities. But six whole feature groups still have zero surface:
 
@@ -198,10 +198,10 @@ priorities. But six whole feature groups still have zero surface:
 |---|---|---|
 | Role profiles | `role_profile.create/get/list/update/delete/check_permission` | 6 — no UI. Phase 4 deliverable with real enforcement in tool dispatch; no way to create or assign one. |
 | Semantic engine | `test_impact.entries/for_symbol/for_symbols`, `docs.for_symbol`, `docs.stale`, `index_file`, `load_blame` | 7 — headline Phase 4 feature, invisible. |
-| Slack / Teams | `slack.configure/config.get/trigger_mission` + 3 Teams equivalents | 6 — unconfigurable without hand-written RPC. |
+| Slack / Teams | `slack.configure/config.get/trigger_session` + 3 Teams equivalents | 6 — unconfigurable without hand-written RPC. |
 | Code analysis | `code.analyze_file/analyze_directory/search_symbols/get_imports` | 4 — reachable only internally and from E2E tests. |
-| Decisions & deployment | `decisions.list/for_mission`, `deployment.record/list/webhook` | 5 — Phase 4 deliverables, no surface. |
-| Misc | `confidence.history`, `mcp.task.subscribe`, `workspace.get`, `mission.review.list` | 4 — smaller gaps. |
+| Decisions & deployment | `decisions.list/for_session`, `deployment.record/list/webhook` | 5 — Phase 4 deliverables, no surface. |
+| Misc | `confidence.history`, `mcp.task.subscribe`, `workspace.get`, `session.review.list` | 4 — smaller gaps. |
 
 **One correction to the original review**, in the spirit of §9's "a corrected finding is a
 good outcome": `context_engine.toggle` was §4's *highest-priority* item on the grounds
@@ -239,7 +239,7 @@ baseline caveat above.
 
 **F10 — Accessibility is effectively absent.** Seven `aria-label` attributes in the entire
 frontend. Two `onKeyDown` handlers total (`ChatThread.tsx:295`, `LeftRail.tsx:96`), both
-single-purpose. No focus management, no focus traps on the modal (`MissionCreationModal`
+single-purpose. No focus management, no focus traps on the modal (`SessionCreationModal`
 is a raw `fixed inset-0` div), no skip links, no command palette, no keyboard shortcuts,
 no keymap customization, no documented screen-reader pass.
 
@@ -247,7 +247,7 @@ no keymap customization, no documented screen-reader pass.
 catalogue; every string is a hardcoded English literal in JSX.
 
 **F12 — `alert()` is the error channel.** Nine calls across `App.tsx`, `LeftRail.tsx`,
-`McpPanel.tsx`, and `SkillsPanel.tsx`, including the primary Mission-creation failure path
+`McpPanel.tsx`, and `SkillsPanel.tsx`, including the primary Session-creation failure path
 (`App.tsx:70`). Blocking, unstyled, untestable, and impossible to act on.
 
 **F13 — Frontend test coverage lags the backend badly.** 8 test files against 27 source
@@ -306,7 +306,7 @@ and CID currently gives its models text with no compiler truth attached.
 ## Failure Modes
 
 The specific way this document could be wrong: it verifies *reachability and shape*, not
-*runtime behavior under load*. It did not exercise a real Mission against a live model
+*runtime behavior under load*. It did not exercise a real Session against a live model
 (no API key in this environment — §5's long-standing gap, still open), did not launch the
 Tauri desktop shell, and did not test on mobile hardware. Those three remain honestly
 unverified, exactly as `048-Platform-Verification.md` records.

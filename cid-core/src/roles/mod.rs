@@ -3,7 +3,7 @@
  *
  * Part 5 of the founding brief ships three composable roles. The Implementer is
  * the tool-driving agent loop in `model`; the other two produce documents rather
- * than driving tools, and are modelled here as explicit Mission lifecycle stages:
+ * than driving tools, and are modelled here as explicit Session lifecycle stages:
  *
  *   Planner  — Flow 1 step 3: proposes an editable plan before any file is touched.
  *              The human edits/approves it; the Implementer refuses to run without
@@ -20,14 +20,14 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 
 use crate::api::types::{
-    AgentRole, AutonomyLevel, MessageRole, MissionPlan, MissionPlanStatus, MissionReview,
-    ReviewFinding, ReviewSeverity, ReviewVerdict,
+    AgentRole, AutonomyLevel, MessageRole, ReviewFinding, ReviewSeverity, ReviewVerdict,
+    SessionPlan, SessionPlanStatus, SessionReview,
 };
 use crate::model::ModelManager;
 use crate::persistence::Persistence;
 
 const PLANNER_SYSTEM: &str = "\
-You are the Planner for a coding mission. Produce a short, concrete implementation plan \
+You are the Planner for a coding session. Produce a short, concrete implementation plan \
 BEFORE any file is modified. Respond with exactly three markdown sections and nothing else:
 
 ## Requirements
@@ -69,26 +69,26 @@ impl RoleRunner {
     // Planner
     // -----------------------------------------------------------------------
 
-    /// Run the Planner for a Mission and persist the resulting draft plan.
+    /// Run the Planner for a Session and persist the resulting draft plan.
     ///
-    /// Without `force` this only generates when the Mission has no plan at all,
+    /// Without `force` this only generates when the Session has no plan at all,
     /// so a background re-plan can never overwrite a human's edits or silently
     /// discard an approval. Re-planning is an explicit `force` call.
-    pub async fn generate_plan(&self, mission_id: &str, force: bool) -> Result<MissionPlan> {
-        let mission = self.persistence.get_mission(mission_id)?;
+    pub async fn generate_plan(&self, session_id: &str, force: bool) -> Result<SessionPlan> {
+        let session = self.persistence.get_session(session_id)?;
 
         if !force {
-            if let Some(existing) = self.persistence.get_mission_plan(mission_id)? {
+            if let Some(existing) = self.persistence.get_session_plan(session_id)? {
                 return Ok(existing);
             }
         }
 
         let repo = self
             .persistence
-            .get_repo_channel(&mission.repo_channel_id)?;
+            .get_repo_channel(&session.repo_channel_id)?;
         let user_prompt = format!(
-            "Repository: {}\nMission: {}\n\nTask:\n{}",
-            repo.path, mission.title, mission.task_description
+            "Repository: {}\nSession: {}\n\nTask:\n{}",
+            repo.path, session.title, session.task_description
         );
 
         let content = match self
@@ -97,21 +97,34 @@ impl RoleRunner {
             .await
         {
             Ok(Some(text)) if !text.trim().is_empty() => text,
-            Ok(_) => placeholder_plan(&mission.title, &mission.task_description),
+            // Genuinely nothing configured to call.
+            Ok(_) => placeholder_plan(
+                &session.title,
+                &session.task_description,
+                "No planning model is configured",
+            ),
+            // The model *is* configured and was called — it failed. Saying
+            // "no model is configured" here sent people to reconfigure a
+            // perfectly good setup while the real cause (a 503, a bad key, a
+            // retired id) went unreported.
             Err(e) => {
                 tracing::warn!(
-                    "Planner model call failed for mission {}: {:?}",
-                    mission_id,
+                    "Planner model call failed for session {}: {:?}",
+                    session_id,
                     e
                 );
-                placeholder_plan(&mission.title, &mission.task_description)
+                placeholder_plan(
+                    &session.title,
+                    &session.task_description,
+                    &format!("The planning model was called but failed: {e}"),
+                )
             }
         };
 
-        let plan = self.persistence.upsert_mission_plan(mission_id, &content)?;
+        let plan = self.persistence.upsert_session_plan(session_id, &content)?;
 
         self.persistence.create_message(
-            mission_id,
+            session_id,
             MessageRole::Assistant,
             &format!("**Planner** proposed a plan — review and approve before implementation.\n\n{content}"),
             vec![],
@@ -123,32 +136,32 @@ impl RoleRunner {
     /// Generate a minimal plan and immediately approve it — the vibe-coding
     /// preset (Phase 5): reduced Planner ceremony for a quick, low-stakes
     /// change. This shortens *planning*, not review: the Implementer still
-    /// runs under whichever autonomy level the Mission was created with, so
+    /// runs under whichever autonomy level the Session was created with, so
     /// Co-Pilot's per-tool-call approval, the diff viewer, and History are
-    /// completely unaffected — a vibe Mission is still logged, still diffed,
+    /// completely unaffected — a vibe Session is still logged, still diffed,
     /// still reviewable.
     ///
     /// Skips the model call entirely (no Requirements/Approach/Steps
     /// ceremony to draft) — a one-line plan naming the task is enough to
     /// satisfy the plan-approval gate without pretending a quick fix needs a
     /// formal planning document.
-    pub fn generate_vibe_plan(&self, mission_id: &str) -> Result<MissionPlan> {
-        let mission = self.persistence.get_mission(mission_id)?;
+    pub fn generate_vibe_plan(&self, session_id: &str) -> Result<SessionPlan> {
+        let session = self.persistence.get_session(session_id)?;
         let content = format!(
-            "## Steps\n1. {}\n\n_Vibe-coding preset: reduced planning ceremony for a quick, low-stakes change. The Implementer still runs under Co-Pilot's per-tool-call approval unless this Mission is Autonomous._",
-            mission.task_description
+            "## Steps\n1. {}\n\n_Vibe-coding preset: reduced planning ceremony for a quick, low-stakes change. The Implementer still runs under Co-Pilot's per-tool-call approval unless this Session is Autonomous._",
+            session.task_description
         );
-        self.persistence.upsert_mission_plan(mission_id, &content)?;
-        let approved = self.persistence.set_mission_plan_status(
-            mission_id,
-            MissionPlanStatus::Approved,
+        self.persistence.upsert_session_plan(session_id, &content)?;
+        let approved = self.persistence.set_session_plan_status(
+            session_id,
+            SessionPlanStatus::Approved,
             Some("vibe-preset"),
         )?;
 
         self.persistence.create_message(
-            mission_id,
+            session_id,
             MessageRole::System,
-            "**Vibe mode**: plan auto-approved for a quick, low-stakes change. Tool calls still require your approval per the Mission's autonomy level.",
+            "**Vibe mode**: plan auto-approved for a quick, low-stakes change. Tool calls still require your approval per the Session's autonomy level.",
             vec![],
         )?;
 
@@ -157,28 +170,28 @@ impl RoleRunner {
 
     /// Persist a human-edited plan. Editing returns an approved plan to draft,
     /// because the approval applied to the previous text, not this one.
-    pub fn update_plan(&self, mission_id: &str, content: &str) -> Result<MissionPlan> {
+    pub fn update_plan(&self, session_id: &str, content: &str) -> Result<SessionPlan> {
         if content.trim().is_empty() {
             return Err(anyhow!("plan content cannot be empty"));
         }
-        self.persistence.upsert_mission_plan(mission_id, content)
+        self.persistence.upsert_session_plan(session_id, content)
     }
 
-    pub fn approve_plan(&self, mission_id: &str, approved_by: Option<&str>) -> Result<MissionPlan> {
+    pub fn approve_plan(&self, session_id: &str, approved_by: Option<&str>) -> Result<SessionPlan> {
         let plan = self
             .persistence
-            .get_mission_plan(mission_id)?
-            .ok_or_else(|| anyhow!("Mission {} has no plan to approve", mission_id))?;
+            .get_session_plan(session_id)?
+            .ok_or_else(|| anyhow!("Session {} has no plan to approve", session_id))?;
         if plan.content.trim().is_empty() {
             return Err(anyhow!("cannot approve an empty plan"));
         }
-        let approved = self.persistence.set_mission_plan_status(
-            mission_id,
-            MissionPlanStatus::Approved,
+        let approved = self.persistence.set_session_plan_status(
+            session_id,
+            SessionPlanStatus::Approved,
             approved_by,
         )?;
         self.persistence.create_message(
-            mission_id,
+            session_id,
             MessageRole::System,
             "Plan approved. The Implementer may now execute it.",
             vec![],
@@ -186,10 +199,10 @@ impl RoleRunner {
         Ok(approved)
     }
 
-    pub fn reject_plan(&self, mission_id: &str, reason: Option<&str>) -> Result<MissionPlan> {
-        let rejected = self.persistence.set_mission_plan_status(
-            mission_id,
-            MissionPlanStatus::Rejected,
+    pub fn reject_plan(&self, session_id: &str, reason: Option<&str>) -> Result<SessionPlan> {
+        let rejected = self.persistence.set_session_plan_status(
+            session_id,
+            SessionPlanStatus::Rejected,
             None,
         )?;
         let note = match reason {
@@ -197,32 +210,32 @@ impl RoleRunner {
             _ => "Plan rejected.".to_string(),
         };
         self.persistence
-            .create_message(mission_id, MessageRole::System, &note, vec![])?;
+            .create_message(session_id, MessageRole::System, &note, vec![])?;
         Ok(rejected)
     }
 
-    pub fn get_plan(&self, mission_id: &str) -> Result<Option<MissionPlan>> {
-        self.persistence.get_mission_plan(mission_id)
+    pub fn get_plan(&self, session_id: &str) -> Result<Option<SessionPlan>> {
+        self.persistence.get_session_plan(session_id)
     }
 
-    /// Whether the Implementer is allowed to execute for this Mission right now.
+    /// Whether the Implementer is allowed to execute for this Session right now.
     ///
     /// Manual autonomy has no plan gate — the human is driving. Co-Pilot and
     /// Autonomous both require an approved plan, which is what makes "approve the
     /// plan, then it runs" a real gate rather than a UI convention.
-    pub fn implementer_is_gated(&self, mission_id: &str) -> Result<Option<String>> {
-        let mission = self.persistence.get_mission(mission_id)?;
-        if mission.autonomy_level == AutonomyLevel::Manual {
+    pub fn implementer_is_gated(&self, session_id: &str) -> Result<Option<String>> {
+        let session = self.persistence.get_session(session_id)?;
+        if session.autonomy_level == AutonomyLevel::Manual {
             return Ok(None);
         }
-        match self.persistence.get_mission_plan(mission_id)? {
-            Some(plan) if plan.status == MissionPlanStatus::Approved => Ok(None),
+        match self.persistence.get_session_plan(session_id)? {
+            Some(plan) if plan.status == SessionPlanStatus::Approved => Ok(None),
             Some(plan) => Ok(Some(format!(
-                "The plan for this Mission is {:?}, not approved. Approve it before the Implementer runs.",
+                "The plan for this Session is {:?}, not approved. Approve it before the Implementer runs.",
                 plan.status
             ))),
             None => Ok(Some(
-                "This Mission has no plan yet. Run the Planner and approve its plan first.".to_string(),
+                "This Session has no plan yet. Run the Planner and approve its plan first.".to_string(),
             )),
         }
     }
@@ -231,26 +244,26 @@ impl RoleRunner {
     // Reviewer
     // -----------------------------------------------------------------------
 
-    /// Run the Reviewer over a Mission's accumulated diff and persist the result.
-    pub async fn run_review(&self, mission_id: &str, diff: &str) -> Result<MissionReview> {
-        let mission = self.persistence.get_mission(mission_id)?;
-        let plan = self.persistence.get_mission_plan(mission_id)?;
+    /// Run the Reviewer over a Session's accumulated diff and persist the result.
+    pub async fn run_review(&self, session_id: &str, diff: &str) -> Result<SessionReview> {
+        let session = self.persistence.get_session(session_id)?;
+        let plan = self.persistence.get_session_plan(session_id)?;
 
         if diff.trim().is_empty() {
-            let review = MissionReview {
+            let review = SessionReview {
                 id: uuid::Uuid::new_v4().to_string(),
-                mission_id: mission_id.to_string(),
+                session_id: session_id.to_string(),
                 verdict: ReviewVerdict::Clean,
                 findings: vec![],
                 raw_output: "No changes to review.".to_string(),
                 created_at: Utc::now(),
             };
-            return self.persistence.save_mission_review(&review);
+            return self.persistence.save_session_review(&review);
         }
 
         let user_prompt = format!(
-            "Mission: {}\n\nApproved plan:\n{}\n\nDiff under review:\n```diff\n{}\n```",
-            mission.title,
+            "Session: {}\n\nApproved plan:\n{}\n\nDiff under review:\n```diff\n{}\n```",
+            session.title,
             plan.as_ref()
                 .map(|p| p.content.as_str())
                 .unwrap_or("(no plan recorded)"),
@@ -267,8 +280,8 @@ impl RoleRunner {
                 .to_string(),
             Err(e) => {
                 tracing::warn!(
-                    "Reviewer model call failed for mission {}: {:?}",
-                    mission_id,
+                    "Reviewer model call failed for session {}: {:?}",
+                    session_id,
                     e
                 );
                 format!("Reviewer could not run: {e}")
@@ -278,15 +291,15 @@ impl RoleRunner {
         let findings = parse_findings(&raw);
         let verdict = verdict_for(&findings, &raw);
 
-        let review = MissionReview {
+        let review = SessionReview {
             id: uuid::Uuid::new_v4().to_string(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             verdict,
             findings,
             raw_output: raw.clone(),
             created_at: Utc::now(),
         };
-        let saved = self.persistence.save_mission_review(&review)?;
+        let saved = self.persistence.save_session_review(&review)?;
 
         let summary = if saved.findings.is_empty() {
             format!("**Reviewer**: {:?} — no findings.", saved.verdict)
@@ -304,13 +317,13 @@ impl RoleRunner {
             )
         };
         self.persistence
-            .create_message(mission_id, MessageRole::Assistant, &summary, vec![])?;
+            .create_message(session_id, MessageRole::Assistant, &summary, vec![])?;
 
         Ok(saved)
     }
 
-    pub fn latest_review(&self, mission_id: &str) -> Result<Option<MissionReview>> {
-        self.persistence.get_latest_mission_review(mission_id)
+    pub fn latest_review(&self, session_id: &str) -> Result<Option<SessionReview>> {
+        self.persistence.get_latest_session_review(session_id)
     }
 }
 
@@ -335,17 +348,21 @@ fn truncate_diff(diff: &str) -> String {
     )
 }
 
-fn placeholder_plan(title: &str, task: &str) -> String {
+/// `reason` is stated verbatim rather than assumed. This used to always claim
+/// "No planning model is configured", including when a model *was* configured
+/// and the call failed — which sent people to fix settings that were already
+/// correct while the actual cause (a retired model id, a 503, a rejected key)
+/// appeared only in Core's log.
+fn placeholder_plan(title: &str, task: &str, reason: &str) -> String {
     format!(
         "## Requirements\n\
          - {title}\n\
-         - Derived from the mission task below; no model was available to expand it.\n\n\
+         - Derived from the session task below; no model output was available to expand it.\n\n\
          ## Approach\n\
-         No planning model is configured, so this is a placeholder plan recorded so the \
-         Mission still has an explicit, editable, approvable plan document. Edit it before \
-         approving.\n\n\
+         {reason}. This is a placeholder plan, recorded so the Session still has an \
+         explicit, editable, approvable plan document. Edit it before approving.\n\n\
          ## Steps\n\
-         1. Review and rewrite this plan by hand, or configure a Planner model and re-run the Planner.\n\n\
+         1. Review and rewrite this plan by hand, or fix the model configuration and press Re-plan.\n\n\
          ---\n\
          Original task: {task}"
     )
@@ -398,7 +415,7 @@ fn verdict_for(findings: &[ReviewFinding], raw: &str) -> ReviewVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::SessionMode;
+    use crate::api::types::IsolationMode;
 
     fn test_runner() -> (RoleRunner, Arc<Persistence>, String) {
         let persistence = Arc::new(Persistence::new_in_memory().unwrap());
@@ -407,32 +424,32 @@ mod tests {
         let repo = persistence
             .connect_repo("/tmp/vibe-test-repo", None)
             .unwrap();
-        let mission = persistence
-            .create_mission(
+        let session = persistence
+            .create_session(
                 &repo.id,
                 "Quick fix",
                 "Fix a typo in the README",
-                SessionMode::Shared,
+                IsolationMode::Shared,
                 AutonomyLevel::CoPilot,
             )
             .unwrap();
-        (runner, persistence, mission.id)
+        (runner, persistence, session.id)
     }
 
     #[test]
     fn vibe_plan_is_already_approved() {
-        let (runner, _persistence, mission_id) = test_runner();
-        let plan = runner.generate_vibe_plan(&mission_id).unwrap();
+        let (runner, _persistence, session_id) = test_runner();
+        let plan = runner.generate_vibe_plan(&session_id).unwrap();
 
-        assert_eq!(plan.status, MissionPlanStatus::Approved);
+        assert_eq!(plan.status, SessionPlanStatus::Approved);
         assert_eq!(plan.approved_by.as_deref(), Some("vibe-preset"));
-        assert!(runner.implementer_is_gated(&mission_id).unwrap().is_none());
+        assert!(runner.implementer_is_gated(&session_id).unwrap().is_none());
     }
 
     #[test]
     fn vibe_plan_includes_the_task_description() {
-        let (runner, _persistence, mission_id) = test_runner();
-        let plan = runner.generate_vibe_plan(&mission_id).unwrap();
+        let (runner, _persistence, session_id) = test_runner();
+        let plan = runner.generate_vibe_plan(&session_id).unwrap();
         assert!(plan.content.contains("Fix a typo in the README"));
     }
 
@@ -517,10 +534,31 @@ mod tests {
 
     #[test]
     fn placeholder_plan_has_all_three_sections() {
-        let plan = placeholder_plan("Add OAuth", "wire up login");
+        let plan = placeholder_plan(
+            "Add OAuth",
+            "wire up login",
+            "No planning model is configured",
+        );
         assert!(plan.contains("## Requirements"));
         assert!(plan.contains("## Approach"));
         assert!(plan.contains("## Steps"));
         assert!(plan.contains("wire up login"));
+    }
+
+    /// A configured-but-failing model must not be reported as "not configured".
+    /// That message sent people to re-do settings that were already correct
+    /// while the real cause stayed in Core's log.
+    #[test]
+    fn a_failed_model_call_reports_the_real_reason_not_a_missing_config() {
+        let plan = placeholder_plan(
+            "Add OAuth",
+            "wire up login",
+            "The planning model was called but failed: Google returned 503 Service Unavailable",
+        );
+        assert!(plan.contains("503 Service Unavailable"), "got: {plan}");
+        assert!(
+            !plan.contains("No planning model is configured"),
+            "must not claim the model is unconfigured when it was called"
+        );
     }
 }

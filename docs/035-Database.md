@@ -14,16 +14,16 @@ one.
 |---|---|---|
 | `workspaces` | Workspace | Phase 0 |
 | `repo_channels` | Repo Channel | Phase 0 |
-| `missions` | Mission | Phase 0 |
+| `sessions` | Session | Phase 0 |
 | `messages` | Chat history | Phase 0 |
 | `skills` | Skills library | Phase 0 |
 | `mcp_servers` | MCP connector config | Phase 0 |
 | `settings` | Provider keys, per-role model config | Phase 0, extended each phase |
 | `github_configs` | GitHub bridge | Phase 1 |
-| `mission_plans` | Planner output + approval state | Phase 1 (this pass) |
-| `mission_reviews` | Reviewer output | Phase 1 (this pass) |
+| `session_plans` | Planner output + approval state | Phase 1 (this pass) |
+| `session_reviews` | Reviewer output | Phase 1 (this pass) |
 | `forge_configs` | GitLab/Bitbucket bridge | Phase 3 |
-| `tracker_links` | Jira/Linear Mission↔ticket links | Phase 3 |
+| `tracker_links` | Jira/Linear Session↔ticket links | Phase 3 |
 | `users` | Local accounts | Phase 3 |
 | `sessions` | Auth session tokens | Phase 3 |
 | `role_profiles` | Configurable role profiles | Phase 4 |
@@ -55,9 +55,9 @@ debuggability (a raw `SELECT` shows `"approved"`, not `2`) at a negligible stora
 ## Performance Targets
 
 Indexes exist on the query patterns actually used:
-`idx_missions_repo`, `idx_messages_mission`, `idx_messages_created`,
-`idx_reviews_mission`, `idx_sessions_user`, `idx_role_profiles_scope`,
-`idx_deployments_mission`, `idx_tracker_links_mission`, `idx_confidence_mission`.
+`idx_sessions_repo`, `idx_messages_session`, `idx_messages_created`,
+`idx_reviews_session`, `idx_sessions_user`, `idx_role_profiles_scope`,
+`idx_deployments_session`, `idx_tracker_links_session`, `idx_confidence_session`.
 
 ## Tradeoffs
 

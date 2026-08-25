@@ -2,7 +2,7 @@
 
 - **Date**: 2026-07-26
 - **Status**: Accepted
-- **Context**: Phase 0 implemented Anthropic-only routing in `cid-core/src/model/mod.rs` with simulated fallback. Phase 1 per Build Prompt Part 22 / Appendix A Part 22 requires: OpenAI and Google as foreground providers alongside Anthropic, plus one generic OpenAI-compatible endpoint slot (covers OpenRouter, Groq, Bedrock-compatible proxies, vLLM, self-hosted like Ollama, LM Studio, llama.cpp). Swappable mid-Mission (settings re-read each message) and selectable per role (Planner/Implementer/Reviewer can each use different provider/model). Settings already extended in `cid-core/src/api/types.rs` with fields: openai_api_key, openai_model, google_api_key, google_model, openai_compatible_endpoint, openai_compatible_api_key, openai_compatible_model, planner_provider/model, implementer_provider/model, reviewer_provider/model, github_token.
+- **Context**: Phase 0 implemented Anthropic-only routing in `cid-core/src/model/mod.rs` with simulated fallback. Phase 1 per Build Prompt Part 22 / Appendix A Part 22 requires: OpenAI and Google as foreground providers alongside Anthropic, plus one generic OpenAI-compatible endpoint slot (covers OpenRouter, Groq, Bedrock-compatible proxies, vLLM, self-hosted like Ollama, LM Studio, llama.cpp). Swappable mid-Session (settings re-read each message) and selectable per role (Planner/Implementer/Reviewer can each use different provider/model). Settings already extended in `cid-core/src/api/types.rs` with fields: openai_api_key, openai_model, google_api_key, google_model, openai_compatible_endpoint, openai_compatible_api_key, openai_compatible_model, planner_provider/model, implementer_provider/model, reviewer_provider/model, github_token.
 
 - **Decision**:
 
@@ -25,8 +25,8 @@
     - **Per-Role Selection**:
       - `resolve_for_role(role, settings)` checks planner_provider/model etc, parses provider string, returns ResolvedModelConfig with that role's model or inferred default.
       - `resolve_active_config(settings, preferred_role)` priority: preferred role override -> Implementer role -> Planner -> Reviewer -> first enabled provider by priority [Anthropic, OpenAI, Google, OpenAICompatible] -> fallback Anthropic default (triggers simulated response if no key).
-      - `process_message()` now delegates to `process_message_with_role()` with Implementer as default, but exposed `process_message_with_role(mission_id, content, role, app_state)` for future Planner/Implementer/Reviewer orchestration.
-      - Swappable mid-Mission: settings re-read fresh on every message via `persistence.get_settings()`.
+      - `process_message()` now delegates to `process_message_with_role()` with Implementer as default, but exposed `process_message_with_role(session_id, content, role, app_state)` for future Planner/Implementer/Reviewer orchestration.
+      - Swappable mid-Session: settings re-read fresh on every message via `persistence.get_settings()`.
 
     - **Known Models & list_models()**:
       - Constants: ANTHROPIC_MODELS (sonnet, haiku, opus), OPENAI_MODELS (gpt-4o, mini, turbo, o1, o1-mini), GOOGLE_MODELS (gemini 1.5 pro/flash, 2.0 flash exp, 8b), OPENAI_COMPAT_MODELS (llama-3.1-70b, 8b, mixtral, qwen)
@@ -36,7 +36,7 @@
 
     - **Provider Clients** (trait-like enum dispatch, not trait to keep simpler):
 
-      - **Anthropic**: POST https://api.anthropic.com/v1/messages, headers x-api-key, anthropic-version 2023-06-01, body with model, max_tokens 8192, system, messages, tools (read_file, write_file, edit_file, list_files, run_terminal, git_*), stream true. SSE parsing: lines `data: {type: content_block_delta, delta: {text}}`. Emits `mission.message.delta` per chunk and `mission.message.complete` on finish. Persists assistant placeholder message.
+      - **Anthropic**: POST https://api.anthropic.com/v1/messages, headers x-api-key, anthropic-version 2023-06-01, body with model, max_tokens 8192, system, messages, tools (read_file, write_file, edit_file, list_files, run_terminal, git_*), stream true. SSE parsing: lines `data: {type: content_block_delta, delta: {text}}`. Emits `session.message.delta` per chunk and `session.message.complete` on finish. Persists assistant placeholder message.
 
       - **OpenAI**: POST https://api.openai.com/v1/chat/completions, Authorization Bearer, body {model, messages (system+history+user), tools (OpenAI function format), tool_choice auto, stream true, stream_options include_usage, max_tokens 8192, temp 0.7}. Headers include HTTP-Referer https://cid.dev and X-Title CID for OpenRouter compatibility. SSE parsing: data JSON with choices[0].delta.content. Emits same delta/complete notifications.
 
@@ -44,13 +44,13 @@
 
       - **Google (Gemini)**: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key=API_KEY&alt=sse, body {contents (role user/model), systemInstruction {parts: [{text: system_prompt}]}, generationConfig {maxOutputTokens 8192, temp 0.7, topP 0.9}, tools {functionDeclarations}}. alt=sse makes it SSE similar to OpenAI. Parsing: candidates[].content.parts[].text. Emits delta/complete same as others.
 
-    - **Simulated Fallback**: If provider requires key and none found, or compatible endpoint missing, create assistant message with helpful text listing how to enable each provider, include per-role config hints, mention swappable mid-Mission, and emit mission.message.new. Returns Ok without calling API.
+    - **Simulated Fallback**: If provider requires key and none found, or compatible endpoint missing, create assistant message with helpful text listing how to enable each provider, include per-role config hints, mention swappable mid-Session, and emit session.message.new. Returns Ok without calling API.
 
-    - **Error Handling**: If API call fails (non-2xx), bail with status+body, then catch in process_message_with_role, persist error as assistant message, emit new notification, set mission status Review, return Ok (don't crash loop). Uses anyhow::Context and tracing::info/warn.
+    - **Error Handling**: If API call fails (non-2xx), bail with status+body, then catch in process_message_with_role, persist error as assistant message, emit new notification, set session status Review, return Ok (don't crash loop). Uses anyhow::Context and tracing::info/warn.
 
     - **Streaming Best Practices**: reqwest Client built with 300s timeout, 10s connect timeout, user-agent cid-core/1.0. Keeps http_client in ModelManager Arc. Uses bytes_stream() + futures::StreamExt, buffers leftover for split lines, handles data: prefix, [DONE], ignores keep-alive.
 
-    - **Notifications**: Helper functions emit_delta and emit_complete construct JsonRpcNotification with method mission.message.delta / complete and params {mission_id, message_id, delta/content}. Same as Anthropic path required by task.
+    - **Notifications**: Helper functions emit_delta and emit_complete construct JsonRpcNotification with method session.message.delta / complete and params {session_id, message_id, delta/content}. Same as Anthropic path required by task.
 
   - **Settings Router Enhancement**: `cid-core/src/api/router.rs`
     - handle_settings_get now tries keyring for all provider keys (anthropic, openai, google, compatible) with migration path, redacts all keys via redact_key helper, returns has_* flags for each provider.
@@ -64,13 +64,13 @@
 
   - Trait-based ProviderClient with async trait streaming: would be cleaner but requires async_trait and boxing, increased complexity for Phase 1; enum dispatch simpler, still allows swappable.
   - Unified OpenAI client for all OpenAI-compatible including Anthropic via proxy: rejected because Anthropic API shape differs significantly (x-api-key header, system separate, tool_use blocks).
-  - Caching settings in memory: rejected because requirement says swappable mid-Mission, must re-read each call.
+  - Caching settings in memory: rejected because requirement says swappable mid-Session, must re-read each call.
   - Only returning enabled providers in list_models: considered but we return all with available flag for discoverability; UI can show disabled with reason.
   - Using `tiktoken` for token counting: deferred to Phase 1 metrics tab, not needed for routing.
 
 - **Consequences**:
 
-  - Phase 1 multi-provider routing complete: Planner/Implementer/Reviewer can each have different provider/model via Settings (planner_provider/model, etc). Changing Settings mid-Mission affects next message.
+  - Phase 1 multi-provider routing complete: Planner/Implementer/Reviewer can each have different provider/model via Settings (planner_provider/model, etc). Changing Settings mid-Session affects next message.
   - One generic OpenAI-compatible slot satisfies OpenRouter, Groq, Bedrock-compatible proxies, vLLM, Ollama (http://localhost:11434/v1), LM Studio (http://localhost:1234/v1), llama.cpp (http://localhost:8080/v1).
   - list_models now returns models from all enabled providers based on API key existence or endpoint configured, with available flag.
   - Streaming for each provider emits same notifications as Anthropic path (delta, complete) so frontend doesn't need provider-specific handling.

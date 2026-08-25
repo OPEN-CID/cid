@@ -35,7 +35,7 @@ Corrected here from the real current code, not from the prior draft of this doc.
   ring buffer (last 200) and, if a log path was configured, appends it as a JSON line to
   disk so reports survive a restart. Queryable via `observability.crashes.list`.
 - **Action History** (`013-Repository-Health.md`): every tool call, terminal command, and
-  approval decision is queryable per-Mission — a complementary, domain-level audit trail
+  approval decision is queryable per-Session — a complementary, domain-level audit trail
   alongside the crash log and metrics.
 
 ## Non-Goals
