@@ -17,7 +17,12 @@ export default defineConfig({
       // forces a full page reload, which wipes the in-memory store and
       // deselects the repo mid-Mission. Observed live, not theorized.
       // `.cid` is CID's own runtime state, never app source.
-      ignored: ["**/.cid/**"],
+      // `target/**` for the same class of reason, found by the E2E run
+      // crashing the dev server with `EBUSY: resource busy or locked, watch
+      // 'target/debug/deps/cid_core.exe'`: vite's watcher holds the binary open
+      // exactly while cargo is rewriting it. Rust build output is never app
+      // source, so watching it can only ever hurt.
+      ignored: ["**/.cid/**", "**/target/**"],
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
