@@ -46,7 +46,7 @@ impl Metrics {
     }
 
     /// A counter split by a label value, e.g. rpc method name — rendered as
-    /// `cid_rpc_requests_total{method="mission.create"} 3`.
+    /// `cid_rpc_requests_total{method="session.create"} 3`.
     pub fn inc_labeled(&self, name: &'static str, label: &str) {
         let key = (name, label.to_string());
         {
@@ -212,14 +212,14 @@ mod tests {
     #[test]
     fn metrics_render_in_prometheus_text_format() {
         let m = Metrics::new();
-        m.inc_counter("cid_missions_created_total");
-        m.inc_counter("cid_missions_created_total");
-        m.inc_labeled("cid_rpc_requests_total", "mission.create");
+        m.inc_counter("cid_sessions_created_total");
+        m.inc_counter("cid_sessions_created_total");
+        m.inc_labeled("cid_rpc_requests_total", "session.create");
         m.set_gauge("cid_ws_connections_current", 3);
 
         let text = m.render_prometheus();
-        assert!(text.contains("cid_missions_created_total 2"));
-        assert!(text.contains("cid_rpc_requests_total{method=\"mission.create\"} 1"));
+        assert!(text.contains("cid_sessions_created_total 2"));
+        assert!(text.contains("cid_rpc_requests_total{method=\"session.create\"} 1"));
         assert!(text.contains("cid_ws_connections_current 3"));
     }
 

@@ -1,9 +1,9 @@
 # CID — Collaborative Intelligent Development
 
-> A chat-native, multi-agent software engineering platform — Slack-shaped mission control for shipping code with AI agents.
+> A chat-native, multi-agent software engineering platform — Slack-shaped session control for shipping code with AI agents.
 
-CID organizes work as **Workspaces → Repo Channels → Mission Threads**, the same mental
-model as Slack/Teams. A Mission ("Build OAuth," "Fix #245") runs in an isolated git
+CID organizes work as **Workspaces → Repo Channels → Session Threads**, the same mental
+model as Slack/Teams. A Session ("Build OAuth," "Fix #245") runs in an isolated git
 worktree (default) or a shared clone, with a Planner → Implementer → Reviewer loop,
 per-tool approval at Manual/Co-Pilot autonomy or a governed, allow-listed Autonomous
 mode, inline diff review, a real terminal, and MCP tool access — all inside the thread,
@@ -18,7 +18,7 @@ are all thin clients over that one API — there is no separate backend to keep 
 
 **Agent system** — Planner/Implementer/Reviewer as prompt+model+tool-permission
 configurations (not a fixed cast of independent agents), plus ad hoc subagents for
-scoped parallel work. Three autonomy levels per Mission: Manual (you drive), Co-Pilot
+scoped parallel work. Three autonomy levels per Session: Manual (you drive), Co-Pilot
 (every tool call shown and approved, the default), Autonomous (runs a governed,
 per-repo command allow-list without per-step approval; a human still reviews the final
 diff). A **vibe-coding preset** skips the Planner's ceremony for quick, low-stakes
@@ -30,12 +30,12 @@ validation, architecture-rule validation, test impact, duplicate detection, depe
 impact, semantic similarity, existing-reuse) surfaced inline before you approve a change.
 
 **Git, diff & terminal** — `git2-rs`-backed worktrees, per-hunk accept/reject (not just
-whole-file), atomic auto-commits per logical change, a real native PTY per Mission with
+whole-file), atomic auto-commits per logical change, a real native PTY per Session with
 default secret redaction in both the live view and stored history.
 
 **Context & code intelligence** — opt-in Tree-sitter structural indexing, `AGENTS.md`
 (Linux Foundation/AAIF standard) and `SKILL.md` (Anthropic Agent Skills) layered
-Workspace → Repo Channel → Mission Thread with nearest-scope-wins resolution, a
+Workspace → Repo Channel → Session Thread with nearest-scope-wins resolution, a
 test-impact graph and a documentation graph once the semantic engine is enabled, plus
 hybrid (BM25 + embedding) search via Tantivy.
 
@@ -59,7 +59,7 @@ deliberate, permanent scope boundary, not a gap; see `docs/041-Roadmap.md`.
 
 **Surfaces** — desktop (Tauri v2, macOS/Windows), web (same bundle, headless Core), a
 mobile companion app (approval/monitoring, not full editing), and a CLI/TUI
-(`cid-tui`, `ratatui`-based) for chat, mission status, and tool-call/plan approval from a
+(`cid-tui`, `ratatui`-based) for chat, session status, and tool-call/plan approval from a
 terminal.
 
 **Repository Health & observability** — a signal-based dashboard over the repo's own
@@ -141,7 +141,7 @@ as one path to a running instance; building from source is the other.
 ## API contract
 
 `cid-core/src/api/types.rs` and `cid-core/src/api/router.rs` are the authoritative
-source for the full JSON-RPC method list — it is large (workspace/repo/mission/message,
+source for the full JSON-RPC method list — it is large (workspace/repo/session/message,
 git, PTY, MCP, file, skills, settings, model, autonomy allow-lists, auth, governance,
 forges, trackers, confidence scoring, decisions/ADRs, repo health, observability, and
 more) and grows with the product; rather than duplicate it here and let it drift, read

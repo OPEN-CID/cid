@@ -71,7 +71,7 @@ impl JsonRpcResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionMode {
+pub enum IsolationMode {
     Worktree,
     Shared,
 }
@@ -86,7 +86,7 @@ pub enum AutonomyLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum MissionStatus {
+pub enum SessionStatus {
     Created,
     Planning,
     Running,
@@ -101,20 +101,20 @@ pub enum MissionStatus {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum MissionPlanStatus {
+pub enum SessionPlanStatus {
     Draft,
     Approved,
     Rejected,
 }
 
-/// The editable plan document a Mission's Planner produces, and the human
+/// The editable plan document a Session's Planner produces, and the human
 /// approves, before the Implementer is allowed to run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MissionPlan {
+pub struct SessionPlan {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub content: String,
-    pub status: MissionPlanStatus,
+    pub status: SessionPlanStatus,
     pub approved_by: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -145,24 +145,24 @@ pub struct ReviewFinding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MissionReview {
+pub struct SessionReview {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub verdict: ReviewVerdict,
     pub findings: Vec<ReviewFinding>,
     pub raw_output: String,
     pub created_at: DateTime<Utc>,
 }
 
-/// A snapshot of a Mission's worktree at a point in time (review_prompt.md
-/// §3.2) — built on the worktree every Mission already has, not a parallel
+/// A snapshot of a Session's worktree at a point in time (review_prompt.md
+/// §3.2) — built on the worktree every Session already has, not a parallel
 /// snapshot store. `sha` is the worktree's HEAD commit at checkpoint time,
 /// after committing any then-uncommitted changes first, so a rewind is
 /// always a clean `git reset --hard` back to a fully-captured state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MissionCheckpoint {
+pub struct SessionCheckpoint {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub sha: String,
     pub label: String,
     pub created_at: DateTime<Utc>,
@@ -193,22 +193,22 @@ pub struct RepoChannel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Mission {
+pub struct Session {
     pub id: String,
     pub repo_channel_id: String,
     pub title: String,
     pub task_description: String,
-    pub session_mode: SessionMode,
+    pub isolation_mode: IsolationMode,
     pub autonomy_level: AutonomyLevel,
-    pub status: MissionStatus,
+    pub status: SessionStatus,
     pub worktree_path: Option<String>,
     pub branch_name: Option<String>,
     pub base_branch: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    /// Per-mission model override (task 3): when set, takes precedence over
+    /// Per-session model override (task 3): when set, takes precedence over
     /// the matching role's global provider/model setting for every turn this
-    /// Mission runs — see `ModelManager::apply_mission_model_override`.
+    /// Session runs — see `ModelManager::apply_session_model_override`.
     #[serde(default)]
     pub model_provider: Option<String>,
     #[serde(default)]
@@ -235,7 +235,7 @@ pub struct ToolCall {
     pub approved: Option<bool>,
     /// review_prompt.md §1.2 point 3: set when this call's arguments were
     /// built in a turn where untrusted repo content (an approved AGENTS.md,
-    /// or a prior file/diff/MCP read this Mission) was present in context —
+    /// or a prior file/diff/MCP read this Session) was present in context —
     /// a provenance marker for the History panel, not a guarantee the
     /// content actually influenced this specific call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,7 +256,7 @@ pub enum ToolCallStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub role: MessageRole,
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
@@ -297,10 +297,15 @@ pub struct GitDiffFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyInstance {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub cols: u16,
     pub rows: u16,
     pub created_at: DateTime<Utc>,
+    /// The directory the shell was actually started in. Reported rather than
+    /// inferred so the UI can state where a command will run instead of
+    /// guessing from the Session — the two are not always the same.
+    pub cwd: String,
+    pub workdir: PtyWorkdir,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,7 +504,7 @@ pub enum AcpHandoffStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpHandoff {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub editor_id: String,
     pub status: AcpHandoffStatus,
     pub worktree_path: String,
@@ -647,24 +652,24 @@ pub struct ConnectRepoParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateMissionParams {
+pub struct CreateSessionParams {
     pub repo_channel_id: String,
     pub title: String,
-    /// Optional (task 2): a Mission must never actually run with an empty
+    /// Optional (task 2): a Session must never actually run with an empty
     /// task — the Planner prompt depends on it — so an absent/blank value
-    /// falls back to `title` in `handle_mission_create`, not here.
+    /// falls back to `title` in `handle_session_create`, not here.
     #[serde(default)]
     pub task: String,
-    pub session_mode: Option<SessionMode>,
+    pub isolation_mode: Option<IsolationMode>,
     pub autonomy_level: Option<AutonomyLevel>,
-    /// Vibe-coding preset (Phase 5): a lightweight Mission Thread
+    /// Vibe-coding preset (Phase 5): a lightweight Session Thread
     /// configuration for quick, low-stakes changes — a minimal plan is
-    /// generated and auto-approved so the Mission starts executing
+    /// generated and auto-approved so the Session starts executing
     /// immediately. Tool-call approval (Co-Pilot), diffs, and History are
     /// unaffected: this shortens the Planner ceremony, not code review.
     #[serde(default)]
     pub vibe: bool,
-    /// Per-mission model override (task 3) — see `Mission::model_provider`.
+    /// Per-session model override (task 3) — see `Session::model_provider`.
     #[serde(default)]
     pub model_provider: Option<String>,
     #[serde(default)]
@@ -673,7 +678,7 @@ pub struct CreateMissionParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMessageParams {
-    pub mission_id: String,
+    pub session_id: String,
     pub content: String,
 }
 
@@ -703,9 +708,29 @@ pub struct WorktreeCreateParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyCreateParams {
-    pub mission_id: String,
+    pub session_id: String,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    /// Which working tree the shell starts in. Absent means `Session`, which is
+    /// the behaviour every existing client already relies on.
+    #[serde(default)]
+    pub workdir: PtyWorkdir,
+}
+
+/// A terminal is the one place a human can change files outside the agent's
+/// control, so *which tree it opens in* is a real decision rather than an
+/// implementation detail.
+///
+/// `Session` keeps the shell inside the Session's own worktree, where its
+/// commands are captured by the Session's checkpoints and show up in its diff.
+/// `Repo` opens the main checkout, which is outside that isolation — useful for
+/// inspecting the base branch, but nothing done there belongs to the Session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PtyWorkdir {
+    #[default]
+    Session,
+    Repo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -748,7 +773,7 @@ pub struct FileWriteParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolApprovalParams {
-    pub mission_id: String,
+    pub session_id: String,
     pub tool_call_id: String,
     pub approved: bool,
 }
@@ -780,7 +805,7 @@ pub struct SkillBundleListParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpHandoffParams {
-    pub mission_id: String,
+    pub session_id: String,
     pub editor_id: String,
 }
 
@@ -806,10 +831,10 @@ pub struct GitHubConnectParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitHubIssueToMissionParams {
+pub struct GitHubIssueToSessionParams {
     pub repo_path: String,
     pub issue_number: u64,
-    pub session_mode: Option<SessionMode>,
+    pub isolation_mode: Option<IsolationMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -887,7 +912,7 @@ pub struct BackgroundTask {
     pub id: String,
     pub task_type: BackgroundTaskType,
     pub repo_channel_id: String,
-    pub mission_id: Option<String>,
+    pub session_id: Option<String>,
     pub input: serde_json::Value,
     pub status: BackgroundTaskStatus,
     pub result: Option<serde_json::Value>,
@@ -902,7 +927,7 @@ pub struct BackgroundTask {
 pub struct BackgroundTaskSubmitParams {
     pub task_type: BackgroundTaskType,
     pub repo_channel_id: String,
-    pub mission_id: Option<String>,
+    pub session_id: Option<String>,
     pub input: serde_json::Value,
 }
 
@@ -930,7 +955,7 @@ pub enum SubagentStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subagent {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub role: SubagentRole,
     pub prompt: String,
     pub status: SubagentStatus,
@@ -953,7 +978,7 @@ pub struct SubagentResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentSpawnParams {
-    pub mission_id: String,
+    pub session_id: String,
     pub role: SubagentRole,
     pub prompt: String,
     pub tool_permissions: Option<Vec<String>>,
@@ -969,7 +994,7 @@ pub struct SubagentCancelParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentListParams {
-    pub mission_id: String,
+    pub session_id: String,
 }
 
 // ============ Phase 2: Slack Bridge ============
@@ -1028,7 +1053,7 @@ pub struct SlackTrigger {
     pub triggered_at: DateTime<Utc>,
     pub parsed_command: Option<String>,
     pub parsed_args: Option<String>,
-    pub mission_id: Option<String>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

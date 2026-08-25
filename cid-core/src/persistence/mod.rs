@@ -45,11 +45,19 @@ const MIGRATIONS: &[&str] = &[
     // SkillsManager::build_system_context, which refuses to load it into
     // the system prompt while this is 0.
     "ALTER TABLE repo_channels ADD COLUMN agents_md_approved INTEGER NOT NULL DEFAULT 0",
-    // Per-mission model override: lets a single Mission pin its own
+    // Per-Session model override: lets a single Session pin its own
     // provider/model instead of inheriting the role's global setting — see
-    // `ModelManager::apply_mission_model_override`.
-    "ALTER TABLE missions ADD COLUMN model_provider TEXT",
-    "ALTER TABLE missions ADD COLUMN model_id TEXT",
+    // `ModelManager::apply_session_model_override`.
+    //
+    // These two said `missions` when they were released. Editing a released
+    // migration is normally forbidden, and this is the one case where leaving
+    // it alone would be the bug: `rename_mission_schema_to_session` runs
+    // before any migration does, so by the time these execute the table is
+    // always called `sessions` — on an old database because it was just
+    // renamed, on a new one because that is what the base batch created.
+    // Against `missions` they would now fail with "no such table".
+    "ALTER TABLE sessions ADD COLUMN model_provider TEXT",
+    "ALTER TABLE sessions ADD COLUMN model_id TEXT",
     // The 2026-08 catalog refresh (ModelManager's ANTHROPIC_MODELS) retired
     // every `claude-3-*`/`claude-2*`/`claude-instant*` id. Changing the
     // schema DEFAULT and the seed INSERT only affects *new* databases — an
@@ -98,6 +106,99 @@ const MIGRATIONS: &[&str] = &[
         OR reviewer_model LIKE 'claude-2%' \
         OR reviewer_model LIKE 'claude-instant%'",
 ];
+
+/// Rename the pre-2026-08-21 "Mission" schema to "Session", *before* the base
+/// `CREATE TABLE IF NOT EXISTS` batch runs.
+///
+/// Deliberately not entries in `MIGRATIONS`, and the ordering is the reason.
+/// `ALTER TABLE ... RENAME` is not idempotent, and the base batch runs on
+/// every open — so a rename expressed as a normal migration hits one of two
+/// failure modes depending on which name the base batch uses:
+///
+/// - base batch on the **new** names: an existing database would have an empty
+///   `auth_sessions` created before the rename could move the real one there,
+///   and the rename then fails with "table already exists";
+/// - base batch on the **old** names: after the rename succeeded once, the very
+///   next open re-creates an empty `missions` table beside the real `sessions`,
+///   forever.
+///
+/// Running first, guarded by what is actually in `sqlite_master`, avoids both:
+/// on a fresh database every guard is false and this is a no-op, and on an
+/// already-migrated one it is a no-op too. The base batch below therefore
+/// states the current names, and is the single source of truth for a new
+/// install.
+///
+/// `auth_sessions` is renamed first because `missions` cannot take the
+/// `sessions` name until the auth table has vacated it.
+fn rename_mission_schema_to_session(conn: &Connection) -> Result<()> {
+    let table_exists = |name: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![name],
+            |row| row.get::<_, i64>(0),
+        )? > 0)
+    };
+    let column_exists = |table: &str, column: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            params![column],
+            |row| row.get::<_, i64>(0),
+        )? > 0)
+    };
+
+    // The auth table is identified by its `token` column: after the Session
+    // rename a table called `sessions` also exists, and it is a different
+    // thing entirely. Renaming by name alone would move the wrong one.
+    if table_exists("sessions")? && column_exists("sessions", "token")? {
+        conn.execute_batch("ALTER TABLE sessions RENAME TO auth_sessions")?;
+    }
+    if table_exists("missions")? && !table_exists("sessions")? {
+        conn.execute_batch("ALTER TABLE missions RENAME TO sessions")?;
+    }
+
+    // Column renames. `RENAME COLUMN` also rewrites the references SQLite
+    // keeps in dependent objects, and the FK clauses pointing at the renamed
+    // tables were rewritten by `RENAME TO` above, so neither is restated here.
+    for (table, from, to) in [
+        ("sessions", "session_mode", "isolation_mode"),
+        ("messages", "mission_id", "session_id"),
+        ("mission_plans", "mission_id", "session_id"),
+        ("confidence_scores", "mission_id", "session_id"),
+        ("mission_reviews", "mission_id", "session_id"),
+        ("mission_checkpoints", "mission_id", "session_id"),
+        ("tracker_links", "mission_id", "session_id"),
+        ("deployment_records", "mission_id", "session_id"),
+    ] {
+        if table_exists(table)? && column_exists(table, from)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} RENAME COLUMN {from} TO {to}"))?;
+        }
+    }
+
+    for (from, to) in [
+        ("mission_plans", "session_plans"),
+        ("mission_reviews", "session_reviews"),
+        ("mission_checkpoints", "session_checkpoints"),
+    ] {
+        if table_exists(from)? && !table_exists(to)? {
+            conn.execute_batch(&format!("ALTER TABLE {from} RENAME TO {to}"))?;
+        }
+    }
+
+    // Indexes follow their table through a rename, so these only retire the
+    // now-misleading index *names*; the base batch recreates the new ones.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_sessions_user;
+         DROP INDEX IF EXISTS idx_reviews_mission;
+         DROP INDEX IF EXISTS idx_missions_repo;
+         DROP INDEX IF EXISTS idx_messages_mission;
+         DROP INDEX IF EXISTS idx_checkpoints_mission;
+         DROP INDEX IF EXISTS idx_confidence_mission;
+         DROP INDEX IF EXISTS idx_tracker_links_mission;
+         DROP INDEX IF EXISTS idx_deployments_mission;",
+    )?;
+
+    Ok(())
+}
 
 /// True for SQLite's error when an `ALTER TABLE ... ADD COLUMN` targets a
 /// column that already exists — the one error `run_migrations` tolerates,
@@ -192,6 +293,11 @@ impl Persistence {
 
     fn init_schema(&self) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
+        // Before anything is created: an older database still spells these
+        // tables `missions` and `sessions`(auth), and the batch below states
+        // the current names. See that function's comment for why this cannot
+        // be an ordinary entry in MIGRATIONS.
+        rename_mission_schema_to_session(&conn)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS workspaces (
@@ -212,12 +318,12 @@ impl Persistence {
                 FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
             );
 
-            CREATE TABLE IF NOT EXISTS missions (
+            CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 repo_channel_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 task_description TEXT NOT NULL,
-                session_mode TEXT NOT NULL,
+                isolation_mode TEXT NOT NULL,
                 autonomy_level TEXT NOT NULL,
                 status TEXT NOT NULL,
                 worktree_path TEXT,
@@ -232,13 +338,13 @@ impl Persistence {
 
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tool_calls TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 is_streaming INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (mission_id) REFERENCES missions(id)
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
 
             CREATE TABLE IF NOT EXISTS skills (
@@ -295,8 +401,8 @@ impl Persistence {
                 updated_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS mission_plans (
-                mission_id TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS session_plans (
+                session_id TEXT PRIMARY KEY,
                 id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -307,7 +413,7 @@ impl Persistence {
 
             CREATE TABLE IF NOT EXISTS confidence_scores (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 patch_id TEXT NOT NULL,
                 target_file TEXT NOT NULL,
                 overall REAL NOT NULL,
@@ -315,26 +421,26 @@ impl Persistence {
                 created_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_confidence_mission ON confidence_scores(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_confidence_session ON confidence_scores(session_id);
 
-            CREATE TABLE IF NOT EXISTS mission_reviews (
+            CREATE TABLE IF NOT EXISTS session_reviews (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 verdict TEXT NOT NULL,
                 findings TEXT NOT NULL,
                 raw_output TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS mission_checkpoints (
+            CREATE TABLE IF NOT EXISTS session_checkpoints (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 sha TEXT NOT NULL,
                 label TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_checkpoints_mission ON mission_checkpoints(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON session_checkpoints(session_id);
 
             CREATE TABLE IF NOT EXISTS forge_configs (
                 repo_path TEXT PRIMARY KEY,
@@ -348,20 +454,20 @@ impl Persistence {
 
             CREATE TABLE IF NOT EXISTS tracker_links (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 tracker TEXT NOT NULL,
                 issue_key TEXT NOT NULL,
                 url TEXT NOT NULL,
                 title TEXT,
                 created_at TEXT NOT NULL,
-                UNIQUE(mission_id, tracker, issue_key)
+                UNIQUE(session_id, tracker, issue_key)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tracker_links_mission ON tracker_links(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_tracker_links_session ON tracker_links(session_id);
 
             CREATE TABLE IF NOT EXISTS deployment_records (
                 id TEXT PRIMARY KEY,
-                mission_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
                 environment TEXT NOT NULL,
                 commit_or_tag TEXT NOT NULL,
                 ci_run_url TEXT,
@@ -370,7 +476,7 @@ impl Persistence {
                 deployed_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_deployments_mission ON deployment_records(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_deployments_session ON deployment_records(session_id);
 
             CREATE TABLE IF NOT EXISTS role_profiles (
                 id TEXT PRIMARY KEY,
@@ -398,17 +504,17 @@ impl Persistence {
                 updated_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS sessions (
+            CREATE TABLE IF NOT EXISTS auth_sessions (
                 token TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
-            CREATE INDEX IF NOT EXISTS idx_reviews_mission ON mission_reviews(mission_id);
-            CREATE INDEX IF NOT EXISTS idx_missions_repo ON missions(repo_channel_id);
-            CREATE INDEX IF NOT EXISTS idx_messages_mission ON messages(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_reviews_session ON session_reviews(session_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo_channel_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
             "#,
         )?;
@@ -458,9 +564,9 @@ impl Persistence {
     /// Connects (or reconnects) a repo by filesystem path. `path` is
     /// `UNIQUE`, so a reconnect must update the existing row in place rather
     /// than mint a fresh id — `INSERT OR REPLACE` would delete-then-reinsert
-    /// on a `path` conflict, and that delete violates the `missions.
-    /// repo_channel_id` foreign key for any Mission already created against
-    /// this repo, breaking every existing Mission the moment the user
+    /// on a `path` conflict, and that delete violates the `sessions.
+    /// repo_channel_id` foreign key for any Session already created against
+    /// this repo, breaking every existing Session the moment the user
     /// reconnects the same repo (e.g. after restarting Core).
     pub fn connect_repo(&self, path: &str, workspace_id: Option<&str>) -> Result<RepoChannel> {
         let ws_id = workspace_id.unwrap_or("default");
@@ -562,15 +668,15 @@ impl Persistence {
     /// Removes a repo channel and everything scoped to it, in one transaction.
     ///
     /// This used to be a bare `DELETE FROM repo_channels`, which meant that as
-    /// soon as a channel had a single Mission, disconnecting it failed with
-    /// `FOREIGN KEY constraint failed` (`missions.repo_channel_id`) — so a repo
+    /// soon as a channel had a single Session, disconnecting it failed with
+    /// `FOREIGN KEY constraint failed` (`sessions.repo_channel_id`) — so a repo
     /// could never be removed once it had been used at all. Found by trying to
     /// clear real channels out of a real install, not by any test: the repo
     /// list had accumulated 15 dead entries that the UI had no way to remove.
     ///
-    /// Only `messages` and `missions` have declared foreign keys, but the other
-    /// mission-scoped tables are cleared too — without this they would be
-    /// silently orphaned rows keyed to a mission id that no longer exists.
+    /// Only `messages` and `sessions` have declared foreign keys, but the other
+    /// session-scoped tables are cleared too — without this they would be
+    /// silently orphaned rows keyed to a session id that no longer exists.
     ///
     /// Nothing on disk is touched: the working tree, and any worktrees created
     /// under it, are deliberately left alone. Disconnecting is an act of
@@ -579,20 +685,20 @@ impl Persistence {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
-        const MISSION_SCOPED_TABLES: &[&str] = &[
+        const SESSION_SCOPED_TABLES: &[&str] = &[
             "messages",
-            "mission_plans",
+            "session_plans",
             "confidence_scores",
-            "mission_reviews",
-            "mission_checkpoints",
+            "session_reviews",
+            "session_checkpoints",
             "tracker_links",
             "deployment_records",
         ];
-        for table in MISSION_SCOPED_TABLES {
+        for table in SESSION_SCOPED_TABLES {
             tx.execute(
                 &format!(
-                    "DELETE FROM {table} WHERE mission_id IN \
-                     (SELECT id FROM missions WHERE repo_channel_id = ?1)"
+                    "DELETE FROM {table} WHERE session_id IN \
+                     (SELECT id FROM sessions WHERE repo_channel_id = ?1)"
                 ),
                 params![id],
             )
@@ -600,7 +706,7 @@ impl Persistence {
         }
 
         tx.execute(
-            "DELETE FROM missions WHERE repo_channel_id = ?1",
+            "DELETE FROM sessions WHERE repo_channel_id = ?1",
             params![id],
         )?;
         tx.execute("DELETE FROM repo_channels WHERE id = ?1", params![id])?;
@@ -609,19 +715,19 @@ impl Persistence {
         Ok(())
     }
 
-    // Missions
-    pub fn create_mission(
+    // Sessions
+    pub fn create_session(
         &self,
         repo_channel_id: &str,
         title: &str,
         task: &str,
-        session_mode: SessionMode,
+        isolation_mode: IsolationMode,
         autonomy_level: AutonomyLevel,
-    ) -> Result<Mission> {
+    ) -> Result<Session> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let session_str = serde_json::to_string(&session_mode)?
+        let session_str = serde_json::to_string(&isolation_mode)?
             .trim_matches('"')
             .to_string();
         let autonomy_str = serde_json::to_string(&autonomy_level)?
@@ -630,81 +736,81 @@ impl Persistence {
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO missions (id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8)",
+            "INSERT INTO sessions (id, repo_channel_id, title, task_description, isolation_mode, autonomy_level, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8)",
             params![id, repo_channel_id, title, task, session_str, autonomy_str, now_str, now_str],
         )?;
         drop(conn);
-        self.get_mission(&id)
+        self.get_session(&id)
     }
 
-    pub fn list_missions(&self, repo_channel_id: Option<&str>) -> Result<Vec<Mission>> {
+    pub fn list_sessions(&self, repo_channel_id: Option<&str>) -> Result<Vec<Session>> {
         let conn = self.conn.lock().unwrap();
         let (sql, param): (String, Option<String>) = if let Some(rc_id) = repo_channel_id {
-            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions WHERE repo_channel_id = ? ORDER BY created_at DESC".to_string(), Some(rc_id.to_string()))
+            ("SELECT id, repo_channel_id, title, task_description, isolation_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM sessions WHERE repo_channel_id = ? ORDER BY created_at DESC".to_string(), Some(rc_id.to_string()))
         } else {
-            ("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions ORDER BY created_at DESC".to_string(), None)
+            ("SELECT id, repo_channel_id, title, task_description, isolation_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM sessions ORDER BY created_at DESC".to_string(), None)
         };
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<Mission> = if let Some(rc) = param {
-            let mapped = stmt.query_map(params![rc], parse_mission_row)?;
+        let rows: Vec<Session> = if let Some(rc) = param {
+            let mapped = stmt.query_map(params![rc], parse_session_row)?;
             mapped.filter_map(|r| r.ok().and_then(|opt| opt)).collect()
         } else {
-            let mapped = stmt.query_map([], parse_mission_row)?;
+            let mapped = stmt.query_map([], parse_session_row)?;
             mapped.filter_map(|r| r.ok().and_then(|opt| opt)).collect()
         };
         Ok(rows)
     }
 
-    pub fn get_mission(&self, id: &str) -> Result<Mission> {
+    pub fn get_session(&self, id: &str) -> Result<Session> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM missions WHERE id = ?")?;
-        let mission = stmt
+        let mut stmt = conn.prepare("SELECT id, repo_channel_id, title, task_description, isolation_mode, autonomy_level, status, worktree_path, branch_name, base_branch, created_at, updated_at, model_provider, model_id FROM sessions WHERE id = ?")?;
+        let session = stmt
             .query_row(params![id], |row| {
-                parse_mission_row(row).map(|opt| opt.expect("mission parse"))
+                parse_session_row(row).map(|opt| opt.expect("session parse"))
             })
-            .with_context(|| format!("No mission with id {id}"))?;
-        Ok(mission)
+            .with_context(|| format!("No session with id {id}"))?;
+        Ok(session)
     }
 
-    pub fn update_mission_worktree(
+    pub fn update_session_worktree(
         &self,
         id: &str,
         worktree_path: Option<String>,
         branch_name: Option<String>,
-    ) -> Result<Mission> {
+    ) -> Result<Session> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE missions SET worktree_path = ?1, branch_name = ?2, updated_at = ?3 WHERE id = ?4",
+            "UPDATE sessions SET worktree_path = ?1, branch_name = ?2, updated_at = ?3 WHERE id = ?4",
             params![worktree_path, branch_name, now, id],
         )?;
         drop(conn);
-        self.get_mission(id)
+        self.get_session(id)
     }
 
-    /// Sets or clears this Mission's per-mission model override (task 3).
-    /// Called once, right after creation, when `CreateMissionParams` carried
+    /// Sets or clears this Session's per-session model override (task 3).
+    /// Called once, right after creation, when `CreateSessionParams` carried
     /// `model_provider`/`model_id` — kept as a separate setter rather than a
-    /// `create_mission` parameter so the ~18 existing call sites across the
+    /// `create_session` parameter so the ~18 existing call sites across the
     /// codebase don't all need updating for a feature most of them don't use.
-    pub fn update_mission_model(
+    pub fn update_session_model(
         &self,
         id: &str,
         model_provider: Option<String>,
         model_id: Option<String>,
-    ) -> Result<Mission> {
+    ) -> Result<Session> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE missions SET model_provider = ?1, model_id = ?2, updated_at = ?3 WHERE id = ?4",
+            "UPDATE sessions SET model_provider = ?1, model_id = ?2, updated_at = ?3 WHERE id = ?4",
             params![model_provider, model_id, now, id],
         )?;
         drop(conn);
-        self.get_mission(id)
+        self.get_session(id)
     }
 
-    pub fn update_mission_status(&self, id: &str, status: MissionStatus) -> Result<Mission> {
+    pub fn update_session_status(&self, id: &str, status: SessionStatus) -> Result<Session> {
         // Convert to snake_case via serde
         let status_str = serde_json::to_string(&status)?
             .trim_matches('"')
@@ -712,17 +818,17 @@ impl Persistence {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "UPDATE missions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status_str, now, id],
         )?;
         drop(conn);
-        self.get_mission(id)
+        self.get_session(id)
     }
 
     // Messages
     pub fn create_message(
         &self,
-        mission_id: &str,
+        session_id: &str,
         role: MessageRole,
         content: &str,
         tool_calls: Vec<ToolCall>,
@@ -735,13 +841,13 @@ impl Persistence {
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages (id, mission_id, role, content, tool_calls, created_at, is_streaming) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![id, mission_id, role_str, content, tool_calls_json, now_str],
+            "INSERT INTO messages (id, session_id, role, content, tool_calls, created_at, is_streaming) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            params![id, session_id, role_str, content, tool_calls_json, now_str],
         )?;
         drop(conn);
         Ok(ChatMessage {
             id,
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             role,
             content: content.to_string(),
             tool_calls,
@@ -750,10 +856,10 @@ impl Persistence {
         })
     }
 
-    pub fn list_messages(&self, mission_id: &str) -> Result<Vec<ChatMessage>> {
+    pub fn list_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, mission_id, role, content, tool_calls, created_at, is_streaming FROM messages WHERE mission_id = ? ORDER BY created_at ASC")?;
-        let rows = stmt.query_map(params![mission_id], |row| {
+        let mut stmt = conn.prepare("SELECT id, session_id, role, content, tool_calls, created_at, is_streaming FROM messages WHERE session_id = ? ORDER BY created_at ASC")?;
+        let rows = stmt.query_map(params![session_id], |row| {
             let role_str: String = row.get(2)?;
             let role: MessageRole =
                 serde_json::from_str(&format!("\"{}\"", role_str)).unwrap_or(MessageRole::User);
@@ -764,7 +870,7 @@ impl Persistence {
             let created_at = created_at_str.parse().unwrap_or_else(|_| Utc::now());
             Ok(ChatMessage {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 role,
                 content: row.get(3)?,
                 tool_calls,
@@ -1102,51 +1208,51 @@ impl Persistence {
         Ok(())
     }
 
-    // ---- Mission plans (Planner) ----
+    // ---- Session plans (Planner) ----
 
-    /// Write the Mission's plan text. Any status other than Draft is reset,
+    /// Write the Session's plan text. Any status other than Draft is reset,
     /// because an approval applied to the previous text, not this one.
-    pub fn upsert_mission_plan(&self, mission_id: &str, content: &str) -> Result<MissionPlan> {
+    pub fn upsert_session_plan(&self, session_id: &str, content: &str) -> Result<SessionPlan> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now();
         let existing_id: Option<String> = conn
             .query_row(
-                "SELECT id FROM mission_plans WHERE mission_id = ?1",
-                params![mission_id],
+                "SELECT id FROM session_plans WHERE session_id = ?1",
+                params![session_id],
                 |r| r.get(0),
             )
             .ok();
         let id = existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let status = enum_str(&MissionPlanStatus::Draft);
+        let status = enum_str(&SessionPlanStatus::Draft);
 
         conn.execute(
-            "INSERT INTO mission_plans (mission_id, id, content, status, approved_by, created_at, updated_at)
+            "INSERT INTO session_plans (session_id, id, content, status, approved_by, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?5)
-             ON CONFLICT(mission_id) DO UPDATE SET
+             ON CONFLICT(session_id) DO UPDATE SET
                 content = excluded.content,
                 status = excluded.status,
                 approved_by = NULL,
                 updated_at = excluded.updated_at",
-            params![mission_id, id, content, status, now.to_rfc3339()],
+            params![session_id, id, content, status, now.to_rfc3339()],
         )?;
         drop(conn);
 
-        self.get_mission_plan(mission_id)?
+        self.get_session_plan(session_id)?
             .ok_or_else(|| anyhow::anyhow!("plan write did not persist"))
     }
 
-    pub fn get_mission_plan(&self, mission_id: &str) -> Result<Option<MissionPlan>> {
+    pub fn get_session_plan(&self, session_id: &str) -> Result<Option<SessionPlan>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, content, status, approved_by, created_at, updated_at
-             FROM mission_plans WHERE mission_id = ?1",
+            "SELECT id, session_id, content, status, approved_by, created_at, updated_at
+             FROM session_plans WHERE session_id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![mission_id], |row| {
-            Ok(MissionPlan {
+        let mut rows = stmt.query_map(params![session_id], |row| {
+            Ok(SessionPlan {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 content: row.get(2)?,
-                status: parse_enum(&row.get::<_, String>(3)?, MissionPlanStatus::Draft),
+                status: parse_enum(&row.get::<_, String>(3)?, SessionPlanStatus::Draft),
                 approved_by: row.get(4)?,
                 created_at: parse_ts(&row.get::<_, String>(5)?),
                 updated_at: parse_ts(&row.get::<_, String>(6)?),
@@ -1155,36 +1261,36 @@ impl Persistence {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn set_mission_plan_status(
+    pub fn set_session_plan_status(
         &self,
-        mission_id: &str,
-        status: MissionPlanStatus,
+        session_id: &str,
+        status: SessionPlanStatus,
         approved_by: Option<&str>,
-    ) -> Result<MissionPlan> {
+    ) -> Result<SessionPlan> {
         {
             let conn = self.conn.lock().unwrap();
             let changed = conn.execute(
-                "UPDATE mission_plans SET status = ?1, approved_by = ?2, updated_at = ?3 WHERE mission_id = ?4",
-                params![enum_str(&status), approved_by, Utc::now().to_rfc3339(), mission_id],
+                "UPDATE session_plans SET status = ?1, approved_by = ?2, updated_at = ?3 WHERE session_id = ?4",
+                params![enum_str(&status), approved_by, Utc::now().to_rfc3339(), session_id],
             )?;
             if changed == 0 {
-                anyhow::bail!("Mission {} has no plan", mission_id);
+                anyhow::bail!("Session {} has no plan", session_id);
             }
         }
-        self.get_mission_plan(mission_id)?
+        self.get_session_plan(session_id)?
             .ok_or_else(|| anyhow::anyhow!("plan disappeared after status update"))
     }
 
-    // ---- Mission reviews (Reviewer) ----
+    // ---- Session reviews (Reviewer) ----
 
-    pub fn save_mission_review(&self, review: &MissionReview) -> Result<MissionReview> {
+    pub fn save_session_review(&self, review: &SessionReview) -> Result<SessionReview> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO mission_reviews (id, mission_id, verdict, findings, raw_output, created_at)
+            "INSERT INTO session_reviews (id, session_id, verdict, findings, raw_output, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 review.id,
-                review.mission_id,
+                review.session_id,
                 enum_str(&review.verdict),
                 serde_json::to_string(&review.findings)?,
                 review.raw_output,
@@ -1194,17 +1300,17 @@ impl Persistence {
         Ok(review.clone())
     }
 
-    pub fn get_latest_mission_review(&self, mission_id: &str) -> Result<Option<MissionReview>> {
+    pub fn get_latest_session_review(&self, session_id: &str) -> Result<Option<SessionReview>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, verdict, findings, raw_output, created_at
-             FROM mission_reviews WHERE mission_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, session_id, verdict, findings, raw_output, created_at
+             FROM session_reviews WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
         )?;
-        let mut rows = stmt.query_map(params![mission_id], |row| {
+        let mut rows = stmt.query_map(params![session_id], |row| {
             let findings_json: String = row.get(3)?;
-            Ok(MissionReview {
+            Ok(SessionReview {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 verdict: parse_enum(&row.get::<_, String>(2)?, ReviewVerdict::NotRun),
                 findings: serde_json::from_str(&findings_json).unwrap_or_default(),
                 raw_output: row.get(4)?,
@@ -1214,17 +1320,17 @@ impl Persistence {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn list_mission_reviews(&self, mission_id: &str) -> Result<Vec<MissionReview>> {
+    pub fn list_session_reviews(&self, session_id: &str) -> Result<Vec<SessionReview>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, verdict, findings, raw_output, created_at
-             FROM mission_reviews WHERE mission_id = ?1 ORDER BY created_at DESC",
+            "SELECT id, session_id, verdict, findings, raw_output, created_at
+             FROM session_reviews WHERE session_id = ?1 ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map(params![mission_id], |row| {
+        let rows = stmt.query_map(params![session_id], |row| {
             let findings_json: String = row.get(3)?;
-            Ok(MissionReview {
+            Ok(SessionReview {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 verdict: parse_enum(&row.get::<_, String>(2)?, ReviewVerdict::NotRun),
                 findings: serde_json::from_str(&findings_json).unwrap_or_default(),
                 raw_output: row.get(4)?,
@@ -1234,28 +1340,28 @@ impl Persistence {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    // ---- Mission checkpoints (review_prompt.md §3.2) ----
+    // ---- Session checkpoints (review_prompt.md §3.2) ----
 
     pub fn create_checkpoint(
         &self,
-        mission_id: &str,
+        session_id: &str,
         sha: &str,
         label: &str,
-    ) -> Result<MissionCheckpoint> {
-        let checkpoint = MissionCheckpoint {
+    ) -> Result<SessionCheckpoint> {
+        let checkpoint = SessionCheckpoint {
             id: new_id(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             sha: sha.to_string(),
             label: label.to_string(),
             created_at: Utc::now(),
         };
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO mission_checkpoints (id, mission_id, sha, label, created_at)
+            "INSERT INTO session_checkpoints (id, session_id, sha, label, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 checkpoint.id,
-                checkpoint.mission_id,
+                checkpoint.session_id,
                 checkpoint.sha,
                 checkpoint.label,
                 checkpoint.created_at.to_rfc3339(),
@@ -1264,16 +1370,16 @@ impl Persistence {
         Ok(checkpoint)
     }
 
-    pub fn list_checkpoints(&self, mission_id: &str) -> Result<Vec<MissionCheckpoint>> {
+    pub fn list_checkpoints(&self, session_id: &str) -> Result<Vec<SessionCheckpoint>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, sha, label, created_at
-             FROM mission_checkpoints WHERE mission_id = ?1 ORDER BY created_at DESC",
+            "SELECT id, session_id, sha, label, created_at
+             FROM session_checkpoints WHERE session_id = ?1 ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map(params![mission_id], |row| {
-            Ok(MissionCheckpoint {
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(SessionCheckpoint {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 sha: row.get(2)?,
                 label: row.get(3)?,
                 created_at: parse_ts(&row.get::<_, String>(4)?),
@@ -1282,16 +1388,16 @@ impl Persistence {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn get_checkpoint(&self, id: &str) -> Result<MissionCheckpoint> {
+    pub fn get_checkpoint(&self, id: &str) -> Result<SessionCheckpoint> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, sha, label, created_at
-             FROM mission_checkpoints WHERE id = ?1",
+            "SELECT id, session_id, sha, label, created_at
+             FROM session_checkpoints WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
-            Ok(MissionCheckpoint {
+            Ok(SessionCheckpoint {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 sha: row.get(2)?,
                 label: row.get(3)?,
                 created_at: parse_ts(&row.get::<_, String>(4)?),
@@ -1383,14 +1489,14 @@ impl Persistence {
     pub fn save_tracker_link(&self, link: &crate::trackers::TrackerLink) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO tracker_links (id, mission_id, tracker, issue_key, url, title, created_at)
+            "INSERT INTO tracker_links (id, session_id, tracker, issue_key, url, title, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(mission_id, tracker, issue_key) DO UPDATE SET
+             ON CONFLICT(session_id, tracker, issue_key) DO UPDATE SET
                 url = excluded.url,
                 title = excluded.title",
             params![
                 link.id,
-                link.mission_id,
+                link.session_id,
                 link.tracker.as_str(),
                 link.issue_key,
                 link.url,
@@ -1403,18 +1509,18 @@ impl Persistence {
 
     pub fn list_tracker_links(
         &self,
-        mission_id: &str,
+        session_id: &str,
     ) -> Result<Vec<crate::trackers::TrackerLink>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, tracker, issue_key, url, title, created_at
-             FROM tracker_links WHERE mission_id = ?1 ORDER BY created_at",
+            "SELECT id, session_id, tracker, issue_key, url, title, created_at
+             FROM tracker_links WHERE session_id = ?1 ORDER BY created_at",
         )?;
-        let rows = stmt.query_map(params![mission_id], |row| {
+        let rows = stmt.query_map(params![session_id], |row| {
             let tracker_str: String = row.get(2)?;
             Ok(crate::trackers::TrackerLink {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 tracker: crate::trackers::Tracker::parse(&tracker_str)
                     .unwrap_or(crate::trackers::Tracker::Jira),
                 issue_key: row.get(3)?,
@@ -1442,11 +1548,11 @@ impl Persistence {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO deployment_records (id, mission_id, environment, commit_or_tag, ci_run_url, note, source, deployed_at)
+            "INSERT INTO deployment_records (id, session_id, environment, commit_or_tag, ci_run_url, note, source, deployed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 record.id,
-                record.mission_id,
+                record.session_id,
                 record.environment,
                 record.commit_or_tag,
                 record.ci_run_url,
@@ -1460,18 +1566,18 @@ impl Persistence {
 
     pub fn list_deployment_records(
         &self,
-        mission_id: &str,
+        session_id: &str,
     ) -> Result<Vec<crate::decisions::DeploymentRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, mission_id, environment, commit_or_tag, ci_run_url, note, source, deployed_at
-             FROM deployment_records WHERE mission_id = ?1 ORDER BY deployed_at DESC",
+            "SELECT id, session_id, environment, commit_or_tag, ci_run_url, note, source, deployed_at
+             FROM deployment_records WHERE session_id = ?1 ORDER BY deployed_at DESC",
         )?;
-        let rows = stmt.query_map(params![mission_id], |row| {
+        let rows = stmt.query_map(params![session_id], |row| {
             let source_str: String = row.get(6)?;
             Ok(crate::decisions::DeploymentRecord {
                 id: row.get(0)?,
-                mission_id: row.get(1)?,
+                session_id: row.get(1)?,
                 environment: row.get(2)?,
                 commit_or_tag: row.get(3)?,
                 ci_run_url: row.get(4)?,
@@ -1601,17 +1707,17 @@ fn row_to_role_profile(row: &rusqlite::Row) -> rusqlite::Result<crate::role_prof
 impl Persistence {
     pub fn save_confidence_score(
         &self,
-        mission_id: &str,
+        session_id: &str,
         target_file: &str,
         card: &crate::confidence::ConfidenceScore,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO confidence_scores (id, mission_id, patch_id, target_file, overall, card_json, created_at)
+            "INSERT INTO confidence_scores (id, session_id, patch_id, target_file, overall, card_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 uuid::Uuid::new_v4().to_string(),
-                mission_id,
+                session_id,
                 card.patch_id,
                 target_file,
                 card.overall,
@@ -1624,13 +1730,13 @@ impl Persistence {
 
     pub fn list_confidence_scores(
         &self,
-        mission_id: &str,
+        session_id: &str,
     ) -> Result<Vec<crate::confidence::ConfidenceScore>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT card_json FROM confidence_scores WHERE mission_id = ?1 ORDER BY created_at DESC",
+            "SELECT card_json FROM confidence_scores WHERE session_id = ?1 ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map(params![mission_id], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map(params![session_id], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
             let json = row?;
@@ -1779,7 +1885,7 @@ impl Persistence {
         Ok(())
     }
 
-    pub fn create_session(
+    pub fn create_auth_session(
         &self,
         token: &str,
         user_id: &str,
@@ -1787,7 +1893,7 @@ impl Persistence {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO auth_sessions (token, user_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![
                 token,
                 user_id,
@@ -1798,18 +1904,18 @@ impl Persistence {
         Ok(())
     }
 
-    pub fn find_session(&self, token: &str) -> Result<Option<crate::auth::Session>> {
+    pub fn find_auth_session(&self, token: &str) -> Result<Option<crate::auth::AuthSession>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT s.token, s.user_id, s.expires_at, u.username, u.role, u.active
-             FROM sessions s JOIN users u ON u.id = s.user_id
+             FROM auth_sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token = ?1",
         )?;
         let mut rows = stmt.query_map(params![token], |row| {
             let role_str: String = row.get(4)?;
             let active: i64 = row.get(5)?;
             Ok((
-                crate::auth::Session {
+                crate::auth::AuthSession {
                     token: row.get(0)?,
                     user_id: row.get(1)?,
                     expires_at: parse_ts(&row.get::<_, String>(2)?),
@@ -1826,23 +1932,26 @@ impl Persistence {
             .and_then(|(session, active)| active.then_some(session)))
     }
 
-    pub fn delete_session(&self, token: &str) -> Result<()> {
+    pub fn delete_auth_session(&self, token: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+        conn.execute("DELETE FROM auth_sessions WHERE token = ?1", params![token])?;
         Ok(())
     }
 
-    pub fn delete_sessions_for_user(&self, user_id: &str) -> Result<()> {
+    pub fn delete_auth_sessions_for_user(&self, user_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![user_id])?;
+        conn.execute(
+            "DELETE FROM auth_sessions WHERE user_id = ?1",
+            params![user_id],
+        )?;
         Ok(())
     }
 
     /// Housekeeping for expired rows; safe to call at any time.
-    pub fn purge_expired_sessions(&self) -> Result<usize> {
+    pub fn purge_expired_auth_sessions(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let n = conn.execute(
-            "DELETE FROM sessions WHERE expires_at <= ?1",
+            "DELETE FROM auth_sessions WHERE expires_at <= ?1",
             params![Utc::now().to_rfc3339()],
         )?;
         Ok(n)
@@ -1867,12 +1976,12 @@ fn parse_ts(s: &str) -> chrono::DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
-fn parse_mission_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Mission>> {
+fn parse_session_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Session>> {
     let id: String = row.get(0)?;
     let repo_channel_id: String = row.get(1)?;
     let title: String = row.get(2)?;
     let task_description: String = row.get(3)?;
-    let session_mode_str: String = row.get(4)?;
+    let isolation_mode_str: String = row.get(4)?;
     let autonomy_level_str: String = row.get(5)?;
     let status_str: String = row.get(6)?;
     let worktree_path: Option<String> = row.get(7)?;
@@ -1883,20 +1992,21 @@ fn parse_mission_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Mission>> {
     let model_provider: Option<String> = row.get(12)?;
     let model_id: Option<String> = row.get(13)?;
 
-    let session_mode = serde_json::from_str::<SessionMode>(&format!("\"{}\"", session_mode_str))
-        .unwrap_or(SessionMode::Worktree);
+    let isolation_mode =
+        serde_json::from_str::<IsolationMode>(&format!("\"{}\"", isolation_mode_str))
+            .unwrap_or(IsolationMode::Worktree);
     let autonomy_level =
         serde_json::from_str::<AutonomyLevel>(&format!("\"{}\"", autonomy_level_str))
             .unwrap_or(AutonomyLevel::CoPilot);
-    let status = serde_json::from_str::<MissionStatus>(&format!("\"{}\"", status_str))
-        .unwrap_or(MissionStatus::Created);
+    let status = serde_json::from_str::<SessionStatus>(&format!("\"{}\"", status_str))
+        .unwrap_or(SessionStatus::Created);
 
-    Ok(Some(Mission {
+    Ok(Some(Session {
         id,
         repo_channel_id,
         title,
         task_description,
-        session_mode,
+        isolation_mode,
         autonomy_level,
         status,
         worktree_path,
@@ -1929,6 +2039,108 @@ mod tests {
         assert_eq!(version, MIGRATIONS.len() as i64);
     }
 
+    /// The upgrade path for a real pre-rename install, with data in it.
+    ///
+    /// Built as an actual file-backed database in the *old* shape — `missions`,
+    /// an auth `sessions` table holding a login token, and `mission_id` foreign
+    /// keys — then reopened through `Persistence::new`, which is what a user's
+    /// upgrade actually does. Asserts the rows survived under the new names
+    /// rather than merely that the DDL ran: a rename that dropped the data, or
+    /// that moved the *auth* table into `sessions`, would still "succeed".
+    #[test]
+    fn a_pre_rename_database_keeps_its_data_through_the_session_rename() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("legacy.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, root_path TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE repo_channels (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
+                CREATE TABLE missions (
+                    id TEXT PRIMARY KEY,
+                    repo_channel_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    task_description TEXT NOT NULL,
+                    session_mode TEXT NOT NULL,
+                    autonomy_level TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    worktree_path TEXT,
+                    branch_name TEXT,
+                    base_branch TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE messages (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, tool_calls TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, is_streaming INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE mission_checkpoints (id TEXT PRIMARY KEY, mission_id TEXT NOT NULL, sha TEXT NOT NULL, label TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+
+                INSERT INTO workspaces VALUES ('ws', 'W', '', '2026-01-01T00:00:00Z');
+                INSERT INTO repo_channels VALUES ('rc', 'ws', 'repo', '/tmp/legacy-repo', '2026-01-01T00:00:00Z');
+                INSERT INTO missions (id, repo_channel_id, title, task_description, session_mode, autonomy_level, status, created_at, updated_at)
+                    VALUES ('m1', 'rc', 'Legacy work', 'do it', 'worktree', 'co_pilot', 'created', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                INSERT INTO messages (id, mission_id, role, content, created_at) VALUES ('msg1', 'm1', 'user', 'hello from before the rename', '2026-01-01T00:00:00Z');
+                INSERT INTO mission_checkpoints VALUES ('cp1', 'm1', 'deadbeef', 'a checkpoint', '2026-01-01T00:00:00Z');
+                INSERT INTO users VALUES ('u1', 'alice', 'hash', 'owner', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                INSERT INTO sessions VALUES ('login-token', 'u1', '2030-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                "#,
+            )
+            .unwrap();
+        }
+
+        let p = Persistence::new(Some(path)).unwrap();
+
+        let session = p.get_session("m1").unwrap();
+        assert_eq!(session.title, "Legacy work");
+        assert_eq!(
+            session.isolation_mode,
+            crate::api::types::IsolationMode::Worktree
+        );
+
+        let messages = p.list_messages("m1").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "hello from before the rename");
+
+        assert_eq!(p.list_checkpoints("m1").unwrap().len(), 1);
+
+        // The login token must have travelled to `auth_sessions`, not been
+        // left in (or confused with) the table Sessions now occupies.
+        let auth = p.find_auth_session("login-token").unwrap();
+        assert!(
+            auth.is_some(),
+            "the login session should survive the rename"
+        );
+        assert_eq!(auth.unwrap().username, "alice");
+    }
+
+    /// Opening the same database twice must not leave a stray empty `missions`
+    /// table behind — the failure mode that made the rename unsafe as an
+    /// ordinary migration entry.
+    #[test]
+    fn reopening_a_migrated_database_is_a_no_op() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("twice.db");
+
+        let first = Persistence::new(Some(path.clone())).unwrap();
+        drop(first);
+        let second = Persistence::new(Some(path)).unwrap();
+
+        let conn = second.conn.lock().unwrap();
+        let stray: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'missions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stray, 0,
+            "a second open re-created the old `missions` table"
+        );
+    }
+
     #[test]
     fn an_old_pre_migration_database_is_upgraded_and_stamped() {
         // Mirrors the schema shape a database from before this migration
@@ -1942,7 +2154,7 @@ mod tests {
             r#"
             CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), anthropic_api_key TEXT, anthropic_model TEXT);
             CREATE TABLE repo_channels (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE);
-            CREATE TABLE missions (id TEXT PRIMARY KEY, repo_channel_id TEXT NOT NULL);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, repo_channel_id TEXT NOT NULL);
             "#,
         )
         .unwrap();
@@ -2153,38 +2365,38 @@ mod tests {
     }
 
     #[test]
-    fn test_mission_crud() {
+    fn test_session_crud() {
         let p = Persistence::new_in_memory().unwrap();
         let repo = p.connect_repo("/tmp/test-repo-2", None).unwrap();
-        let mission = p
-            .create_mission(
+        let session = p
+            .create_session(
                 &repo.id,
-                "Test Mission",
+                "Test Session",
                 "Do something",
-                SessionMode::Worktree,
+                IsolationMode::Worktree,
                 AutonomyLevel::CoPilot,
             )
             .unwrap();
-        assert_eq!(mission.title, "Test Mission");
-        let missions = p.list_missions(Some(&repo.id)).unwrap();
-        assert_eq!(missions.len(), 1);
+        assert_eq!(session.title, "Test Session");
+        let sessions = p.list_sessions(Some(&repo.id)).unwrap();
+        assert_eq!(sessions.len(), 1);
     }
 
     #[test]
-    fn reconnecting_an_already_connected_repo_keeps_existing_missions_intact() {
+    fn reconnecting_an_already_connected_repo_keeps_existing_sessions_intact() {
         // Regression for a real bug found via live E2E testing: connect_repo
         // used to always mint a fresh id and `INSERT OR REPLACE`, which — since
         // `path` is UNIQUE — deleted the old row on a second connect of the
-        // same path and broke the `missions.repo_channel_id` foreign key for
-        // every Mission already created against it.
+        // same path and broke the `sessions.repo_channel_id` foreign key for
+        // every Session already created against it.
         let p = Persistence::new_in_memory().unwrap();
         let first = p.connect_repo("/tmp/reconnect-repo", None).unwrap();
-        let mission = p
-            .create_mission(
+        let session = p
+            .create_session(
                 &first.id,
-                "Pre-existing Mission",
+                "Pre-existing Session",
                 "Do something",
-                SessionMode::Worktree,
+                IsolationMode::Worktree,
                 AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -2195,13 +2407,13 @@ mod tests {
             "reconnecting the same path must keep the same repo_channel id"
         );
 
-        let missions = p.list_missions(Some(&second.id)).unwrap();
+        let sessions = p.list_sessions(Some(&second.id)).unwrap();
         assert_eq!(
-            missions.len(),
+            sessions.len(),
             1,
-            "the Mission created before the reconnect must still be reachable"
+            "the Session created before the reconnect must still be reachable"
         );
-        assert_eq!(missions[0].id, mission.id);
+        assert_eq!(sessions[0].id, session.id);
 
         let all_repos = p.list_repo_channels().unwrap();
         assert_eq!(
@@ -2212,64 +2424,64 @@ mod tests {
     }
 
     #[test]
-    fn a_repo_with_missions_can_actually_be_disconnected() {
+    fn a_repo_with_sessions_can_actually_be_disconnected() {
         // Reproduces the real failure: `disconnect_repo` was a bare DELETE on
-        // repo_channels, so `missions.repo_channel_id`'s foreign key rejected
+        // repo_channels, so `sessions.repo_channel_id`'s foreign key rejected
         // it with "FOREIGN KEY constraint failed" for any repo that had ever
         // been used. A real install had 15 dead channels the UI could not
         // remove because of this.
         let p = Persistence::new_in_memory().unwrap();
         let repo = p.connect_repo("/tmp/disconnect-me", None).unwrap();
-        let mission = p
-            .create_mission(
+        let session = p
+            .create_session(
                 &repo.id,
                 "Has messages",
                 "task",
-                SessionMode::Worktree,
+                IsolationMode::Worktree,
                 AutonomyLevel::CoPilot,
             )
             .unwrap();
-        p.create_message(&mission.id, MessageRole::User, "hello", vec![])
+        p.create_message(&session.id, MessageRole::User, "hello", vec![])
             .unwrap();
 
         p.disconnect_repo(&repo.id)
-            .expect("disconnecting a repo that has missions must succeed");
+            .expect("disconnecting a repo that has sessions must succeed");
 
         assert!(
             p.list_repo_channels().unwrap().is_empty(),
             "the repo channel must be gone"
         );
         assert!(
-            p.list_missions(Some(&repo.id)).unwrap().is_empty(),
-            "its missions must be gone with it, not left dangling"
+            p.list_sessions(Some(&repo.id)).unwrap().is_empty(),
+            "its sessions must be gone with it, not left dangling"
         );
         assert!(
-            p.list_messages(&mission.id).unwrap().is_empty(),
-            "mission-scoped rows must not be orphaned"
+            p.list_messages(&session.id).unwrap().is_empty(),
+            "session-scoped rows must not be orphaned"
         );
     }
 
     #[test]
-    fn disconnecting_one_repo_leaves_another_repos_missions_intact() {
+    fn disconnecting_one_repo_leaves_another_repos_sessions_intact() {
         // The delete is scoped by repo_channel_id; a `DELETE FROM messages`
         // that forgot its subquery would still pass the test above.
         let p = Persistence::new_in_memory().unwrap();
         let gone = p.connect_repo("/tmp/disconnect-gone", None).unwrap();
         let kept = p.connect_repo("/tmp/disconnect-kept", None).unwrap();
-        p.create_mission(
+        p.create_session(
             &gone.id,
             "Doomed",
             "t",
-            SessionMode::Shared,
+            IsolationMode::Shared,
             AutonomyLevel::CoPilot,
         )
         .unwrap();
         let survivor = p
-            .create_mission(
+            .create_session(
                 &kept.id,
                 "Survivor",
                 "t",
-                SessionMode::Shared,
+                IsolationMode::Shared,
                 AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -2279,7 +2491,7 @@ mod tests {
         p.disconnect_repo(&gone.id).unwrap();
 
         assert_eq!(p.list_repo_channels().unwrap().len(), 1);
-        assert_eq!(p.list_missions(Some(&kept.id)).unwrap().len(), 1);
+        assert_eq!(p.list_sessions(Some(&kept.id)).unwrap().len(), 1);
         assert_eq!(
             p.list_messages(&survivor.id).unwrap().len(),
             1,

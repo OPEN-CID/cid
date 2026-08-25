@@ -345,32 +345,32 @@ class CidApiClient {
     disconnect: (id: string) => this.call("repo.disconnect", { id }),
   };
 
-  mission = {
-    list: (repoChannelId?: string) => this.call("mission.list", { repo_channel_id: repoChannelId }),
+  session = {
+    list: (repoChannelId?: string) => this.call("session.list", { repo_channel_id: repoChannelId }),
     create: (params: {
       repo_channel_id: string;
       title: string;
       task?: string;
-      session_mode?: string;
+      isolation_mode?: string;
       autonomy_level?: string;
       vibe?: boolean;
       model_provider?: string | null;
       model_id?: string | null;
-    }) => this.call("mission.create", params),
-    get: (id: string) => this.call("mission.get", { id }),
-    close: (id: string) => this.call("mission.close", { id }),
-    sendMessage: (mission_id: string, content: string) => this.call("mission.send_message", { mission_id, content }),
-    approveTool: (mission_id: string, tool_call_id: string, approved: boolean) =>
-      this.call("mission.approve_tool", { mission_id, tool_call_id, approved }),
-    contextUsage: (mission_id: string) => this.call("mission.context.usage", { mission_id }),
-    contextCompact: (mission_id: string) => this.call("mission.context.compact", { mission_id }),
-    checkpointList: (mission_id: string) => this.call("mission.checkpoint.list", { mission_id }),
-    checkpointRewind: (mission_id: string, checkpoint_id: string, confirm: boolean) =>
-      this.call("mission.checkpoint.rewind", { mission_id, checkpoint_id, confirm }),
+    }) => this.call("session.create", params),
+    get: (id: string) => this.call("session.get", { id }),
+    close: (id: string) => this.call("session.close", { id }),
+    sendMessage: (session_id: string, content: string) => this.call("session.send_message", { session_id, content }),
+    approveTool: (session_id: string, tool_call_id: string, approved: boolean) =>
+      this.call("session.approve_tool", { session_id, tool_call_id, approved }),
+    contextUsage: (session_id: string) => this.call("session.context.usage", { session_id }),
+    contextCompact: (session_id: string) => this.call("session.context.compact", { session_id }),
+    checkpointList: (session_id: string) => this.call("session.checkpoint.list", { session_id }),
+    checkpointRewind: (session_id: string, checkpoint_id: string, confirm: boolean) =>
+      this.call("session.checkpoint.rewind", { session_id, checkpoint_id, confirm }),
   };
 
   message = {
-    list: (missionId: string) => this.call("message.list", { mission_id: missionId }),
+    list: (sessionId: string) => this.call("message.list", { session_id: sessionId }),
   };
 
   git = {
@@ -388,11 +388,12 @@ class CidApiClient {
   };
 
   pty = {
-    create: (mission_id: string, cols?: number, rows?: number) => this.call("pty.create", { mission_id, cols, rows }),
+    create: (session_id: string, cols?: number, rows?: number, workdir?: "session" | "repo") =>
+      this.call("pty.create", { session_id, cols, rows, workdir }),
     write: (pty_id: string, data: string) => this.call("pty.write", { pty_id, data }),
     resize: (pty_id: string, cols: number, rows: number) => this.call("pty.resize", { pty_id, cols, rows }),
     kill: (pty_id: string) => this.call("pty.kill", { pty_id }),
-    list: (mission_id: string) => this.call("pty.list", { mission_id }),
+    list: (session_id: string) => this.call("pty.list", { session_id }),
   };
 
   mcp = {
@@ -404,15 +405,15 @@ class CidApiClient {
   };
 
   confidence = {
-    score: (mission_id: string, target_file: string, new_content?: string) =>
-      this.call("confidence.score", { mission_id, target_file, new_content }),
-    history: (mission_id: string) => this.call("confidence.history", { mission_id }),
+    score: (session_id: string, target_file: string, new_content?: string) =>
+      this.call("confidence.score", { session_id, target_file, new_content }),
+    history: (session_id: string) => this.call("confidence.history", { session_id }),
   };
 
-  missionReview = {
-    run: (mission_id: string) => this.call("mission.review.run", { mission_id }),
-    get: (mission_id: string) => this.call("mission.review.get", { mission_id }),
-    list: (mission_id: string) => this.call("mission.review.list", { mission_id }),
+  sessionReview = {
+    run: (session_id: string) => this.call("session.review.run", { session_id }),
+    get: (session_id: string) => this.call("session.review.get", { session_id }),
+    list: (session_id: string) => this.call("session.review.list", { session_id }),
   };
 
   file = {
@@ -423,6 +424,16 @@ class CidApiClient {
 
   fs = {
     listDirs: (path?: string | null): Promise<ListDirsResult> => this.call("fs.list_dirs", { path: path ?? null }),
+  };
+
+  // Repo-wide text search on ripgrep's engine. Distinct from `code.*`, which
+  // is tree-sitter symbol analysis — this is the fast path a search box needs.
+  search = {
+    text: (
+      repo_path: string,
+      query: string,
+      opts?: { limit?: number; regex?: boolean; case_sensitive?: boolean },
+    ) => this.call("search.text", { repo_path, query, ...opts }),
   };
 
   code = {
@@ -460,13 +471,25 @@ class CidApiClient {
   localRuntime = {
     list: () => this.call("local.runtime.list"),
     detect: (forceRefresh = false) => this.call("local.runtime.detect", { force_refresh: forceRefresh }),
+    /// Measured capability of this machine — drives which models are offered.
+    capabilities: () => this.call("local.system.capabilities"),
+    /// The curated model list, each entry classified against `capabilities()`.
+    /// Capability detection is cached (a GPU probe costs seconds on Windows);
+    /// `force` is the explicit Rescan.
+    recommended: (force = false) => this.call("local.models.recommended", { force }),
+    status: () => this.call("local.runtime.status"),
+    start: () => this.call("local.runtime.start"),
+    stop: () => this.call("local.runtime.stop"),
+    /// Long-running: progress arrives as `local.model.pull.progress`
+    /// notifications, and the promise settles when the download finishes.
+    pull: (model_id: string) => this.call("local.model.pull", { model_id }),
   };
 
   acp = {
     editors: () => this.call("acp.editors.list"),
-    handoff: (mission_id: string, editor_id: string) => this.call("acp.handoff", { mission_id, editor_id }),
+    handoff: (session_id: string, editor_id: string) => this.call("acp.handoff", { session_id, editor_id }),
     takeBack: (handoff_id: string) => this.call("acp.take_back", { handoff_id }),
-    handoffs: (mission_id?: string) => this.call("acp.handoffs.list", { mission_id }),
+    handoffs: (session_id?: string) => this.call("acp.handoffs.list", { session_id }),
     get: (handoff_id: string) => this.call("acp.handoff.get", { handoff_id }),
     remove: (handoff_id: string) => this.call("acp.handoff.remove", { handoff_id }),
   };
@@ -475,8 +498,8 @@ class CidApiClient {
     list: (repo_path: string, scope: "workspace" | "repo" = "repo") =>
       this.call("skills.bundles.list", { repo_path, scope }),
     write: (path: string, content: string) => this.call("skills.bundle.write", { path, content }),
-    resolve: (repo_path: string, mission_context?: string) =>
-      this.call("skills.resolve", { repo_path, mission_context }),
+    resolve: (repo_path: string, session_context?: string) =>
+      this.call("skills.resolve", { repo_path, session_context }),
   };
 
   github = {
@@ -484,7 +507,7 @@ class CidApiClient {
     config: (repo_path: string) => this.call("github.config.get", { repo_path }),
     issues: (repo_path: string) => this.call("github.issues.list", { repo_path }),
     issue: (repo_path: string, number: number) => this.call("github.issue.get", { repo_path, number }),
-    issueToMission: (params: unknown) => this.call("github.issue.to_mission", params),
+    issueToSession: (params: unknown) => this.call("github.issue.to_session", params),
     prs: (repo_path: string) => this.call("github.pr.list", { repo_path }),
     createPr: (params: unknown) => this.call("github.pr.create", params),
     prStatus: (repo_path: string, number: number) => this.call("github.pr.status", { repo_path, number }),
@@ -534,7 +557,7 @@ class CidApiClient {
 
   subagent = {
     spawn: (params: unknown) => this.call("subagent.spawn", params),
-    list: (mission_id: string) => this.call("subagent.list", { mission_id }),
+    list: (session_id: string) => this.call("subagent.list", { session_id }),
     get: (id: string) => this.call("subagent.get", { id }),
     cancel: (id: string) => this.call("subagent.cancel", { id }),
   };
@@ -608,13 +631,13 @@ class CidApiClient {
 
   decisions = {
     list: (repo_path: string) => this.call("decisions.list", { repo_path }),
-    forMission: (mission_id: string) => this.call("decisions.for_mission", { mission_id }),
+    forSession: (session_id: string) => this.call("decisions.for_session", { session_id }),
   };
 
   deployment = {
-    record: (params: { mission_id: string; environment: string; commit_or_tag: string; ci_run_url?: string; note?: string }) =>
+    record: (params: { session_id: string; environment: string; commit_or_tag: string; ci_run_url?: string; note?: string }) =>
       this.call("deployment.record", params),
-    list: (mission_id: string) => this.call("deployment.list", { mission_id }),
+    list: (session_id: string) => this.call("deployment.list", { session_id }),
   };
 
   governance = {
@@ -627,12 +650,12 @@ class CidApiClient {
       this.call("governance.check.plan_approval", { session_token, workspace_id }),
     checkMerge: (session_token: string, workspace_id?: string) =>
       this.call("governance.check.merge", { session_token, workspace_id }),
-    checkSpend: (mission_id: string, usd: number, workspace_id?: string) =>
-      this.call("governance.spend.check", { mission_id, usd, workspace_id }),
-    recordSpend: (mission_id: string, usd: number, note?: string, workspace_id?: string) =>
-      this.call("governance.spend.record", { mission_id, usd, note, workspace_id }),
-    spendSummary: (mission_id?: string, workspace_id?: string) =>
-      this.call("governance.spend.summary", { mission_id, workspace_id }),
+    checkSpend: (session_id: string, usd: number, workspace_id?: string) =>
+      this.call("governance.spend.check", { session_id, usd, workspace_id }),
+    recordSpend: (session_id: string, usd: number, note?: string, workspace_id?: string) =>
+      this.call("governance.spend.record", { session_id, usd, note, workspace_id }),
+    spendSummary: (session_id?: string, workspace_id?: string) =>
+      this.call("governance.spend.summary", { session_id, workspace_id }),
   };
 
   forge = {
@@ -647,8 +670,8 @@ class CidApiClient {
     disconnect: (repo_path: string) => this.call("forge.disconnect", { repo_path }),
     issues: (repo_path: string, state = "opened") => this.call("forge.issues.list", { repo_path, state }),
     issue: (repo_path: string, number: number) => this.call("forge.issue.get", { repo_path, number }),
-    issueToMission: (repo_path: string, issue_number: number, session_mode?: string) =>
-      this.call("forge.issue.to_mission", { repo_path, issue_number, session_mode }),
+    issueToSession: (repo_path: string, issue_number: number, isolation_mode?: string) =>
+      this.call("forge.issue.to_session", { repo_path, issue_number, isolation_mode }),
     createChangeRequest: (params: {
       repo_path: string;
       title: string;
@@ -668,22 +691,22 @@ class CidApiClient {
     issue: (params: { tracker: string; issue_key: string; site_url?: string; email?: string }) =>
       this.call("tracker.issue.get", params),
     link: (params: {
-      mission_id: string;
+      session_id: string;
       tracker: string;
       issue_key: string;
       site_url?: string;
       email?: string;
     }) => this.call("tracker.link", params),
-    links: (mission_id: string) => this.call("tracker.links.list", { mission_id }),
+    links: (session_id: string) => this.call("tracker.links.list", { session_id }),
     unlink: (link_id: string) => this.call("tracker.unlink", { link_id }),
-    issueToMission: (params: {
+    issueToSession: (params: {
       repo_path: string;
       tracker: string;
       issue_key: string;
       site_url?: string;
       email?: string;
-      session_mode?: string;
-    }) => this.call("tracker.issue.to_mission", params),
+      isolation_mode?: string;
+    }) => this.call("tracker.issue.to_session", params),
     comment: (params: {
       tracker: string;
       issue_key: string;

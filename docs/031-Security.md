@@ -15,8 +15,8 @@ Four independent boundaries, each with its own guarantees and its own limits:
 
 Two layers. **Layer 1 (all platforms)**: command path policy — before a process is
 spawned, command/argument tokens that are absolute paths or `..`-traversal shapes are
-resolved and checked against the Mission's worktree; a `run_terminal` working directory
-is clamped into the Mission root regardless of what a model supplies. **Layer 2 (OS
+resolved and checked against the Session's worktree; a `run_terminal` working directory
+is clamped into the Session root regardless of what a model supplies. **Layer 2 (OS
 support permitting)**: `sandbox-exec` on macOS and `bubblewrap` on Linux give real kernel
 filesystem confinement; Windows Job Objects do not (`sandbox.status`'s `available: false`
 on Windows is deliberate and accurate — see ADR 0011).
@@ -38,7 +38,7 @@ ladder (Viewer < Reviewer < Developer < Admin < Owner). Rate-limited login (5 at
 
 Sits above the sandbox and the autonomy allow-list: decides *who* may enable Autonomous
 mode, *which repos* permit it, and enforces spend caps — checked at real decision points
-(Mission creation, plan approval), not merely exposed as a checkable RPC.
+(Session creation, plan approval), not merely exposed as a checkable RPC.
 
 Plus: role-profile tool-permission enforcement (`008-Agent-Operating-System.md`), secret
 redaction in terminal output and history (`redact::redact_secrets`), and OS-native
@@ -111,7 +111,7 @@ during audit rather than shipping them silently:
    `access::AccessPolicy` and a real explicit-origin CORS layer. See ADR 0012.
 4. **Governance policy checks existed but weren't called** at any real decision point in
    an earlier pass — fixed by wiring `can_enable_autonomous` and `can_approve_plan` into
-   `mission.create` and `mission.plan.approve` directly.
+   `session.create` and `session.plan.approve` directly.
 
 Each of these was caught by writing a real integration test against the actual code path
 (not just a unit test of the isolated check function) and finding it failed.

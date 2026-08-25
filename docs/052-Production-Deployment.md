@@ -61,6 +61,13 @@ what this claim covers:
 - `/home/cid/data/cid.db` is created and owned by `cid:cid`, confirming the `VOLUME`
   ownership fix (`docs/053` §4) works rather than failing on first write as root.
 
+**Both architectures are covered.** The above was `linux/amd64`; the same Dockerfile was
+then cross-built for **`linux/arm64`** (`docker buildx --platform linux/arm64`, ~80 minutes
+under QEMU emulation versus ~8 native) and the resulting image was *run* under emulation,
+not just built: `/health` 200, `/api/rpc` 401 without a token → 200 with one, and
+`cid.db` created in the volume owned by `cid`. That matters because Oracle's Always Free
+box is ARM — the architecture this actually deploys to.
+
 The one thing this does *not* cover: `docker-compose.yml`'s Caddy pairing and TLS
 termination were not exercised, only the image itself.
 
@@ -73,8 +80,32 @@ docker run -d --name cid-core \
   cid-core
 ```
 
+### Prebuilt image (GHCR)
+
+Building the image compiles the whole Rust workspace, which is a multi-hour job on a
+small ARM host and can run it out of memory. `.github/workflows/publish-image.yml`
+therefore publishes this same Dockerfile to
+**`ghcr.io/open-cid/cid-core`** on every push to `main` (and on `v*.*.*` tags) as a
+multi-arch manifest list — `linux/amd64` and `linux/arm64`, each built natively on its
+own runner rather than under emulation, then merged by digest. Tags: `latest` (on
+`main`), the branch name, `sha-<full sha>`, and semver tags on a release. The workflow
+fails if the published manifest list is missing either architecture, since a silently
+single-arch list is precisely what would break an ARM deployment.
+
+```bash
+docker pull ghcr.io/open-cid/cid-core:latest   # substitute for `cid-core` above
+```
+
+**Honest status:** the workflow's YAML and structure are verified, and the Dockerfile it
+builds is verified on both architectures (above). The *workflow itself* has not run yet —
+it runs for the first time on the commit that adds it, so the first published manifest
+list should be checked (`docker buildx imagetools inspect ghcr.io/open-cid/cid-core:latest`)
+before a deployment is pointed at it. Until then, building from source still works and is
+what §3's Coolify steps fall back to.
+
 Or use `docker-compose.yml`, which pairs it with a Caddy reverse proxy for TLS
-(see §4). The image builds `cid-core` only — the Tauri desktop shell isn't (and can't
+(see §4; it builds locally via `build: .` — swap in `image: ghcr.io/open-cid/cid-core`
+to pull instead). The image builds `cid-core` only — the Tauri desktop shell isn't (and can't
 usefully be) containerized; the web/mobile frontends are static assets, built separately
 (`npm run build`) and served by any static host or folded into the same proxy (commented
 in `docker-compose.yml`).

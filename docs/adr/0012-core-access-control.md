@@ -51,7 +51,7 @@ page the user visited could drive the RPC surface from their browser.
 ## Consequences
 
 - The single token is shared by everyone who can reach that Core. It authenticates the
-  *connection*, not a person. Audit entries attribute actions to the Mission, not to a
+  *connection*, not a person. Audit entries attribute actions to the Session, not to a
   human, until Phase 3's account model lands.
 - There is no token rotation without a restart.
 - Traffic is plain HTTP unless a TLS-terminating reverse proxy is placed in front. The

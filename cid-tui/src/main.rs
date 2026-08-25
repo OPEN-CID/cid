@@ -1,7 +1,7 @@
 //! CID CLI/TUI shell (Phase 4, Part A).
 //!
 //! A thin terminal client over Core's existing JSON-RPC API (Part 15) —
-//! Missions, chat, tool-call approvals, and diffs from a shell, for the
+//! Sessions, chat, tool-call approvals, and diffs from a shell, for the
 //! CLI-first developer persona Phases 0–3 didn't serve. No new Core
 //! functionality: every capability here already exists behind `/api/rpc` and
 //! `/ws`, used the same way the desktop and web shells use it.
@@ -168,23 +168,23 @@ async fn handle_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => {
             app.focus = match app.focus {
-                Focus::MissionList => Focus::Thread,
+                Focus::SessionList => Focus::Thread,
                 Focus::Thread => Focus::Composer,
-                Focus::Composer => Focus::MissionList,
+                Focus::Composer => Focus::SessionList,
                 Focus::Diff => Focus::Thread,
             }
         }
         KeyCode::Char('i') => app.focus = Focus::Composer,
-        // Diff view replaces the mission-list/thread body — available from
+        // Diff view replaces the session-list/thread body — available from
         // either of those panes, not from the composer (see the early
         // return above) so typing "v" into a message is never intercepted.
-        KeyCode::Char('v') if app.focus == Focus::MissionList || app.focus == Focus::Thread => {
+        KeyCode::Char('v') if app.focus == Focus::SessionList || app.focus == Focus::Thread => {
             app.focus = Focus::Diff;
             app.refresh_diff().await;
         }
         KeyCode::Char('j') | KeyCode::Down => match app.focus {
-            Focus::MissionList => {
-                app.select_next_mission();
+            Focus::SessionList => {
+                app.select_next_session();
                 app.refresh().await;
             }
             Focus::Thread if !app.pending_approvals.is_empty() => {
@@ -194,8 +194,8 @@ async fn handle_key(app: &mut App, code: KeyCode) {
             _ => {}
         },
         KeyCode::Char('k') | KeyCode::Up => match app.focus {
-            Focus::MissionList => {
-                app.select_prev_mission();
+            Focus::SessionList => {
+                app.select_prev_session();
                 app.refresh().await;
             }
             Focus::Thread if !app.pending_approvals.is_empty() => {
@@ -204,7 +204,7 @@ async fn handle_key(app: &mut App, code: KeyCode) {
             }
             _ => {}
         },
-        KeyCode::Enter if app.focus == Focus::MissionList => {
+        KeyCode::Enter if app.focus == Focus::SessionList => {
             app.focus = Focus::Thread;
         }
         KeyCode::Char('a') if app.focus == Focus::Thread => app.approve_selected(true).await,

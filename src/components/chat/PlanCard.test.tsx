@@ -32,7 +32,7 @@ describe("PlanCard", () => {
   it("shows no plan state when no plan exists", async () => {
     vi.mocked(api.call).mockResolvedValueOnce({ plan: null });
 
-    render(<PlanCard missionId="mission-1" />);
+    render(<PlanCard sessionId="session-1" />);
 
     expect(await screen.findByText(/No plan yet/)).toBeInTheDocument();
     expect(screen.getByText(/Run Planner/)).toBeInTheDocument();
@@ -42,7 +42,7 @@ describe("PlanCard", () => {
     vi.mocked(api.call).mockResolvedValueOnce({
       plan: {
         id: "plan-1",
-        mission_id: "mission-1",
+        session_id: "session-1",
         content: "# Test Plan\nThis is the plan.",
         status: "approved",
         approved_by: "user123",
@@ -50,7 +50,7 @@ describe("PlanCard", () => {
       },
     });
 
-    render(<PlanCard missionId="mission-1" />);
+    render(<PlanCard sessionId="session-1" />);
 
     expect(await screen.findByText(/This is the plan\./)).toBeInTheDocument();
     expect(screen.getByText("approved")).toBeInTheDocument();
@@ -66,18 +66,18 @@ describe("PlanCard", () => {
       .mockResolvedValueOnce({
         plan: {
           id: "plan-1",
-          mission_id: "mission-1",
+          session_id: "session-1",
           content: "# Test Plan\nThis is the plan.",
           status: "draft",
           approved_by: null,
           updated_at: "2024-01-01T00:00:00Z",
         },
       })
-      .mockResolvedValueOnce({}) // mission.plan.update
+      .mockResolvedValueOnce({}) // session.plan.update
       .mockResolvedValueOnce({
         plan: {
           id: "plan-1",
-          mission_id: "mission-1",
+          session_id: "session-1",
           content: "# Edited plan",
           status: "draft",
           approved_by: null,
@@ -85,7 +85,7 @@ describe("PlanCard", () => {
         },
       }); // reload after save
 
-    render(<PlanCard missionId="mission-1" />);
+    render(<PlanCard sessionId="session-1" />);
 
     const editBtn = await screen.findByRole("button", { name: /Edit/i });
     fireEvent.click(editBtn);
@@ -98,29 +98,29 @@ describe("PlanCard", () => {
     await flushAsyncWork();
 
     expect(screen.getByText(/Edited plan/)).toBeInTheDocument();
-    expect(vi.mocked(api.call)).toHaveBeenCalledWith("mission.plan.update", {
-      mission_id: "mission-1",
+    expect(vi.mocked(api.call)).toHaveBeenCalledWith("session.plan.update", {
+      session_id: "session-1",
       content: "# Edited plan",
     });
   });
 
-  it("approving a plan calls mission.plan.approve for this mission", async () => {
+  it("approving a plan calls session.plan.approve for this session", async () => {
     vi.mocked(api.call)
       .mockResolvedValueOnce({
         plan: {
           id: "plan-1",
-          mission_id: "mission-1",
+          session_id: "session-1",
           content: "# Test Plan",
           status: "draft",
           approved_by: null,
           updated_at: "2024-01-01T00:00:00Z",
         },
       })
-      .mockResolvedValueOnce({}) // mission.plan.approve
+      .mockResolvedValueOnce({}) // session.plan.approve
       .mockResolvedValueOnce({
         plan: {
           id: "plan-1",
-          mission_id: "mission-1",
+          session_id: "session-1",
           content: "# Test Plan",
           status: "approved",
           approved_by: "me",
@@ -128,15 +128,15 @@ describe("PlanCard", () => {
         },
       });
 
-    render(<PlanCard missionId="mission-1" />);
+    render(<PlanCard sessionId="session-1" />);
 
     const approveBtn = await screen.findByText(/Approve plan/);
     fireEvent.click(approveBtn);
     await flushAsyncWork();
 
     expect(screen.getByText(/approved by me/)).toBeInTheDocument();
-    expect(vi.mocked(api.call)).toHaveBeenCalledWith("mission.plan.approve", {
-      mission_id: "mission-1",
+    expect(vi.mocked(api.call)).toHaveBeenCalledWith("session.plan.approve", {
+      session_id: "session-1",
     });
   });
 });

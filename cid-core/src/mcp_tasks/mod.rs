@@ -3,7 +3,7 @@
 //! Extends existing MCP client in mcp/mod.rs with long-running task support.
 //! Long-running MCP tool calls return a TaskHandle (pollable/subscribable).
 //! TaskHandle: id, status (Pending/Running/Completed/Failed), progress, result.
-//! Integrates with the Mission thread to show "running" status.
+//! Integrates with the Session thread to show "running" status.
 
 use std::collections::HashMap;
 use std::sync::Arc;

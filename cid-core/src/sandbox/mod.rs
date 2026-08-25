@@ -195,7 +195,7 @@ impl SandboxManager {
     ) -> Option<String> {
         if !Self::path_within_boundary(workdir, &config.worktree_path) {
             return Some(format!(
-                "Working directory '{}' is outside the Mission worktree '{}'",
+                "Working directory '{}' is outside the Session worktree '{}'",
                 workdir, config.worktree_path
             ));
         }
@@ -215,7 +215,7 @@ impl SandboxManager {
                     // /usr/bin, C:\Windows) are not writes and must not be blocked.
                     if !inside && !Self::is_read_only_system_path(&resolved) {
                         return Some(format!(
-                            "Command references '{}', which resolves outside the Mission worktree '{}'",
+                            "Command references '{}', which resolves outside the Session worktree '{}'",
                             candidate, config.worktree_path
                         ));
                     }
@@ -1143,7 +1143,7 @@ mod tests {
         }
     }
 
-    /// The security-critical test for Phase 2: an Autonomous Mission must not be
+    /// The security-critical test for Phase 2: an Autonomous Session must not be
     /// able to write outside its worktree even when a command tries to. This
     /// asserts the boundary actually held on this platform — it does not merely
     /// assert that the check returned without panicking.

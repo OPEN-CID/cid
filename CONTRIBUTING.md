@@ -68,7 +68,7 @@ cid/
       auth/                # Local accounts, sessions, roles
       governance/          # Workspace policy (Autonomous mode, spend caps)
       git/                 # git2-rs wrapper, worktree lifecycle
-      pty/                 # Native PTY per Mission
+      pty/                 # Native PTY per Session
       mcp/, mcp_tasks/     # MCP client + Tasks extension
       model/               # Provider routing + tool-use loop
       roles/                # Planner/Reviewer + plan-approval gate

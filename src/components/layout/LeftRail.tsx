@@ -3,7 +3,7 @@ import { useCid } from "@/hooks/useCid";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/dialog";
 import { cn } from "@/lib/utils";
-import { FolderGit2, Plus, Settings, Box, Zap, FileText, Search, Loader2, FolderOpen } from "lucide-react";
+import { FolderGit2, Plus, Settings, Box, Zap, FileText, Search, Loader2, FolderOpen, ChevronDown, ChevronRight } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { RepoBrowserDialog } from "./RepoBrowserDialog";
 
@@ -16,7 +16,7 @@ function isTauriDesktop(): boolean {
 }
 
 export function LeftRail() {
-  const { repos, selectedRepoId, missions, selectedMissionId, selectRepo, selectMission, loadRepos, connected } = useCid();
+  const { repos, selectedRepoId, sessions, selectedSessionId, selectRepo, selectSession, loadRepos, connected } = useCid();
   const [newRepoPath, setNewRepoPath] = useState("");
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
@@ -27,6 +27,9 @@ export function LeftRail() {
   // frontend API wrapper already written, but no component ever called it).
   const [contextEngineEnabled, setContextEngineEnabled] = useState(false);
   const [contextEngineBusy, setContextEngineBusy] = useState(false);
+  // Collapsed by default: these are per-repo configuration, not part of the
+  // day-to-day loop, and they pushed the repo/session list up the rail.
+  const [contextOpen, setContextOpen] = useState(false);
   const selectedRepo = repos.find((r) => r.id === selectedRepoId);
 
   useEffect(() => {
@@ -110,7 +113,7 @@ export function LeftRail() {
         <div className="w-8 h-8 rounded bg-primary flex items-center justify-center font-bold text-primary-foreground">C</div>
         <div>
           <div className="font-semibold text-sm">CID</div>
-          <div className="text-xs text-muted-foreground">Mission Control</div>
+          <div className="text-xs text-muted-foreground">Session Control</div>
         </div>
       </div>
 
@@ -208,16 +211,16 @@ export function LeftRail() {
                   <span className="truncate">{repo.name}</span>
                 </button>
 
-                {/* Missions under selected repo */}
+                {/* Sessions under selected repo */}
                 {selectedRepoId === repo.id && (
                   <div className="ml-6 mt-1 space-y-1 border-l pl-2">
-                    {missions.map((m) => (
+                    {sessions.map((m) => (
                       <button
                         key={m.id}
-                        onClick={() => selectMission(m.id)}
+                        onClick={() => selectSession(m.id)}
                         className={cn(
                           "w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 hover:bg-accent/50",
-                          selectedMissionId === m.id && "bg-primary/20 text-primary"
+                          selectedSessionId === m.id && "bg-primary/20 text-primary"
                         )}
                       >
                         <span
@@ -235,7 +238,7 @@ export function LeftRail() {
                         <span className="truncate">{m.title}</span>
                       </button>
                     ))}
-                    {missions.length === 0 && <div className="text-[11px] text-muted-foreground px-2 py-1">No missions yet</div>}
+                    {sessions.length === 0 && <div className="text-[11px] text-muted-foreground px-2 py-1">No sessions yet</div>}
                   </div>
                 )}
               </div>
@@ -251,8 +254,15 @@ export function LeftRail() {
         {/* Pinned context */}
         {selectedRepoId && (
           <div className="p-3 border-t mt-3">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Context</div>
-            <div className="space-y-1">
+            <button
+              onClick={() => setContextOpen((v) => !v)}
+              aria-expanded={contextOpen}
+              className="w-full flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 hover:text-foreground"
+            >
+              {contextOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              <span>Context</span>
+            </button>
+            <div className={cn("space-y-1", !contextOpen && "hidden")}>
               <div className="flex items-center gap-2 text-xs p-1.5 rounded bg-accent/30">
                 <FileText className="w-3 h-3" />
                 <span>AGENTS.md</span>

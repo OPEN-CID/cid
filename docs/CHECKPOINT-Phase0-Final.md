@@ -27,7 +27,7 @@ This report follows the initial `CHECKPOINT-Phase0.md` (2026-07-26) which was ma
 - **WS broadcast fix** (`api/router.rs`): Rewrote `handle_ws` from broadcast-only responses to proper per-client sink:
   - `socket.split()` into `sink` (sender) + `stream` (receiver)
   - `Arc<Mutex<SplitSink>>` for direct responses — `handle_rpc` response now sent directly to requesting client only via `sink.lock().send()`, not via `event_tx.broadcast`
-  - Separate `forward_task` that subscribes to `event_tx` and forwards only notifications (`pty.output`, `mission.message.delta`, etc) to this client
+  - Separate `forward_task` that subscribes to `event_tx` and forwards only notifications (`pty.output`, `session.message.delta`, etc) to this client
   - No more leaking responses to all clients — multi-window now works
 - **Plaintext secret fix** (`api/router.rs` + `Cargo.toml`):
   - Added `keyring = "3.5"` dependency
@@ -71,9 +71,9 @@ This report follows the initial `CHECKPOINT-Phase0.md` (2026-07-26) which was ma
 ### Final test status (after polish)
 
 - **Rust unit**: `cargo test -p cid-core --lib` with msvc toolchain — **7 passed** (same as before, now via msvc not just gnu)
-  - `pty::tests::test_pty_manager_new`, `context::tests::test_context_manager`, `mcp::tests::test_mcp_manager_new`, `tests::test_core_creation`, `persistence::tests::test_persistence_in_memory`, `git::tests::test_git_manager_status`, `persistence::tests::test_mission_crud`
+  - `pty::tests::test_pty_manager_new`, `context::tests::test_context_manager`, `mcp::tests::test_mcp_manager_new`, `tests::test_core_creation`, `persistence::tests::test_persistence_in_memory`, `git::tests::test_git_manager_status`, `persistence::tests::test_session_crud`
 - **React component**: `npm run test` — **2 passed** (LeftRail, ChatThread)
-- **E2E Flow 1**: `cargo run -p cid-core -- --port 5919` + `npx playwright test` — **1 passed 9.4s** (creates temp repo, connects, creates mission worktree, sends message, checks messages>1, worktree status, UI loads)
+- **E2E Flow 1**: `cargo run -p cid-core -- --port 5919` + `npx playwright test` — **1 passed 9.4s** (creates temp repo, connects, creates session worktree, sends message, checks messages>1, worktree status, UI loads)
 - **Builds**:
   - `npm run build` — **PASS**, 1554 modules, chunked: vendor 144kB (46 gzip), xterm 291kB, monaco 14kB, etc
   - `cargo check -p cid-core` (msvc) — **PASS** 5 warnings (down from 17)
@@ -88,7 +88,7 @@ This report follows the initial `CHECKPOINT-Phase0.md` (2026-07-26) which was ma
 
 Per Part 22, still NOT in this run:
 
-- Multi-provider routing, local models (Ollama/LM Studio detection), ACP host, headless server mode polish (current binary works but not as systemd service), GitHub bridge, Web Shell (Core serving static bundle), Slack/Teams, multi-agent parallelism within Mission, background ambient model, semantic embeddings, MCP Apps rendering, Tasks extension, sandboxing, mobile shell, governance/RBAC, air-gapped, native GPU engine, hosted Cloud
+- Multi-provider routing, local models (Ollama/LM Studio detection), ACP host, headless server mode polish (current binary works but not as systemd service), GitHub bridge, Web Shell (Core serving static bundle), Slack/Teams, multi-agent parallelism within Session, background ambient model, semantic embeddings, MCP Apps rendering, Tasks extension, sandboxing, mobile shell, governance/RBAC, air-gapped, native GPU engine, hosted Cloud
 
 These are not stubs — they are explicitly not built per hard scope boundary Part A. Checkpoint honestly states them as deferred.
 
@@ -107,7 +107,7 @@ npm install
 npm run dev
 # Open http://localhost:1420
 # Connect repo: C:\Projects\cid (this repo) or any git repo
-# New Mission → worktree → task "Add hello.txt" → observe Co-Pilot approvals
+# New Session → worktree → task "Add hello.txt" → observe Co-Pilot approvals
 # Test diff: make edit, see Diff tab, Accept/Reject per hunk
 # Test AGENTS.md: Skills tab → Edit AGENTS.md → Save → file written to repo
 # Test PTY: Terminal tab → auto-creates PTY, secret redaction active
@@ -146,7 +146,7 @@ npx playwright test
 - ACP host (pop out to Zed/JetBrains)
 - Headless `cid-core serve` polish
 - Structural Context Engine (Tree-sitter)
-- GitHub bridge (issue → Mission)
+- GitHub bridge (issue → Session)
 - Planner/Reviewer roles + Autonomous mode with allow-lists
 
 **No-go would only be if human finds per-hunk true reverse-patch (not file-level) is required for Phase 0 exit — currently we have file-level reject with UI per-hunk, documented as Phase 0.1 limitation, true per-hunk via `git apply -R` is Phase 1. If human requires true per-hunk now, we can implement `git apply -R` patch logic before GO.**

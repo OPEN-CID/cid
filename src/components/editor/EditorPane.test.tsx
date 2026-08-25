@@ -8,6 +8,10 @@ import { useCid } from "@/hooks/useCid";
 // a tabbed editor. Opening a second file no longer risks losing edits in the
 // first (it stays open in its own tab) — only *closing* a dirty tab prompts.
 
+// Stubs the real monaco-editor import + `?worker` bundles, which jsdom cannot
+// load and which the mocked <Editor> below does not need anyway.
+vi.mock("@/lib/monaco-setup", () => ({}));
+
 vi.mock("@monaco-editor/react", () => ({
   default: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea data-testid="monaco-stub" value={value} onChange={(e) => onChange(e.target.value)} />
@@ -24,6 +28,9 @@ vi.mock("@/lib/api", () => ({
     contextEngine: {
       status: vi.fn(),
       search: vi.fn(),
+    },
+    search: {
+      text: vi.fn(),
     },
     code: {
       searchSymbols: vi.fn(),
@@ -58,6 +65,7 @@ describe("EditorPane", () => {
     vi.mocked(api.contextEngine.status).mockReset();
     vi.mocked(api.contextEngine.search).mockReset();
     vi.mocked(api.code.searchSymbols).mockReset();
+    vi.mocked(api.search.text).mockReset();
     vi.mocked(api.code.analyzeFile).mockReset();
     vi.mocked(api.semanticEngine.status).mockReset();
     vi.mocked(api.semanticEngine.indexFile).mockReset();
@@ -205,45 +213,70 @@ describe("EditorPane", () => {
     await waitFor(() => expect(api.file.write).toHaveBeenCalledWith("/repo/a.txt", "edited a"));
   });
 
-  it("switching the left panel to Search runs a symbol search when Context Engine is off", async () => {
-    vi.mocked(api.contextEngine.status).mockResolvedValue({ enabled: false });
-    vi.mocked(api.code.searchSymbols).mockResolvedValue({
-      results: [{ file_path: "/repo/a.txt", symbol: { name: "helper", kind: "function", line: 3 } }],
+  it("the Search panel queries search.text, not the symbol analyzer", async () => {
+    vi.mocked(api.search.text).mockResolvedValue({
+      hits: [
+        { file_path: "/repo/a.txt", line: 3, line_text: "  let helper = 1;", match_start: 6, match_end: 12 },
+      ],
+      truncated: false,
+      elapsed_ms: 4,
     });
     render(<EditorPane />);
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.change(screen.getByPlaceholderText(/Search symbols/), { target: { value: "helper" } });
+    fireEvent.change(screen.getByPlaceholderText(/Search text/), { target: { value: "helper" } });
 
-    await waitFor(() => expect(api.code.searchSymbols).toHaveBeenCalledWith("/repo", "helper"));
+    await waitFor(() => expect(api.search.text).toHaveBeenCalledWith("/repo", "helper"));
+    // The old path walked and parsed the whole repo; it must not be used here.
+    expect(api.code.searchSymbols).not.toHaveBeenCalled();
     expect(await screen.findByText("helper")).toBeInTheDocument();
   });
 
-  it("switching the left panel to Search uses context_engine.search when enabled", async () => {
-    vi.mocked(api.contextEngine.status).mockResolvedValue({ enabled: true });
-    vi.mocked(api.contextEngine.search).mockResolvedValue({
-      results: [{ file_path: "/repo/a.txt", name: "helper", kind: "function", line: 3 }],
+  it("renders the matched span as a highlight and reports how long the search took", async () => {
+    vi.mocked(api.search.text).mockResolvedValue({
+      hits: [
+        { file_path: "/repo/a.txt", line: 3, line_text: "  let helper = 1;", match_start: 6, match_end: 12 },
+      ],
+      truncated: false,
+      elapsed_ms: 7,
     });
     render(<EditorPane />);
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.change(screen.getByPlaceholderText(/Search symbols/), { target: { value: "helper" } });
+    fireEvent.change(screen.getByPlaceholderText(/Search text/), { target: { value: "helper" } });
 
-    await waitFor(() => expect(api.contextEngine.search).toHaveBeenCalledWith("/repo", "helper"));
-    expect(await screen.findByText("helper")).toBeInTheDocument();
-    expect(api.code.searchSymbols).not.toHaveBeenCalled();
+    const mark = await screen.findByText("helper");
+    expect(mark.tagName).toBe("MARK");
+    expect(await screen.findByText(/1 match in 7ms/)).toBeInTheDocument();
+  });
+
+  it("says the result list was cut short rather than implying it is complete", async () => {
+    vi.mocked(api.search.text).mockResolvedValue({
+      hits: [{ file_path: "/repo/a.txt", line: 1, line_text: "helper", match_start: 0, match_end: 6 }],
+      truncated: true,
+      elapsed_ms: 12,
+    });
+    render(<EditorPane />);
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.change(screen.getByPlaceholderText(/Search text/), { target: { value: "helper" } });
+
+    expect(await screen.findByText(/first 1 matches in 12ms/)).toBeInTheDocument();
   });
 
   it("clicking a search result opens that file as a tab", async () => {
-    vi.mocked(api.contextEngine.status).mockResolvedValue({ enabled: false });
-    vi.mocked(api.code.searchSymbols).mockResolvedValue({
-      results: [{ file_path: "/repo/a.txt", symbol: { name: "helper", kind: "function", line: 3 } }],
+    vi.mocked(api.search.text).mockResolvedValue({
+      hits: [
+        { file_path: "/repo/a.txt", line: 3, line_text: "  let helper = 1;", match_start: 6, match_end: 12 },
+      ],
+      truncated: false,
+      elapsed_ms: 4,
     });
     vi.mocked(api.file.read).mockResolvedValueOnce({ content: "hello a" });
     render(<EditorPane />);
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.change(screen.getByPlaceholderText(/Search symbols/), { target: { value: "helper" } });
+    fireEvent.change(screen.getByPlaceholderText(/Search text/), { target: { value: "helper" } });
     fireEvent.click(await screen.findByText("helper"));
 
     await screen.findByDisplayValue("hello a");

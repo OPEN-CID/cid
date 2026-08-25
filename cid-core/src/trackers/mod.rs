@@ -1,14 +1,14 @@
 /*!
  * Jira and Linear linkage (Phase 3, Part 16).
  *
- * Scope is deliberately narrow: **Mission ↔ ticket linkage**, not a project
+ * Scope is deliberately narrow: **Session ↔ ticket linkage**, not a project
  * tracker. Part 1's non-goal stands — CID integrates with Jira and Linear
  * rather than re-implementing them. So this module can:
  *
- *   - attach a ticket to a Mission and remember the link,
- *   - read a ticket's summary so the Mission thread can show what it points at,
- *   - post a comment back when a Mission reaches a milestone,
- *   - open a Mission from a ticket.
+ *   - attach a ticket to a Session and remember the link,
+ *   - read a ticket's summary so the Session thread can show what it points at,
+ *   - post a comment back when a Session reaches a milestone,
+ *   - open a Session from a ticket.
  *
  * It deliberately cannot create tickets, move them between states, manage
  * sprints, or mirror a board.
@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::api::types::{Mission, SessionMode};
+use crate::api::types::{IsolationMode, Session};
 use crate::persistence::Persistence;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,11 +49,11 @@ impl Tracker {
     }
 }
 
-/// A recorded link between a Mission and a ticket.
+/// A recorded link between a Session and a ticket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerLink {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub tracker: Tracker,
     /// `PROJ-123` for Jira, `ENG-456` for Linear.
     pub issue_key: String,
@@ -62,7 +62,7 @@ pub struct TrackerLink {
     pub created_at: DateTime<Utc>,
 }
 
-/// The ticket details a Mission thread displays.
+/// The ticket details a Session thread displays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackerIssue {
     pub key: String,
@@ -139,20 +139,20 @@ impl TrackerManager {
 
     // ---- Links ----
 
-    /// Attach a ticket to a Mission. The ticket's title is fetched when
+    /// Attach a ticket to a Session. The ticket's title is fetched when
     /// credentials allow, so the thread shows what the link points at rather
     /// than a bare key — but a missing token downgrades to a plain link instead
     /// of failing.
     pub async fn link(
         &self,
-        mission_id: &str,
+        session_id: &str,
         tracker: Tracker,
         issue_key: &str,
         config: Option<&TrackerConfig>,
     ) -> Result<TrackerLink> {
         let issue_key = normalize_key(issue_key)?;
-        // Confirms the Mission exists before recording a link against it.
-        self.persistence.get_mission(mission_id)?;
+        // Confirms the Session exists before recording a link against it.
+        self.persistence.get_session(session_id)?;
 
         let fetched = match config {
             Some(cfg) => self.fetch_issue(cfg, &issue_key).await.ok(),
@@ -167,7 +167,7 @@ impl TrackerManager {
 
         let link = TrackerLink {
             id: uuid::Uuid::new_v4().to_string(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             tracker,
             issue_key: issue_key.clone(),
             url,
@@ -177,31 +177,31 @@ impl TrackerManager {
 
         self.persistence.save_tracker_link(&link)?;
         info!(
-            "Linked {} {} to Mission {}",
+            "Linked {} {} to Session {}",
             tracker.as_str(),
             issue_key,
-            mission_id
+            session_id
         );
         Ok(link)
     }
 
-    pub fn links_for_mission(&self, mission_id: &str) -> Result<Vec<TrackerLink>> {
-        self.persistence.list_tracker_links(mission_id)
+    pub fn links_for_session(&self, session_id: &str) -> Result<Vec<TrackerLink>> {
+        self.persistence.list_tracker_links(session_id)
     }
 
     pub fn unlink(&self, link_id: &str) -> Result<()> {
         self.persistence.delete_tracker_link(link_id)
     }
 
-    /// Open a Mission from a ticket — the tracker equivalent of the forge
-    /// issue→Mission trigger.
-    pub async fn issue_to_mission(
+    /// Open a Session from a ticket — the tracker equivalent of the forge
+    /// issue→Session trigger.
+    pub async fn issue_to_session(
         &self,
         repo_path: &str,
         config: &TrackerConfig,
         issue_key: &str,
-        session_mode: Option<SessionMode>,
-    ) -> Result<Mission> {
+        isolation_mode: Option<IsolationMode>,
+    ) -> Result<Session> {
         let issue = self.fetch_issue(config, issue_key).await?;
         let channel = self.persistence.get_repo_channel_by_path(repo_path)?;
 
@@ -214,19 +214,19 @@ impl TrackerManager {
             issue.description.clone().unwrap_or_default()
         );
 
-        let mission = self.persistence.create_mission(
+        let session = self.persistence.create_session(
             &channel.id,
             &format!("{} {}", issue.key, issue.title),
             &task,
-            session_mode.unwrap_or(SessionMode::Worktree),
+            isolation_mode.unwrap_or(IsolationMode::Worktree),
             crate::api::types::AutonomyLevel::CoPilot,
         )?;
 
-        // The link is recorded immediately, so the Mission always knows which
+        // The link is recorded immediately, so the Session always knows which
         // ticket it came from even if the tracker later becomes unreachable.
         let link = TrackerLink {
             id: uuid::Uuid::new_v4().to_string(),
-            mission_id: mission.id.clone(),
+            session_id: session.id.clone(),
             tracker: config.tracker,
             issue_key: issue.key.clone(),
             url: issue.url.clone(),
@@ -235,7 +235,7 @@ impl TrackerManager {
         };
         self.persistence.save_tracker_link(&link)?;
 
-        Ok(mission)
+        Ok(session)
     }
 
     // ---- Credential verification ----
@@ -434,7 +434,7 @@ impl TrackerManager {
         })
     }
 
-    /// Post a comment back to the ticket — how a Mission reports progress
+    /// Post a comment back to the ticket — how a Session reports progress
     /// without CID managing the ticket's state.
     pub async fn comment(&self, config: &TrackerConfig, issue_key: &str, body: &str) -> Result<()> {
         if body.trim().is_empty() {
@@ -535,7 +535,7 @@ fn issue_url(config: &TrackerConfig, key: &str) -> Option<String> {
 }
 
 /// Flatten Atlassian Document Format to plain text. Jira 3 returns descriptions
-/// as a nested document, and only the text is useful as Mission context.
+/// as a nested document, and only the text is useful as Session context.
 fn extract_adf_text(node: &serde_json::Value) -> Option<String> {
     fn walk(node: &serde_json::Value, out: &mut String) {
         if let Some(text) = node["text"].as_str() {
@@ -659,11 +659,11 @@ mod tests {
     }
 
     #[test]
-    fn linking_requires_the_mission_to_exist() {
+    fn linking_requires_the_session_to_exist() {
         let mgr = manager();
-        let err = tokio_test::block_on(mgr.link("no-such-mission", Tracker::Jira, "PROJ-1", None))
+        let err = tokio_test::block_on(mgr.link("no-such-session", Tracker::Jira, "PROJ-1", None))
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("mission"), "{err}");
+        assert!(err.to_string().to_lowercase().contains("session"), "{err}");
     }
 
     #[test]
@@ -675,27 +675,27 @@ mod tests {
             .persistence
             .connect_repo(&repo.path().to_string_lossy(), Some(&ws[0].id))
             .unwrap();
-        let mission = mgr
+        let session = mgr
             .persistence
-            .create_mission(
+            .create_session(
                 &channel.id,
                 "t",
                 "task",
-                SessionMode::Shared,
+                IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
         let link =
-            tokio_test::block_on(mgr.link(&mission.id, Tracker::Linear, "eng-9", None)).unwrap();
+            tokio_test::block_on(mgr.link(&session.id, Tracker::Linear, "eng-9", None)).unwrap();
         assert_eq!(link.issue_key, "ENG-9");
 
-        let links = mgr.links_for_mission(&mission.id).unwrap();
+        let links = mgr.links_for_session(&session.id).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].tracker, Tracker::Linear);
 
         mgr.unlink(&link.id).unwrap();
-        assert!(mgr.links_for_mission(&mission.id).unwrap().is_empty());
+        assert!(mgr.links_for_session(&session.id).unwrap().is_empty());
     }
 
     #[test]
@@ -707,21 +707,21 @@ mod tests {
             .persistence
             .connect_repo(&repo.path().to_string_lossy(), Some(&ws[0].id))
             .unwrap();
-        let mission = mgr
+        let session = mgr
             .persistence
-            .create_mission(
+            .create_session(
                 &channel.id,
                 "t",
                 "task",
-                SessionMode::Shared,
+                IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
-        tokio_test::block_on(mgr.link(&mission.id, Tracker::Jira, "PROJ-1", None)).unwrap();
-        tokio_test::block_on(mgr.link(&mission.id, Tracker::Jira, "PROJ-1", None)).unwrap();
+        tokio_test::block_on(mgr.link(&session.id, Tracker::Jira, "PROJ-1", None)).unwrap();
+        tokio_test::block_on(mgr.link(&session.id, Tracker::Jira, "PROJ-1", None)).unwrap();
 
-        assert_eq!(mgr.links_for_mission(&mission.id).unwrap().len(), 1);
+        assert_eq!(mgr.links_for_session(&session.id).unwrap().len(), 1);
     }
 
     #[test]

@@ -144,7 +144,7 @@ proptest! {
     #[test]
     fn arbitrary_params_against_real_methods_are_handled(
         method in prop::sample::select(vec![
-            "repo.connect", "mission.create", "mission.get", "file.read",
+            "repo.connect", "session.create", "session.get", "file.read",
             "git.status", "mcp.tool.call", "acp.handoff", "skills.resolve",
             "auth.login", "governance.policy.set", "forge.connect", "tracker.link",
         ]),
@@ -162,7 +162,7 @@ proptest! {
                 json!(b),
                 json!([s, n, b]),
                 json!({ "path": s, "id": n, "flag": b }),
-                json!({ "repo_path": s, "mission_id": s, "content": s }),
+                json!({ "repo_path": s, "session_id": s, "content": s }),
             ];
             for params in shapes {
                 let body = json!({
@@ -238,11 +238,11 @@ fn acp_handoff_rejects_hostile_identifiers() {
     rt.block_on(async {
         let base = start_core().await;
         let cases = [
-            json!({ "mission_id": "", "editor_id": "" }),
-            json!({ "mission_id": "../../etc", "editor_id": "zed" }),
-            json!({ "mission_id": "m", "editor_id": "; rm -rf /" }),
-            json!({ "mission_id": "m", "editor_id": "x".repeat(5_000) }),
-            json!({ "mission_id": null, "editor_id": 42 }),
+            json!({ "session_id": "", "editor_id": "" }),
+            json!({ "session_id": "../../etc", "editor_id": "zed" }),
+            json!({ "session_id": "m", "editor_id": "; rm -rf /" }),
+            json!({ "session_id": "m", "editor_id": "x".repeat(5_000) }),
+            json!({ "session_id": null, "editor_id": 42 }),
         ];
         for params in cases {
             let body = json!({

@@ -11,7 +11,7 @@ vi.mock("@/lib/api", () => ({
 
 vi.mock("@/hooks/useCid", () => ({
   useCid: () => ({
-    selectedMissionId: null,
+    selectedSessionId: null,
     messages: {},
     addMessage: vi.fn(),
     updateMessage: vi.fn(),
@@ -20,9 +20,9 @@ vi.mock("@/hooks/useCid", () => ({
 }));
 
 describe("ChatThread", () => {
-  it("shows empty state when no mission selected", () => {
+  it("shows empty state when no session selected", () => {
     render(<ChatThread />);
-    expect(screen.getByText(/No mission selected/)).toBeInTheDocument();
-    expect(screen.getByText(/Flow 1 – First Mission/)).toBeInTheDocument();
+    expect(screen.getByText(/No session selected/)).toBeInTheDocument();
+    expect(screen.getByText(/Flow 1 – First Session/)).toBeInTheDocument();
   });
 });

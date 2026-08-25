@@ -33,7 +33,7 @@ fn catalog_key(provider: &ModelProvider) -> Option<&'static str> {
 #[derive(Debug, Clone)]
 pub struct PendingToolCall {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub name: String,
     pub arguments: serde_json::Value,
     pub approved: Option<bool>,
@@ -42,7 +42,7 @@ pub struct PendingToolCall {
 
 /// What a subagent's turn actually did — returned by `run_subagent_turn`,
 /// consumed by `SubagentOrchestrator::perform_subagent_work` to build the
-/// `SubagentResult` the parent Mission sees.
+/// `SubagentResult` the parent Session sees.
 #[derive(Debug, Clone)]
 pub struct SubagentTurnOutcome {
     pub summary: String,
@@ -50,11 +50,11 @@ pub struct SubagentTurnOutcome {
     pub usage: TokenUsage,
 }
 
-/// The boundary a tool call runs inside. `root` is the Mission's own directory —
-/// its worktree, or the repo path for shared-clone Missions.
+/// The boundary a tool call runs inside. `root` is the Session's own directory —
+/// its worktree, or the repo path for shared-clone Sessions.
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
-    pub mission_id: String,
+    pub session_id: String,
     pub autonomy: crate::api::types::AutonomyLevel,
     pub root: String,
     pub repo_path: String,
@@ -74,9 +74,9 @@ impl ExecutionContext {
         }
     }
 
-    /// Map a model-supplied working directory into the Mission's root. Anything
+    /// Map a model-supplied working directory into the Session's root. Anything
     /// that escapes the root collapses back to it, so a relative `../..` or an
-    /// absolute path elsewhere cannot redirect execution out of the Mission.
+    /// absolute path elsewhere cannot redirect execution out of the Session.
     fn resolve_workdir(&self, requested: &str) -> String {
         let root = std::path::Path::new(&self.root);
         if requested.is_empty() || requested == "." {
@@ -97,7 +97,7 @@ impl ExecutionContext {
         }
     }
 
-    /// Resolve a tool-supplied file/directory path against the Mission root,
+    /// Resolve a tool-supplied file/directory path against the Session root,
     /// refusing (a hard error, not a silent clamp) anything that escapes it —
     /// via `..` traversal, an absolute path elsewhere, or a symlink whose
     /// target leaves the root. A file path trying to leave the worktree is a
@@ -117,13 +117,13 @@ impl ExecutionContext {
             bail!("no confined worktree root for this execution context");
         }
         crate::path_confine::resolve_confined_path(std::path::Path::new(&self.root), requested)
-            .map_err(|e| anyhow!("{e} (Mission root: {})", self.root))
+            .map_err(|e| anyhow!("{e} (Session root: {})", self.root))
     }
 
     /// The confinement `execute_tool_direct_in`'s file tools actually enforce:
-    /// confined to the worktree root when this Mission has one (the default,
+    /// confined to the worktree root when this Session has one (the default,
     /// isolated-worktree Session Mode — Part 4), unconfined when it doesn't
-    /// (shared-clone Missions operate directly in the repo's own working
+    /// (shared-clone Sessions operate directly in the repo's own working
     /// directory by design, the same "no narrower boundary than the repo
     /// itself" rule `run_terminal`'s unsandboxed fallback already applies).
     fn confine_for_tool(&self, requested: &str) -> Result<std::path::PathBuf> {
@@ -144,7 +144,7 @@ pub struct TokenUsage {
     pub output_tokens: u32,
 }
 
-/// The context-usage indicator's RPC-facing shape (`mission.context.usage`,
+/// The context-usage indicator's RPC-facing shape (`session.context.usage`,
 /// review_prompt.md §3.1) — serialized straight to JSON, so field names here
 /// are the wire contract the frontend reads.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -161,7 +161,7 @@ pub struct ContextUsage {
 /// (`GovernanceManager::check_spend`/`record_spend`, review_prompt.md §1.3)
 /// have something real to enforce against rather than never firing. This is
 /// not an invoice-accurate table — provider pricing pages are the source of
-/// truth and change over time — it exists so a cap set at, say, $5/mission
+/// truth and change over time — it exists so a cap set at, say, $5/session
 /// trips at roughly the right point, not so spend tracking can be audited to
 /// the cent. OpenAI-compatible endpoints (OpenRouter, Groq, local runtimes)
 /// span free/self-hosted to metered with no single price list, so they're
@@ -224,7 +224,7 @@ fn estimate_cost_usd(provider: &ModelProvider, model_id: &str, usage: TokenUsage
 // Context compaction (review_prompt.md §3.1)
 //
 // The full message history was sent on every turn with no summarization,
-// truncation, or token accounting — a long Mission would grow until it
+// truncation, or token accounting — a long Session would grow until it
 // exceeded the model's context window and then failed permanently, with
 // cost growing the whole way there. This section adds: a token estimate,
 // a per-model context-window table, a compaction trigger at ~70% of that
@@ -294,7 +294,7 @@ fn is_context_digest(message: &ChatMessage) -> bool {
 
 /// The history a call should actually use: everything from the most recent
 /// compaction digest onward (inclusive), or the full history if this
-/// Mission has never been compacted.
+/// Session has never been compacted.
 fn effective_history(full_history: &[ChatMessage]) -> Vec<ChatMessage> {
     match full_history.iter().rposition(is_context_digest) {
         Some(idx) => full_history[idx..].to_vec(),
@@ -314,7 +314,7 @@ fn estimate_history_tokens(system_prompt: &str, history: &[ChatMessage]) -> u32 
 /// enough to reconstruct roughly what happened without keeping every token.
 fn build_digest(to_summarize: &[ChatMessage]) -> String {
     let mut digest = format!(
-        "{CONTEXT_DIGEST_MARKER} — {} earlier message(s) summarized to keep this Mission's \
+        "{CONTEXT_DIGEST_MARKER} — {} earlier message(s) summarized to keep this Session's \
          context within budget. The full, uncompacted history is still visible in the \
          History panel; this digest is what later turns actually send to the model.\n\n",
         to_summarize.len()
@@ -339,7 +339,7 @@ fn build_digest(to_summarize: &[ChatMessage]) -> String {
 
 /// Returns a new digest's content if `full_history` should be compacted
 /// right now — `None` if usage is under the threshold, or if there's
-/// nothing meaningful left to fold away (a Mission whose *entire* remaining
+/// nothing meaningful left to fold away (a Session whose *entire* remaining
 /// context is its most recent turns can't be compacted further; that's a
 /// real "approaching the window" state to surface some other way, not a
 /// bug in this function).
@@ -367,7 +367,7 @@ enum AutonomyDecision {
     /// Covered by the repo's allow-list; runs without asking.
     PreApproved,
     /// Allowed but flagged for a human, or not covered — falls back to the
-    /// Co-Pilot approval prompt rather than failing the Mission.
+    /// Co-Pilot approval prompt rather than failing the Session.
     NeedsApproval,
     /// Explicitly refused by the allow-list.
     Denied(String),
@@ -392,16 +392,16 @@ pub struct ModelManager {
     /// worktree concurrently, so this is a real bug surface, not
     /// theoretical. Keyed by the *resolved* absolute path (via
     /// `ExecutionContext::confine_for_tool`), so it correctly serializes the
-    /// same file regardless of which Mission/subagent's relative path
+    /// same file regardless of which Session/subagent's relative path
     /// argument pointed at it, and never collides across different
-    /// Missions' separate worktrees. See `acquire_path_lock`.
+    /// Sessions' separate worktrees. See `acquire_path_lock`.
     file_locks: Arc<RwLock<HashMap<PathBuf, Arc<Mutex<()>>>>>,
 }
 
 /// review_prompt.md §1.2 point 3: tools whose result can carry untrusted repo
 /// content into the model's context — reading a file, listing a directory, a
 /// git diff/status, or an MCP tool result. Used both to decide whether a
-/// Mission already has untrusted content active (`process_message_with_role`)
+/// Session already has untrusted content active (`process_message_with_role`)
 /// and, within a single multi-round tool loop, to flip that flag on for
 /// later rounds the moment one of these actually runs.
 const CONTENT_BEARING_TOOLS: &[&str] = &[
@@ -414,12 +414,12 @@ const CONTENT_BEARING_TOOLS: &[&str] = &[
 
 /// A provenance note for the History panel — set on a `ToolCall` record when
 /// it was made in a turn where untrusted repo content was present in
-/// context. Coarse (Mission-wide, not per-argument taint tracking) by
+/// context. Coarse (Session-wide, not per-argument taint tracking) by
 /// design; see SECURITY.md for the documented limitation.
 fn provenance_marker(untrusted_active: bool) -> Option<String> {
     untrusted_active.then(|| {
         "influenced by untrusted repo content (an approved AGENTS.md/SKILL.md, or a prior \
-         file/diff/MCP read this Mission)"
+         file/diff/MCP read this Session)"
             .to_string()
     })
 }
@@ -530,17 +530,81 @@ fn provider_api_key(settings: &Settings, provider: &ModelProvider) -> Option<Str
     }
 }
 
+/// The provider's current default straight from the catalog (live registry,
+/// disk cache, or the generated snapshot), newest first.
+///
+/// The hardcoded fallbacks this replaced are the exact failure this project has
+/// hit before: `gemini-1.5-flash` was retired by Google, so an install with a
+/// `GEMINI_API_KEY` but no explicit `google_model` resolved to a model that
+/// **404s on every call**. The Planner fell back to a placeholder plan, the
+/// Implementer stayed blocked, and the whole product looked broken while
+/// reporting itself correctly configured. `model::catalog` exists precisely so
+/// no hand-written id can rot like this — it just wasn't consulted here.
+fn catalog_default_model(provider: &ModelProvider) -> Option<String> {
+    let key = catalog_key(provider)?;
+    let models = catalog::models_for(key);
+    // Skip anything the vendor labels preview: it is explicitly not generally
+    // available, and a default should be the id most likely to answer. Falls
+    // back to the newest overall if a provider only lists previews.
+    models
+        .iter()
+        .find(|m| !m.id.contains("preview"))
+        .or_else(|| models.first())
+        .map(|m| m.id.to_string())
+}
+
+/// Ordered models to try for one completion: the resolved choice first, then
+/// the next few catalogued alternatives for the same provider.
+///
+/// Capped at three because the point is to survive one busy model, not to walk
+/// an entire catalogue while a user waits.
+fn fallback_model_ids(resolved: &ResolvedModelConfig) -> Vec<String> {
+    let mut ids = vec![resolved.model_id.clone()];
+    if let Some(key) = catalog_key(&resolved.provider) {
+        for m in catalog::models_for(key) {
+            if ids.len() >= 3 {
+                break;
+            }
+            if m.id.contains("preview") || ids.iter().any(|i| i.as_str() == m.id) {
+                continue;
+            }
+            ids.push(m.id.to_string());
+        }
+    }
+    ids
+}
+
+/// Whether another model is worth trying.
+///
+/// Deliberately narrow: capacity (`503`/`overloaded`) and rate limits (`429`)
+/// are properties of *that model right now*. A `401`/`403` (bad key) or `400`
+/// (bad request) would fail identically on every sibling, so retrying would
+/// only turn one clear error into three and hide the real cause.
+fn is_retryable_provider_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("503")
+        || msg.contains("429")
+        || msg.contains("overloaded")
+        || msg.contains("UNAVAILABLE")
+        || msg.contains("Service Unavailable")
+}
+
 fn provider_default_model(settings: &Settings, provider: &ModelProvider) -> String {
     match provider {
-        ModelProvider::Anthropic => settings.anthropic_model.clone(),
-        ModelProvider::OpenAI => settings
-            .openai_model
-            .clone()
-            .unwrap_or_else(|| "gpt-4o-mini".to_string()),
-        ModelProvider::Google => settings
-            .google_model
-            .clone()
-            .unwrap_or_else(|| "gemini-1.5-flash".to_string()),
+        ModelProvider::Anthropic => {
+            let configured = settings.anthropic_model.clone();
+            if configured.trim().is_empty() {
+                catalog_default_model(provider).unwrap_or(configured)
+            } else {
+                configured
+            }
+        }
+        ModelProvider::OpenAI => settings.openai_model.clone().unwrap_or_else(|| {
+            catalog_default_model(provider).unwrap_or_else(|| "gpt-5.4-mini".to_string())
+        }),
+        ModelProvider::Google => settings.google_model.clone().unwrap_or_else(|| {
+            catalog_default_model(provider).unwrap_or_else(|| "gemini-3.6-flash".to_string())
+        }),
         ModelProvider::OpenAICompatible => settings
             .openai_compatible_model
             .clone()
@@ -741,9 +805,9 @@ fn resolve_active_config(
     })
 }
 
-/// Per-mission model override (task 3): a Mission created with an explicit
-/// `model_provider`/`model_id` (`CreateMissionParams`) takes precedence over
-/// the resolved role/global setting for every turn that Mission runs. Called
+/// Per-session model override (task 3): a Session created with an explicit
+/// `model_provider`/`model_id` (`CreateSessionParams`) takes precedence over
+/// the resolved role/global setting for every turn that Session runs. Called
 /// from the two real per-turn call paths — `process_message_with_role` and
 /// `run_subagent_turn` — right after they resolve the role/global config, so
 /// there's exactly one place this override applies rather than a second
@@ -752,22 +816,22 @@ fn resolve_active_config(
 /// `model_id` alone pins just the model on the already-resolved provider;
 /// `model_provider` alone switches provider and falls back to that
 /// provider's default model; both together fully replace the resolution.
-fn apply_mission_model_override(
+fn apply_session_model_override(
     resolved: ResolvedModelConfig,
     settings: &Settings,
-    mission: &crate::api::types::Mission,
+    session: &crate::api::types::Session,
 ) -> ResolvedModelConfig {
-    if mission.model_provider.is_none() && mission.model_id.is_none() {
+    if session.model_provider.is_none() && session.model_id.is_none() {
         return resolved;
     }
 
-    let provider = mission
+    let provider = session
         .model_provider
         .as_deref()
         .and_then(parse_provider_str)
         .unwrap_or(resolved.provider);
 
-    let model_id = mission
+    let model_id = session
         .model_id
         .clone()
         .unwrap_or_else(|| provider_default_model(settings, &provider));
@@ -1183,12 +1247,12 @@ fn build_google_contents(history: &[ChatMessage], user_content: &str) -> Vec<ser
 // Notification helpers
 // ---------------------------------------------------------------------------
 
-fn emit_delta(app_state: &AppState, mission_id: &str, message_id: &str, delta: &str) {
+fn emit_delta(app_state: &AppState, session_id: &str, message_id: &str, delta: &str) {
     let notif = crate::api::types::JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
-        method: "mission.message.delta".to_string(),
+        method: "session.message.delta".to_string(),
         params: serde_json::json!({
-            "mission_id": mission_id,
+            "session_id": session_id,
             "message_id": message_id,
             "delta": delta
         }),
@@ -1198,12 +1262,12 @@ fn emit_delta(app_state: &AppState, mission_id: &str, message_id: &str, delta: &
     }
 }
 
-fn emit_complete(app_state: &AppState, mission_id: &str, message_id: &str, content: &str) {
+fn emit_complete(app_state: &AppState, session_id: &str, message_id: &str, content: &str) {
     let notif = crate::api::types::JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
-        method: "mission.message.complete".to_string(),
+        method: "session.message.complete".to_string(),
         params: serde_json::json!({
-            "mission_id": mission_id,
+            "session_id": session_id,
             "message_id": message_id,
             "content": content
         }),
@@ -1213,12 +1277,12 @@ fn emit_complete(app_state: &AppState, mission_id: &str, message_id: &str, conte
     }
 }
 
-fn emit_new_message(app_state: &AppState, mission_id: &str, content: &str) {
+fn emit_new_message(app_state: &AppState, session_id: &str, content: &str) {
     let notif = crate::api::types::JsonRpcNotification {
         jsonrpc: "2.0".to_string(),
-        method: "mission.message.new".to_string(),
+        method: "session.message.new".to_string(),
         params: serde_json::json!({
-            "mission_id": mission_id,
+            "session_id": session_id,
             "content": content,
             "role": "assistant"
         }),
@@ -1256,7 +1320,7 @@ impl ModelManager {
     /// a raw tool argument). Lazily creates the per-path mutex on first use;
     /// entries are never removed, which is a deliberate, bounded tradeoff —
     /// a long-running Core touching millions of distinct paths could grow
-    /// this map, but a real Mission's worktree is nowhere near that scale.
+    /// this map, but a real Session's worktree is nowhere near that scale.
     async fn acquire_path_lock(&self, path: PathBuf) -> tokio::sync::OwnedMutexGuard<()> {
         let mutex = {
             let mut guard = self.file_locks.write().await;
@@ -1453,7 +1517,7 @@ impl ModelManager {
     // -----------------------------------------------------------------------
     pub async fn approve_tool_call(
         &self,
-        _mission_id: &str,
+        _session_id: &str,
         tool_call_id: &str,
         approved: bool,
     ) -> Result<()> {
@@ -1498,6 +1562,17 @@ impl ModelManager {
     // Returns Ok(None) when the role's provider has no usable credentials, so
     // callers can degrade to a documented placeholder rather than failing.
     // -----------------------------------------------------------------------
+    /// Resolve the role's model and complete, falling back to the next model in
+    /// the provider's catalog when the chosen one is temporarily unusable.
+    ///
+    /// The default is the newest catalogued id, which is also the most
+    /// contended: `gemini-3.7-flash` returned **503 "high demand" on every
+    /// attempt** while `gemini-3.6-flash` answered normally. Without this, a
+    /// busy upstream model meant the Planner silently produced a placeholder
+    /// plan and the Implementer stayed blocked — the product did nothing, and
+    /// nothing about the configuration was actually wrong. Only retryable
+    /// statuses fall through; a rejected key or a bad request must surface, not
+    /// be retried against every model in the list.
     pub async fn complete_text(
         &self,
         role: AgentRole,
@@ -1510,6 +1585,43 @@ impl ModelManager {
             None => return Ok(None),
         };
 
+        let mut last_err: Option<anyhow::Error> = None;
+        for (attempt, model_id) in fallback_model_ids(&resolved).into_iter().enumerate() {
+            let mut candidate = resolved.clone();
+            candidate.model_id = model_id.clone();
+            match self
+                .complete_text_with(candidate, system_prompt, user_prompt)
+                .await
+            {
+                Ok(v) => {
+                    if attempt > 0 {
+                        warn!(
+                            "completed with fallback model {} after the preferred model was unavailable",
+                            model_id
+                        );
+                    }
+                    return Ok(v);
+                }
+                Err(e) if is_retryable_provider_error(&e) => {
+                    warn!(
+                        "model {} unavailable ({}), trying the next one",
+                        model_id, e
+                    );
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("no candidate model was available for {role:?}")))
+    }
+
+    async fn complete_text_with(
+        &self,
+        resolved: ResolvedModelConfig,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Option<String>> {
         let needs_key = matches!(
             resolved.provider,
             ModelProvider::Anthropic | ModelProvider::OpenAI | ModelProvider::Google
@@ -1623,21 +1735,21 @@ impl ModelManager {
     // -----------------------------------------------------------------------
     pub async fn process_message(
         &self,
-        mission_id: &str,
+        session_id: &str,
         user_content: &str,
         app_state: AppState,
     ) -> Result<()> {
-        self.process_message_with_role(mission_id, user_content, AgentRole::Implementer, app_state)
+        self.process_message_with_role(session_id, user_content, AgentRole::Implementer, app_state)
             .await
     }
 
     /// The context-usage indicator (review_prompt.md §3.1): a snapshot of
-    /// how close this Mission is to needing compaction, using the same
+    /// how close this Session is to needing compaction, using the same
     /// estimate and per-model window table `process_message_with_role`
     /// checks before every real call — not a separate, potentially
     /// inconsistent calculation.
-    pub fn context_usage(&self, mission_id: &str) -> Result<ContextUsage> {
-        let mission = self.persistence.get_mission(mission_id)?;
+    pub fn context_usage(&self, session_id: &str) -> Result<ContextUsage> {
+        let session = self.persistence.get_session(session_id)?;
         let settings = self.persistence.get_settings()?;
         let resolved =
             resolve_active_config(&settings, None).unwrap_or_else(|| ResolvedModelConfig {
@@ -1646,14 +1758,14 @@ impl ModelManager {
                 api_key: None,
                 endpoint: None,
             });
-        let history = effective_history(&self.persistence.list_messages(mission_id)?);
+        let history = effective_history(&self.persistence.list_messages(session_id)?);
         // A lightweight stand-in for the real system prompt (which needs
         // AGENTS.md/Skills lookups this synchronous, app-state-free method
         // doesn't have access to) — the task description dominates the real
         // prompt's token count far more than the fixed instructional text
         // around it, so this stays a close enough estimate for a usage
         // indicator, not a claim of exactness.
-        let system_prompt_stand_in = mission.task_description.clone();
+        let system_prompt_stand_in = session.task_description.clone();
         let used_tokens = estimate_history_tokens(&system_prompt_stand_in, &history);
         let window_tokens = context_window_tokens(&resolved.provider, &resolved.model_id);
         Ok(ContextUsage {
@@ -1672,8 +1784,8 @@ impl ModelManager {
     /// asking for it explicitly doesn't need to wait for the automatic
     /// trigger. Returns `Ok(None)` if there's nothing meaningful left to
     /// fold away (see `maybe_compact`'s own doc comment).
-    pub fn compact_context_now(&self, mission_id: &str) -> Result<Option<ChatMessage>> {
-        let full_history = self.persistence.list_messages(mission_id)?;
+    pub fn compact_context_now(&self, session_id: &str) -> Result<Option<ChatMessage>> {
+        let full_history = self.persistence.list_messages(session_id)?;
         let effective = effective_history(&full_history);
         if effective.len() <= KEEP_RECENT_MESSAGES {
             return Ok(None);
@@ -1681,7 +1793,7 @@ impl ModelManager {
         let split = effective.len() - KEEP_RECENT_MESSAGES;
         let digest_content = build_digest(&effective[..split]);
         let message = self.persistence.create_message(
-            mission_id,
+            session_id,
             MessageRole::System,
             &digest_content,
             vec![],
@@ -1692,11 +1804,11 @@ impl ModelManager {
     /// Commit any uncommitted work in `worktree` (so nothing is lost on a
     /// future rewind) and record the resulting HEAD sha as a checkpoint.
     /// Called once per turn, before any tool calls run this turn — see the
-    /// call site's own comment for why this is scoped to worktree Missions
+    /// call site's own comment for why this is scoped to worktree Sessions
     /// only.
     fn auto_checkpoint(
         &self,
-        mission_id: &str,
+        session_id: &str,
         worktree: &str,
         user_content: &str,
         app_state: &AppState,
@@ -1709,40 +1821,40 @@ impl ModelManager {
         let sha = app_state.git_manager.head_sha(worktree)?;
         let label: String = user_content.chars().take(80).collect();
         self.persistence
-            .create_checkpoint(mission_id, &sha, &label)?;
+            .create_checkpoint(session_id, &sha, &label)?;
         Ok(())
     }
 
     pub async fn process_message_with_role(
         &self,
-        mission_id: &str,
+        session_id: &str,
         user_content: &str,
         role: AgentRole,
         app_state: AppState,
     ) -> Result<()> {
         let _ = self
             .persistence
-            .update_mission_status(mission_id, crate::api::types::MissionStatus::Running);
+            .update_session_status(session_id, crate::api::types::SessionStatus::Running);
 
-        // Load mission and repo
-        let mission = self.persistence.get_mission(mission_id)?;
+        // Load session and repo
+        let session = self.persistence.get_session(session_id)?;
         let repo = self
             .persistence
-            .get_repo_channel(&mission.repo_channel_id)?;
+            .get_repo_channel(&session.repo_channel_id)?;
 
         // Auto-checkpoint (review_prompt.md §3.2): a snapshot of the
         // worktree taken before this turn's tool batch runs, built on the
-        // git worktree every Mission already has — not a parallel snapshot
-        // store. Only for worktree-based Missions (the default Session
-        // Mode, Part 4): a shared-clone Mission operates directly in the
+        // git worktree every Session already has — not a parallel snapshot
+        // store. Only for worktree-based Sessions (the default Session
+        // Mode, Part 4): a shared-clone Session operates directly in the
         // repo's own working directory, where a future `git reset --hard`
         // rewind could discard a human's own unrelated work, so those are
         // never auto-checkpointed. Best-effort: a checkpoint failure (e.g. a
         // detached HEAD) warns rather than blocking the turn — checkpointing
         // is a safety net, not a correctness gate.
-        if let Some(worktree) = mission.worktree_path.clone() {
-            if let Err(e) = self.auto_checkpoint(mission_id, &worktree, user_content, &app_state) {
-                warn!("Auto-checkpoint failed for mission {mission_id}: {e:?}");
+        if let Some(worktree) = session.worktree_path.clone() {
+            if let Err(e) = self.auto_checkpoint(session_id, &worktree, user_content, &app_state) {
+                warn!("Auto-checkpoint failed for session {session_id}: {e:?}");
             }
         }
 
@@ -1767,7 +1879,7 @@ impl ModelManager {
         let system_prompt = app_state.skills_manager.build_system_context(
             &repo.path,
             None,
-            Some(&mission.task_description),
+            Some(&session.task_description),
             repo.agents_md_approved,
         );
         let agents_md_included = repo.agents_md_approved
@@ -1778,14 +1890,14 @@ impl ModelManager {
         let has_skills = !app_state.persistence.list_skills(None)?.is_empty();
 
         // Load chat history
-        let history = self.persistence.list_messages(mission_id)?;
+        let history = self.persistence.list_messages(session_id)?;
 
         // review_prompt.md §1.2 point 3: a coarse, honest provenance signal —
-        // true once *any* untrusted repo content has entered this Mission's
+        // true once *any* untrusted repo content has entered this Session's
         // context (an approved AGENTS.md/Skill this turn, or a prior
         // file/diff/MCP read anywhere in its history). Every tool call made
         // from this point on is tagged for the History panel. This is
-        // deliberately coarse (Mission-wide, not per-argument taint
+        // deliberately coarse (Session-wide, not per-argument taint
         // tracking) — see SECURITY.md for the documented limitation.
         let untrusted_content_active = agents_md_included
             || has_skills
@@ -1796,7 +1908,7 @@ impl ModelManager {
                 })
             });
 
-        // Resolve model config (swappable mid-mission: read settings fresh each time)
+        // Resolve model config (swappable mid-session: read settings fresh each time)
         let settings = self.persistence.get_settings()?;
         let resolved = resolve_active_config(&settings, Some(role.clone())).unwrap_or_else(|| {
             // Fallback chain already includes anthropic default
@@ -1807,15 +1919,15 @@ impl ModelManager {
                 endpoint: provider_endpoint(&settings, &ModelProvider::Anthropic),
             }
         });
-        let resolved = apply_mission_model_override(resolved, &settings, &mission);
+        let resolved = apply_session_model_override(resolved, &settings, &session);
 
         info!(
-            "Processing message for mission {} with provider={:?} model={} role={:?}",
-            mission_id, resolved.provider, resolved.model_id, role
+            "Processing message for session {} with provider={:?} model={} role={:?}",
+            session_id, resolved.provider, resolved.model_id, role
         );
 
         // Context compaction (review_prompt.md §3.1): checked before every
-        // call, not after — a Mission that's about to exceed its context
+        // call, not after — a Session that's about to exceed its context
         // window gets compacted on the turn that would have pushed it over,
         // not on some later turn once it's already too late. Compaction
         // itself is a normal, visible System message (still in the History
@@ -1828,17 +1940,17 @@ impl ModelManager {
             &resolved.model_id,
         ) {
             self.persistence
-                .create_message(mission_id, MessageRole::System, &digest, vec![])?;
-            self.persistence.list_messages(mission_id)?
+                .create_message(session_id, MessageRole::System, &digest, vec![])?;
+            self.persistence.list_messages(session_id)?
         } else {
             history
         };
         let history = effective_history(&history);
 
-        // A Mission that can't reach a provider used to answer with a
+        // A Session that can't reach a provider used to answer with a
         // fabricated Assistant turn — "here's a simulated response... I would
         // have: 1. Analyzed the repo, 2. Checked AGENTS.md" — and then marked
-        // the Mission `Review`, as if work had been done and was waiting to be
+        // the Session `Review`, as if work had been done and was waiting to be
         // looked at. Nothing had run. That is the exact "looks like it works"
         // failure mode this project's conventions exist to prevent, and it was
         // on the very first turn a new user without a key would ever take.
@@ -1852,7 +1964,7 @@ impl ModelManager {
         ) && resolved.api_key.is_none()
         {
             Some(format!(
-                "⚠️ This Mission is routed to {:?} ({}), but no API key is configured, \
+                "⚠️ This Session is routed to {:?} ({}), but no API key is configured, \
                  so nothing was sent and no work was done.\n\n\
                  Add a key in Settings → Providers, or set one of:\n\
                  - Anthropic: ANTHROPIC_API_KEY\n\
@@ -1872,7 +1984,7 @@ impl ModelManager {
         ) && resolved.endpoint.is_none()
         {
             Some(format!(
-                "⚠️ This Mission is routed to {:?} ({}), but no endpoint is configured, \
+                "⚠️ This Session is routed to {:?} ({}), but no endpoint is configured, \
                  so nothing was sent and no work was done.\n\n\
                  Set the OpenAI-compatible endpoint in Settings → Providers, for example:\n\
                  - OpenRouter: https://openrouter.ai/api/v1\n\
@@ -1889,37 +2001,37 @@ impl ModelManager {
 
         if let Some(notice) = missing_config {
             self.persistence
-                .create_message(mission_id, MessageRole::System, &notice, vec![])?;
-            emit_new_message(&app_state, mission_id, &notice);
+                .create_message(session_id, MessageRole::System, &notice, vec![])?;
+            emit_new_message(&app_state, session_id, &notice);
             let _ = self
                 .persistence
-                .update_mission_status(mission_id, crate::api::types::MissionStatus::Failed);
+                .update_session_status(session_id, crate::api::types::SessionStatus::Failed);
             return Ok(());
         }
 
         // Governance spend gate (Part 14, review_prompt.md §1.3): checked
-        // before dispatch, so a Mission that has already exceeded its cap
+        // before dispatch, so a Session that has already exceeded its cap
         // from prior real calls is blocked from making another one, rather
         // than the cap only ever being observed after the fact. This can't
         // know the *upcoming* call's exact cost in advance (that's only known
         // once the response's token usage is in), so it checks against zero
-        // additional spend — i.e. "is this Mission already over its cap" —
+        // additional spend — i.e. "is this Session already over its cap" —
         // which is the enforceable half of "checked before the spend, not
         // after" that's actually knowable at this point.
         {
             let decision =
                 app_state
                     .governance_manager
-                    .check_spend(&repo.workspace_id, mission_id, 0.0);
+                    .check_spend(&repo.workspace_id, session_id, 0.0);
             if !decision.allowed() {
                 let msg = format!("⚠️ {}", decision.reason());
                 let _ =
                     self.persistence
-                        .create_message(mission_id, MessageRole::System, &msg, vec![]);
-                emit_new_message(&app_state, mission_id, &msg);
+                        .create_message(session_id, MessageRole::System, &msg, vec![]);
+                emit_new_message(&app_state, session_id, &msg);
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 return Ok(());
             }
         }
@@ -1928,7 +2040,7 @@ impl ModelManager {
         let result = match resolved.provider {
             ModelProvider::Anthropic => {
                 self.call_anthropic_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt,
                     history,
                     user_content,
@@ -1942,7 +2054,7 @@ impl ModelManager {
             }
             ModelProvider::OpenAI => {
                 self.call_openai_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt,
                     history,
                     user_content,
@@ -1956,7 +2068,7 @@ impl ModelManager {
             }
             ModelProvider::Google => {
                 self.call_google_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt,
                     history,
                     user_content,
@@ -1978,7 +2090,7 @@ impl ModelManager {
                     .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
                 let chat_url = resolve_chat_url(&endpoint);
                 self.call_openai_compatible_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt,
                     history,
                     user_content,
@@ -2004,7 +2116,7 @@ impl ModelManager {
                 if usd > 0.0 {
                     app_state.governance_manager.record_spend(
                         &repo.workspace_id,
-                        mission_id,
+                        session_id,
                         usd,
                         Some(format!(
                             "{:?} {} ({} in / {} out tokens)",
@@ -2024,7 +2136,7 @@ impl ModelManager {
                     e
                 );
                 // Create system message with error and return simulated fallback? For robustness, emit error as assistant message
-                let err_msg = format!("❌ {} API error (provider={:?}, model={}): {}\n\nIf this is a key/endpoint issue, check Settings and retry. You can swap provider mid-Mission via Settings.",
+                let err_msg = format!("❌ {} API error (provider={:?}, model={}): {}\n\nIf this is a key/endpoint issue, check Settings and retry. You can swap provider mid-Session via Settings.",
                     match resolved.provider {
                         ModelProvider::Anthropic => "Anthropic",
                         ModelProvider::OpenAI => "OpenAI",
@@ -2035,15 +2147,15 @@ impl ModelManager {
                 );
                 // Persist error as assistant message so UI shows it
                 let _ = self.persistence.create_message(
-                    mission_id,
+                    session_id,
                     MessageRole::Assistant,
                     &err_msg,
                     vec![],
                 );
-                emit_new_message(&app_state, mission_id, &err_msg);
+                emit_new_message(&app_state, session_id, &err_msg);
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 // Don't propagate as fatal, we already handled
                 return Ok(());
             }
@@ -2056,12 +2168,12 @@ impl ModelManager {
     // Anthropic streaming (existing, cleaned up, with tracing)
     // -----------------------------------------------------------------------
     // Each provider call needs its own model/key/endpoint plus the shared
-    // Mission/history/app_state context — genuinely that many independent
+    // Session/history/app_state context — genuinely that many independent
     // pieces of data, not a sign the function should be split further.
     #[allow(clippy::too_many_arguments)]
     async fn call_anthropic_with_tools(
         &self,
-        mission_id: &str,
+        session_id: &str,
         system_prompt: String,
         history: Vec<ChatMessage>,
         user_content: &str,
@@ -2071,7 +2183,7 @@ impl ModelManager {
         app_state: AppState,
         untrusted_content_active: bool,
     ) -> Result<TokenUsage> {
-        info!("Calling Anthropic model={} mission={}", model, mission_id);
+        info!("Calling Anthropic model={} session={}", model, session_id);
         let mut anthropic_messages = build_anthropic_messages(&history, user_content);
         let tools = anthropic_tools();
         let mut total_usage = TokenUsage::default();
@@ -2098,7 +2210,7 @@ impl ModelManager {
 
             let assistant_msg =
                 self.persistence
-                    .create_message(mission_id, MessageRole::Assistant, "", vec![])?;
+                    .create_message(session_id, MessageRole::Assistant, "", vec![])?;
             let msg_id = assistant_msg.id.clone();
 
             let response = self
@@ -2177,7 +2289,7 @@ impl ModelManager {
                                             {
                                                 accumulated_content.push_str(text_delta);
                                                 emit_delta(
-                                                    &app_state, mission_id, &msg_id, text_delta,
+                                                    &app_state, session_id, &msg_id, text_delta,
                                                 );
                                             }
                                             if delta.get("type").and_then(|t| t.as_str())
@@ -2235,14 +2347,14 @@ impl ModelManager {
             }
 
             self.update_message_content(&msg_id, &accumulated_content)?;
-            emit_complete(&app_state, mission_id, &msg_id, &accumulated_content);
+            emit_complete(&app_state, session_id, &msg_id, &accumulated_content);
             total_usage.input_tokens += round_usage.input_tokens;
             total_usage.output_tokens += round_usage.output_tokens;
 
             if tool_blocks.is_empty() || stop_reason.as_deref() != Some("tool_use") {
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 return Ok(total_usage);
             }
 
@@ -2270,7 +2382,7 @@ impl ModelManager {
 
                 let provenance = provenance_marker(untrusted_active);
                 let exec_result = self
-                    .execute_tool_with_approval(mission_id, &name, input.clone(), app_state.clone())
+                    .execute_tool_with_approval(session_id, &name, input.clone(), app_state.clone())
                     .await;
                 let (status, result_value, is_error) = match &exec_result {
                     Ok(v) => (ToolCallStatus::Completed, v.clone(), false),
@@ -2321,11 +2433,11 @@ impl ModelManager {
         );
         let _ = self
             .persistence
-            .create_message(mission_id, MessageRole::System, &warn_msg, vec![]);
-        emit_new_message(&app_state, mission_id, &warn_msg);
+            .create_message(session_id, MessageRole::System, &warn_msg, vec![]);
+        emit_new_message(&app_state, session_id, &warn_msg);
         let _ = self
             .persistence
-            .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+            .update_session_status(session_id, crate::api::types::SessionStatus::Review);
         Ok(total_usage)
     }
 
@@ -2335,7 +2447,7 @@ impl ModelManager {
     #[allow(clippy::too_many_arguments)]
     async fn call_openai_with_tools(
         &self,
-        mission_id: &str,
+        session_id: &str,
         system_prompt: String,
         history: Vec<ChatMessage>,
         user_content: &str,
@@ -2346,8 +2458,8 @@ impl ModelManager {
         untrusted_content_active: bool,
     ) -> Result<TokenUsage> {
         info!(
-            "Calling OpenAI model={} url={} mission={}",
-            model, chat_url, mission_id
+            "Calling OpenAI model={} url={} session={}",
+            model, chat_url, session_id
         );
         let mut messages = build_openai_messages(&system_prompt, &history, user_content);
         let tools = openai_tools();
@@ -2369,7 +2481,7 @@ impl ModelManager {
 
             let assistant_msg =
                 self.persistence
-                    .create_message(mission_id, MessageRole::Assistant, "", vec![])?;
+                    .create_message(session_id, MessageRole::Assistant, "", vec![])?;
             let msg_id = assistant_msg.id.clone();
 
             let response = self
@@ -2455,7 +2567,7 @@ impl ModelManager {
                                     {
                                         if !content.is_empty() {
                                             accumulated.push_str(content);
-                                            emit_delta(&app_state, mission_id, &msg_id, content);
+                                            emit_delta(&app_state, session_id, &msg_id, content);
                                         }
                                     }
                                     // Tool calls delta
@@ -2504,14 +2616,14 @@ impl ModelManager {
             }
 
             self.update_message_content(&msg_id, &accumulated)?;
-            emit_complete(&app_state, mission_id, &msg_id, &accumulated);
+            emit_complete(&app_state, session_id, &msg_id, &accumulated);
             total_usage.input_tokens += round_usage.input_tokens;
             total_usage.output_tokens += round_usage.output_tokens;
 
             if tool_calls_accum.is_empty() || finish_reason.as_deref() != Some("tool_calls") {
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 return Ok(total_usage);
             }
 
@@ -2536,7 +2648,7 @@ impl ModelManager {
 
                 let provenance = provenance_marker(untrusted_active);
                 let exec_result = self
-                    .execute_tool_with_approval(mission_id, &name, input.clone(), app_state.clone())
+                    .execute_tool_with_approval(session_id, &name, input.clone(), app_state.clone())
                     .await;
                 let (status, result_value) = match &exec_result {
                     Ok(v) => (ToolCallStatus::Completed, v.clone()),
@@ -2586,11 +2698,11 @@ impl ModelManager {
         );
         let _ = self
             .persistence
-            .create_message(mission_id, MessageRole::System, &warn_msg, vec![]);
-        emit_new_message(&app_state, mission_id, &warn_msg);
+            .create_message(session_id, MessageRole::System, &warn_msg, vec![]);
+        emit_new_message(&app_state, session_id, &warn_msg);
         let _ = self
             .persistence
-            .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+            .update_session_status(session_id, crate::api::types::SessionStatus::Review);
         Ok(total_usage)
     }
 
@@ -2604,7 +2716,7 @@ impl ModelManager {
     #[allow(clippy::too_many_arguments)]
     async fn call_openai_compatible_with_tools(
         &self,
-        mission_id: &str,
+        session_id: &str,
         system_prompt: String,
         history: Vec<ChatMessage>,
         user_content: &str,
@@ -2615,8 +2727,8 @@ impl ModelManager {
         untrusted_content_active: bool,
     ) -> Result<TokenUsage> {
         info!(
-            "Calling OpenAI-compatible model={} url={} mission={}",
-            model, chat_url, mission_id
+            "Calling OpenAI-compatible model={} url={} session={}",
+            model, chat_url, session_id
         );
         let mut messages = build_openai_messages(&system_prompt, &history, user_content);
         let tools = openai_tools();
@@ -2641,7 +2753,7 @@ impl ModelManager {
 
             let assistant_msg =
                 self.persistence
-                    .create_message(mission_id, MessageRole::Assistant, "", vec![])?;
+                    .create_message(session_id, MessageRole::Assistant, "", vec![])?;
             let msg_id = assistant_msg.id.clone();
 
             let mut req_builder = self
@@ -2737,7 +2849,7 @@ impl ModelManager {
                                     {
                                         if !content.is_empty() {
                                             accumulated.push_str(content);
-                                            emit_delta(&app_state, mission_id, &msg_id, content);
+                                            emit_delta(&app_state, session_id, &msg_id, content);
                                         }
                                     }
                                     if let Some(tool_calls) =
@@ -2784,7 +2896,7 @@ impl ModelManager {
                         if accumulated.is_empty() {
                             if let Some(text) = event.get("text").and_then(|t| t.as_str()) {
                                 accumulated.push_str(text);
-                                emit_delta(&app_state, mission_id, &msg_id, text);
+                                emit_delta(&app_state, session_id, &msg_id, text);
                             }
                         }
                     }
@@ -2813,14 +2925,14 @@ impl ModelManager {
             }
 
             self.update_message_content(&msg_id, &accumulated)?;
-            emit_complete(&app_state, mission_id, &msg_id, &accumulated);
+            emit_complete(&app_state, session_id, &msg_id, &accumulated);
             total_usage.input_tokens += round_usage.input_tokens;
             total_usage.output_tokens += round_usage.output_tokens;
 
             if tool_calls_accum.is_empty() || finish_reason.as_deref() != Some("tool_calls") {
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 return Ok(total_usage);
             }
 
@@ -2845,7 +2957,7 @@ impl ModelManager {
 
                 let provenance = provenance_marker(untrusted_active);
                 let exec_result = self
-                    .execute_tool_with_approval(mission_id, &name, input.clone(), app_state.clone())
+                    .execute_tool_with_approval(session_id, &name, input.clone(), app_state.clone())
                     .await;
                 let (status, result_value) = match &exec_result {
                     Ok(v) => (ToolCallStatus::Completed, v.clone()),
@@ -2895,11 +3007,11 @@ impl ModelManager {
         );
         let _ = self
             .persistence
-            .create_message(mission_id, MessageRole::System, &warn_msg, vec![]);
-        emit_new_message(&app_state, mission_id, &warn_msg);
+            .create_message(session_id, MessageRole::System, &warn_msg, vec![]);
+        emit_new_message(&app_state, session_id, &warn_msg);
         let _ = self
             .persistence
-            .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+            .update_session_status(session_id, crate::api::types::SessionStatus::Review);
         Ok(total_usage)
     }
 
@@ -2909,7 +3021,7 @@ impl ModelManager {
     #[allow(clippy::too_many_arguments)]
     async fn call_google_with_tools(
         &self,
-        mission_id: &str,
+        session_id: &str,
         system_prompt: String,
         history: Vec<ChatMessage>,
         user_content: &str,
@@ -2919,7 +3031,7 @@ impl ModelManager {
         app_state: AppState,
         untrusted_content_active: bool,
     ) -> Result<TokenUsage> {
-        info!("Calling Google model={} mission={}", model, mission_id);
+        info!("Calling Google model={} session={}", model, session_id);
 
         let mut contents = build_google_contents(&history, user_content);
         let tools = google_tools();
@@ -2947,7 +3059,7 @@ impl ModelManager {
 
             let assistant_msg =
                 self.persistence
-                    .create_message(mission_id, MessageRole::Assistant, "", vec![])?;
+                    .create_message(session_id, MessageRole::Assistant, "", vec![])?;
             let msg_id = assistant_msg.id.clone();
 
             let response = self
@@ -3047,7 +3159,7 @@ impl ModelManager {
                                                 if !text.is_empty() {
                                                     accumulated.push_str(text);
                                                     emit_delta(
-                                                        &app_state, mission_id, &msg_id, text,
+                                                        &app_state, session_id, &msg_id, text,
                                                     );
                                                 }
                                             }
@@ -3072,14 +3184,14 @@ impl ModelManager {
             }
 
             self.update_message_content(&msg_id, &accumulated)?;
-            emit_complete(&app_state, mission_id, &msg_id, &accumulated);
+            emit_complete(&app_state, session_id, &msg_id, &accumulated);
             total_usage.input_tokens += round_usage.input_tokens;
             total_usage.output_tokens += round_usage.output_tokens;
 
             if function_calls.is_empty() {
                 let _ = self
                     .persistence
-                    .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+                    .update_session_status(session_id, crate::api::types::SessionStatus::Review);
                 return Ok(total_usage);
             }
 
@@ -3097,7 +3209,7 @@ impl ModelManager {
 
                 let provenance = provenance_marker(untrusted_active);
                 let exec_result = self
-                    .execute_tool_with_approval(mission_id, &name, args.clone(), app_state.clone())
+                    .execute_tool_with_approval(session_id, &name, args.clone(), app_state.clone())
                     .await;
                 let (status, result_value) = match &exec_result {
                     Ok(v) => (ToolCallStatus::Completed, v.clone()),
@@ -3144,11 +3256,11 @@ impl ModelManager {
         );
         let _ = self
             .persistence
-            .create_message(mission_id, MessageRole::System, &warn_msg, vec![]);
-        emit_new_message(&app_state, mission_id, &warn_msg);
+            .create_message(session_id, MessageRole::System, &warn_msg, vec![]);
+        emit_new_message(&app_state, session_id, &warn_msg);
         let _ = self
             .persistence
-            .update_mission_status(mission_id, crate::api::types::MissionStatus::Review);
+            .update_session_status(session_id, crate::api::types::SessionStatus::Review);
         Ok(total_usage)
     }
 
@@ -3164,13 +3276,13 @@ impl ModelManager {
     // -----------------------------------------------------------------------
 
     /// Gives a subagent a real, bounded tool-calling turn: reuses the exact
-    /// same per-provider multi-round loops the main Mission thread uses
+    /// same per-provider multi-round loops the main Session thread uses
     /// (the tool-execution fix this session), with the subagent's own
     /// role-specific system prompt and prompt as a one-shot exchange rather
-    /// than the Mission's stored history. Tool calls run through
+    /// than the Session's stored history. Tool calls run through
     /// `execute_tool_with_approval` — same autonomy gate, same
     /// human-approval wait, same per-path locking — a subagent has no
-    /// separate approval flow, it inherits the parent Mission's.
+    /// separate approval flow, it inherits the parent Session's.
     ///
     /// review_prompt.md / Gemini-checklist follow-up: `perform_subagent_work`
     /// (`subagent/mod.rs`) used to return a canned string per role — no
@@ -3178,7 +3290,7 @@ impl ModelManager {
     /// what the prompt asked for. This is the real implementation it calls.
     pub async fn run_subagent_turn(
         &self,
-        mission_id: &str,
+        session_id: &str,
         system_prompt: &str,
         user_content: &str,
         app_state: AppState,
@@ -3187,15 +3299,15 @@ impl ModelManager {
         let resolved = resolve_active_config(&settings, None).ok_or_else(|| {
             anyhow!("No model provider is configured — set one up in Settings before spawning subagents")
         })?;
-        let mission = self.persistence.get_mission(mission_id)?;
-        let resolved = apply_mission_model_override(resolved, &settings, &mission);
+        let session = self.persistence.get_session(session_id)?;
+        let resolved = apply_session_model_override(resolved, &settings, &session);
 
-        let messages_before = self.persistence.list_messages(mission_id)?.len();
+        let messages_before = self.persistence.list_messages(session_id)?.len();
 
         let result = match resolved.provider {
             ModelProvider::Anthropic => {
                 self.call_anthropic_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt.to_string(),
                     vec![],
                     user_content,
@@ -3209,7 +3321,7 @@ impl ModelManager {
             }
             ModelProvider::OpenAI => {
                 self.call_openai_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt.to_string(),
                     vec![],
                     user_content,
@@ -3223,7 +3335,7 @@ impl ModelManager {
             }
             ModelProvider::Google => {
                 self.call_google_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt.to_string(),
                     vec![],
                     user_content,
@@ -3245,7 +3357,7 @@ impl ModelManager {
                     .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
                 let chat_url = resolve_chat_url(&endpoint);
                 self.call_openai_compatible_with_tools(
-                    mission_id,
+                    session_id,
                     system_prompt.to_string(),
                     vec![],
                     user_content,
@@ -3265,10 +3377,10 @@ impl ModelManager {
         // — a subagent's tokens cost exactly as much as the main agent's.
         let usd = estimate_cost_usd(&resolved.provider, &resolved.model_id, usage);
         if usd > 0.0 {
-            if let Ok(repo) = self.persistence.get_repo_channel(&mission.repo_channel_id) {
+            if let Ok(repo) = self.persistence.get_repo_channel(&session.repo_channel_id) {
                 app_state.governance_manager.record_spend(
                     &repo.workspace_id,
-                    mission_id,
+                    session_id,
                     usd,
                     Some(format!(
                         "subagent turn: {:?} {} ({} in / {} out tokens)",
@@ -3282,10 +3394,10 @@ impl ModelManager {
         }
 
         // Everything the loop above did lands as new messages on this same
-        // Mission (subagents have no separate thread) — walk only the ones
+        // Session (subagents have no separate thread) — walk only the ones
         // this call actually created to build the outcome, not the whole
         // history.
-        let messages_after = self.persistence.list_messages(mission_id)?;
+        let messages_after = self.persistence.list_messages(session_id)?;
         let new_messages = &messages_after[messages_before.min(messages_after.len())..];
 
         let mut summary = String::new();
@@ -3319,18 +3431,18 @@ impl ModelManager {
     // -----------------------------------------------------------------------
     pub async fn execute_tool_with_approval(
         &self,
-        mission_id: &str,
+        session_id: &str,
         tool_name: &str,
         args: serde_json::Value,
         app_state: AppState,
     ) -> Result<serde_json::Value> {
         let tool_call_id = uuid::Uuid::new_v4().to_string();
 
-        // Autonomy gate (Part 5 / Part 14). Autonomous Missions skip the human
+        // Autonomy gate (Part 5 / Part 14). Autonomous Sessions skip the human
         // prompt only for actions the Repo's allow-list pre-approves; anything
         // else falls through to the same approval request Co-Pilot uses, which
         // is Flow 5's "pauses and asks" behaviour.
-        let exec_ctx = self.execution_context(mission_id)?;
+        let exec_ctx = self.execution_context(session_id)?;
 
         // review_prompt.md follow-up (subagent real file work): serialize
         // concurrent writers to the same real file — now a genuine risk
@@ -3361,8 +3473,8 @@ impl ModelManager {
                     AutonomyDecision::PreApproved => true,
                     AutonomyDecision::Denied(reason) => {
                         warn!(
-                            "Autonomous tool call denied for mission {}: {}",
-                            mission_id, reason
+                            "Autonomous tool call denied for session {}: {}",
+                            session_id, reason
                         );
                         return Ok(serde_json::json!({
                             "status": "denied",
@@ -3381,9 +3493,9 @@ impl ModelManager {
                 .await?;
             let notif = crate::api::types::JsonRpcNotification {
                 jsonrpc: "2.0".to_string(),
-                method: "mission.tool_call.complete".to_string(),
+                method: "session.tool_call.complete".to_string(),
                 params: serde_json::json!({
-                    "mission_id": mission_id,
+                    "session_id": session_id,
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "arguments": args,
@@ -3399,7 +3511,7 @@ impl ModelManager {
 
         let pending = PendingToolCall {
             id: tool_call_id.clone(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             name: tool_name.to_string(),
             arguments: args.clone(),
             approved: None,
@@ -3419,9 +3531,9 @@ impl ModelManager {
 
         let notif = crate::api::types::JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
-            method: "mission.tool_call.request".to_string(),
+            method: "session.tool_call.request".to_string(),
             params: serde_json::json!({
-                "mission_id": mission_id,
+                "session_id": session_id,
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "arguments": args,
@@ -3458,9 +3570,9 @@ impl ModelManager {
 
         let notif = crate::api::types::JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
-            method: "mission.tool_call.complete".to_string(),
+            method: "session.tool_call.complete".to_string(),
             params: serde_json::json!({
-                "mission_id": mission_id,
+                "session_id": session_id,
                 "tool_call_id": tool_call_id,
                 "result": result
             }),
@@ -3472,20 +3584,20 @@ impl ModelManager {
         Ok(result)
     }
 
-    /// Everything the tool layer needs to enforce a Mission's boundary: which
+    /// Everything the tool layer needs to enforce a Session's boundary: which
     /// directory it owns, how autonomous it is, and which repo's allow-list applies.
-    fn execution_context(&self, mission_id: &str) -> Result<ExecutionContext> {
-        let mission = self.persistence.get_mission(mission_id)?;
+    fn execution_context(&self, session_id: &str) -> Result<ExecutionContext> {
+        let session = self.persistence.get_session(session_id)?;
         let repo = self
             .persistence
-            .get_repo_channel(&mission.repo_channel_id)?;
-        let root = mission
+            .get_repo_channel(&session.repo_channel_id)?;
+        let root = session
             .worktree_path
             .clone()
             .unwrap_or_else(|| repo.path.clone());
         Ok(ExecutionContext {
-            mission_id: mission_id.to_string(),
-            autonomy: mission.autonomy_level,
+            session_id: session_id.to_string(),
+            autonomy: session.autonomy_level,
             root,
             repo_path: repo.path,
             role_profile: None,
@@ -3493,30 +3605,30 @@ impl ModelManager {
     }
 
     /// Same as `execution_context`, but scoped to a named role profile — used
-    /// when a Mission's Planner invokes a profile as a scoped subagent
+    /// when a Session's Planner invokes a profile as a scoped subagent
     /// (Phase 4, Part A). Every tool call in this context is checked against
     /// the profile's `allowed_tools` before anything else runs.
     pub fn execution_context_for_profile(
         &self,
-        mission_id: &str,
+        session_id: &str,
         profile: crate::role_profiles::RoleProfile,
     ) -> Result<ExecutionContext> {
-        let mut ctx = self.execution_context(mission_id)?;
+        let mut ctx = self.execution_context(session_id)?;
         ctx.role_profile = Some(profile);
         Ok(ctx)
     }
 
-    /// Decide whether an Autonomous Mission may run a tool call without asking.
+    /// Decide whether an Autonomous Session may run a tool call without asking.
     ///
     /// `run_terminal` consults the command allow-list. The file/git tools
     /// (`read_file`/`write_file`/`edit_file`/`list_files`/`git_status`/
     /// `git_diff`/`git_commit`) are pre-approved only when their path argument
-    /// actually resolves inside the Mission's own worktree — checked here via
+    /// actually resolves inside the Session's own worktree — checked here via
     /// the exact same `confine_for_tool` that `execute_tool_direct_in` uses to
     /// perform the operation, so this decision can never drift from what the
     /// tool actually does. A path that escapes the worktree is denied outright
     /// rather than falling back to a human-approval prompt: an Autonomous
-    /// Mission asking to touch a file outside its own worktree is a stronger
+    /// Session asking to touch a file outside its own worktree is a stronger
     /// signal than an ordinary command needing a second look.
     fn autonomy_decision(
         &self,
@@ -3541,7 +3653,7 @@ impl ModelManager {
             return match ctx.confine_for_tool(path) {
                 Ok(_) => AutonomyDecision::PreApproved,
                 Err(e) => AutonomyDecision::Denied(format!(
-                    "Path is outside this Mission's worktree and cannot be auto-approved: {e}"
+                    "Path is outside this Session's worktree and cannot be auto-approved: {e}"
                 )),
             };
         }
@@ -3656,7 +3768,7 @@ impl ModelManager {
                     .context("Missing command")?;
                 let requested = args.get("workdir").and_then(|w| w.as_str()).unwrap_or(".");
 
-                // A Mission-scoped call runs through the sandbox, in the Mission's
+                // A Session-scoped call runs through the sandbox, in the Session's
                 // own directory, and can never be redirected outside it by a
                 // model-supplied `workdir`.
                 if let Some(root) = ctx.confined_root() {
@@ -3804,14 +3916,14 @@ mod role_profile_enforcement_tests {
         )
     }
 
-    /// The exact enforcement path: a Mission-scoped tool call carrying a
+    /// The exact enforcement path: a Session-scoped tool call carrying a
     /// restricted role profile must be denied for a tool outside its
     /// `allowed_tools`, before any file operation is attempted.
     #[tokio::test]
     async fn a_read_only_profile_is_denied_a_write_call() {
         let (manager, app_state) = manager_and_state();
         let ctx = ExecutionContext {
-            mission_id: "m1".into(),
+            session_id: "m1".into(),
             autonomy: crate::api::types::AutonomyLevel::Manual,
             root: String::new(),
             repo_path: String::new(),
@@ -3844,7 +3956,7 @@ mod role_profile_enforcement_tests {
 
         let (manager, app_state) = manager_and_state();
         let ctx = ExecutionContext {
-            mission_id: "m1".into(),
+            session_id: "m1".into(),
             autonomy: crate::api::types::AutonomyLevel::Manual,
             root: String::new(),
             repo_path: String::new(),
@@ -3871,7 +3983,7 @@ mod role_profile_enforcement_tests {
 
         let (manager, app_state) = manager_and_state();
         let ctx = ExecutionContext {
-            mission_id: "m1".into(),
+            session_id: "m1".into(),
             autonomy: crate::api::types::AutonomyLevel::Manual,
             root: String::new(),
             repo_path: String::new(),
@@ -3908,7 +4020,7 @@ mod sandbox_confinement_tests {
 
     fn confined_ctx(root: &str) -> ExecutionContext {
         ExecutionContext {
-            mission_id: "m1".into(),
+            session_id: "m1".into(),
             autonomy: crate::api::types::AutonomyLevel::Autonomous,
             root: root.to_string(),
             repo_path: root.to_string(),
@@ -4170,37 +4282,66 @@ mod spend_tracking_tests {
     use super::*;
     use axum::{routing::post, Router};
 
+    /// One million input + one million output tokens, so a model's cost is
+    /// exactly `input_per_million + output_per_million` and the arithmetic
+    /// stays legible.
+    const ONE_MILLION_EACH: TokenUsage = TokenUsage {
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+    };
+
+    /// What the catalog itself says a model costs.
+    ///
+    /// These tests used to hardcode the vendor's price list, which made them
+    /// assertions about Google's and OpenAI's pricing decisions rather than
+    /// about our code — and they duly broke the day Gemini Flash was repriced
+    /// from $1.50/$7.50 to $0.75/$3.75, with nothing wrong in the product. The
+    /// behaviour actually worth pinning is that `estimate_cost_usd` reads
+    /// *per-model catalog* pricing instead of the family heuristic it replaced.
+    fn catalog_price(provider: &ModelProvider, model_id: &str) -> (f64, f64) {
+        let key = catalog_key(provider).expect("provider should have a catalog key");
+        let model = catalog::lookup(key, model_id)
+            .unwrap_or_else(|| panic!("{model_id} should be in the {key} catalog"));
+        (model.input_per_million, model.output_per_million)
+    }
+
+    fn expected_cost(provider: &ModelProvider, model_id: &str) -> f64 {
+        let (input, output) = catalog_price(provider, model_id);
+        input + output
+    }
+
     #[test]
     fn estimate_cost_usd_prices_anthropic_from_the_real_catalog() {
-        let usage = TokenUsage {
-            input_tokens: 1_000_000,
-            output_tokens: 1_000_000,
-        };
-        // The number the old family heuristic got wrong: sonnet-5 is $2/$10,
-        // not the sonnet-tier $3/$15 it was lumped in with. Since the retired-id
-        // migration made it the default model, every spend figure and every
-        // governance cap decision on the default route was 50% high.
-        assert_eq!(
+        let usage = ONE_MILLION_EACH;
+        for id in [
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-opus-5",
+            "claude-haiku-4-5",
+        ] {
+            assert_eq!(
+                estimate_cost_usd(&ModelProvider::Anthropic, id, usage),
+                expected_cost(&ModelProvider::Anthropic, id),
+                "{id} should be priced from the catalog entry, not a family heuristic"
+            );
+        }
+
+        // The bug this pins: the old heuristic priced everything named
+        // "sonnet" at the same $3/$15, including `claude-sonnet-5` — which is
+        // cheaper, and which the retired-id migration made the default model,
+        // so every spend figure and governance cap decision on the default
+        // route was overstated. Two sonnets costing different amounts is what
+        // proves the lookup is per-model.
+        assert_ne!(
             estimate_cost_usd(&ModelProvider::Anthropic, "claude-sonnet-5", usage),
-            2.0 + 10.0
-        );
-        // sonnet-4-6 genuinely is $3/$15 — proving these are per-model catalog
-        // lookups, not one tier applied to everything named "sonnet".
-        assert_eq!(
             estimate_cost_usd(&ModelProvider::Anthropic, "claude-sonnet-4-6", usage),
-            3.0 + 15.0
+            "two ids in the same family must not collapse to one tier"
         );
-        assert_eq!(
-            estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-5", usage),
-            5.0 + 25.0
-        );
-        assert_eq!(
-            estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-4-8", usage),
-            5.0 + 25.0
-        );
-        assert_eq!(
-            estimate_cost_usd(&ModelProvider::Anthropic, "claude-haiku-4-5", usage),
-            1.0 + 5.0
+
+        assert!(
+            estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-5", usage)
+                > estimate_cost_usd(&ModelProvider::Anthropic, "claude-haiku-4-5", usage),
+            "opus should cost more than haiku"
         );
     }
 
@@ -4214,31 +4355,191 @@ mod spend_tracking_tests {
         // gpt-4o-mini, which the shipped list had already outlived.
         assert_eq!(
             estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6", usage),
-            5.0 + 30.0
+            expected_cost(&ModelProvider::OpenAI, "gpt-5.6")
         );
         assert_eq!(
             estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.4-mini", usage),
-            0.75 + 4.5
+            expected_cost(&ModelProvider::OpenAI, "gpt-5.4-mini")
+        );
+        assert!(
+            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6", usage)
+                > estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.4-mini", usage),
+            "the flagship should cost more than the mini tier"
         );
     }
 
     #[test]
     fn estimate_cost_usd_prices_google_by_model_tier() {
-        let usage = TokenUsage {
-            input_tokens: 1_000_000,
-            output_tokens: 1_000_000,
-        };
+        let usage = ONE_MILLION_EACH;
         // gemini-1.5-* used to be asserted here. Those models no longer exist,
         // which is exactly how a stale hardcoded table stays "passing" while
         // the product offers users ids that 404.
+        for id in ["gemini-3.6-flash", "gemini-3.1-pro-preview"] {
+            assert_eq!(
+                estimate_cost_usd(&ModelProvider::Google, id, usage),
+                expected_cost(&ModelProvider::Google, id),
+                "{id} should be priced from the catalog entry"
+            );
+        }
+        assert!(
+            estimate_cost_usd(&ModelProvider::Google, "gemini-3.1-pro-preview", usage)
+                > estimate_cost_usd(&ModelProvider::Google, "gemini-3.6-flash", usage),
+            "pro should cost more than flash"
+        );
+    }
+
+    /// The bug this pins cost the entire product: with a `GEMINI_API_KEY` set
+    /// and no explicit `google_model`, resolution fell back to the hardcoded
+    /// `gemini-1.5-flash`, which Google has retired. Every Planner and
+    /// Implementer turn 404'd, so Sessions only ever produced placeholder plans
+    /// — while `model.list` correctly reported Google as enabled.
+    ///
+    /// A default that is not in the catalog cannot be called, so this asserts
+    /// exactly that for every first-party provider.
+    #[test]
+    fn each_providers_default_model_actually_exists_in_the_catalog() {
+        let settings = Settings {
+            anthropic_api_key: None,
+            anthropic_model: String::new(),
+            openai_api_key: None,
+            openai_model: None,
+            google_api_key: None,
+            google_model: None,
+            openai_compatible_endpoint: None,
+            openai_compatible_api_key: None,
+            openai_compatible_model: None,
+            worktree_root: None,
+            theme: "dark".to_string(),
+            planner_provider: None,
+            planner_model: None,
+            implementer_provider: None,
+            implementer_model: None,
+            reviewer_provider: None,
+            reviewer_model: None,
+            github_token: None,
+        };
+
+        for provider in [
+            ModelProvider::Anthropic,
+            ModelProvider::OpenAI,
+            ModelProvider::Google,
+        ] {
+            let default_id = provider_default_model(&settings, &provider);
+            let key = catalog_key(&provider).unwrap();
+            assert!(
+                catalog::lookup(key, &default_id).is_some(),
+                "{provider:?} defaults to `{default_id}`, which is not in the {key} catalog — \
+                 it would 404 on the first call"
+            );
+            assert!(
+                !default_id.contains("preview"),
+                "{provider:?} defaults to the preview id `{default_id}`; a default should be \
+                 generally available"
+            );
+        }
+    }
+
+    /// An explicitly configured model must still win; the catalog is only the
+    /// fallback for "nothing chosen".
+    #[test]
+    fn an_explicitly_configured_model_is_not_overridden_by_the_catalog_default() {
+        let mut settings = Settings {
+            anthropic_api_key: None,
+            anthropic_model: "claude-opus-5".to_string(),
+            openai_api_key: None,
+            openai_model: None,
+            google_api_key: None,
+            google_model: Some("gemini-3.1-pro-preview".to_string()),
+            openai_compatible_endpoint: None,
+            openai_compatible_api_key: None,
+            openai_compatible_model: None,
+            worktree_root: None,
+            theme: "dark".to_string(),
+            planner_provider: None,
+            planner_model: None,
+            implementer_provider: None,
+            implementer_model: None,
+            reviewer_provider: None,
+            reviewer_model: None,
+            github_token: None,
+        };
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::Google, "gemini-3.6-flash", usage),
-            1.5 + 7.5
+            provider_default_model(&settings, &ModelProvider::Google),
+            "gemini-3.1-pro-preview"
         );
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::Google, "gemini-3.1-pro-preview", usage),
-            2.0 + 12.0
+            provider_default_model(&settings, &ModelProvider::Anthropic),
+            "claude-opus-5"
         );
+
+        settings.anthropic_model = String::new();
+        assert_ne!(
+            provider_default_model(&settings, &ModelProvider::Anthropic),
+            "",
+            "an empty stored model must fall back to the catalog, not to nothing"
+        );
+    }
+
+    /// `gemini-3.7-flash` — the newest Google model, and therefore the default —
+    /// returned 503 "high demand" on every attempt while `gemini-3.6-flash`
+    /// answered normally. A busy upstream model must not mean the Planner
+    /// silently emits a placeholder plan.
+    #[test]
+    fn a_busy_model_falls_back_to_other_models_from_the_same_provider() {
+        let resolved = ResolvedModelConfig {
+            provider: ModelProvider::Google,
+            model_id: "gemini-3.7-flash".to_string(),
+            api_key: Some("k".into()),
+            endpoint: None,
+        };
+        let ids = fallback_model_ids(&resolved);
+
+        assert_eq!(
+            ids[0], "gemini-3.7-flash",
+            "the chosen model is tried first"
+        );
+        assert!(ids.len() > 1, "there must be something to fall back to");
+        assert!(
+            ids.len() <= 3,
+            "a user should not wait through a whole catalogue"
+        );
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            ids.len(),
+            "no id should be tried twice"
+        );
+        assert!(
+            ids.iter().skip(1).all(|i| !i.contains("preview")),
+            "fallbacks must be generally available: {ids:?}"
+        );
+    }
+
+    /// Retrying a bad key against every sibling model would turn one clear
+    /// error into three and bury the real cause.
+    #[test]
+    fn only_capacity_errors_are_worth_another_model() {
+        for retryable in [
+            "Google returned 503 Service Unavailable",
+            "429 Too Many Requests",
+            "{\"status\":\"UNAVAILABLE\"}",
+            "model is overloaded",
+        ] {
+            assert!(
+                is_retryable_provider_error(&anyhow::anyhow!("{retryable}")),
+                "{retryable} should be retryable"
+            );
+        }
+        for fatal in [
+            "Anthropic returned 401 Unauthorized",
+            "403 Forbidden",
+            "400 Bad Request: invalid model",
+            "404 Not Found",
+        ] {
+            assert!(
+                !is_retryable_provider_error(&anyhow::anyhow!("{fatal}")),
+                "{fatal} must surface rather than be retried"
+            );
+        }
     }
 
     #[test]
@@ -4342,27 +4643,27 @@ mod spend_tracking_tests {
     async fn call_openai_with_tools_parses_real_usage_from_the_response() {
         let (mock_url, _hits) = start_mock_openai_server(120, 45).await;
         let (manager, app_state) = manager_and_state();
-        // `create_message` inside the call needs a real mission row to
+        // `create_message` inside the call needs a real session row to
         // satisfy the foreign-key constraint (this environment's SQLite
-        // enforces it), so a real repo + mission are created first.
+        // enforces it), so a real repo + session are created first.
         let repo = manager
             .persistence
             .connect_repo("/tmp/spend-test", None)
             .unwrap();
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Spend test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
         let usage = manager
             .call_openai_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "hello",
@@ -4387,20 +4688,20 @@ mod spend_tracking_tests {
             .persistence
             .connect_repo("/tmp/spend-test-3", None)
             .unwrap();
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Spend test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
         let usage = manager
             .call_openai_compatible_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "hello",
@@ -4419,7 +4720,7 @@ mod spend_tracking_tests {
     }
 
     #[tokio::test]
-    async fn a_mission_already_over_its_spend_cap_is_blocked_before_any_http_call() {
+    async fn a_session_already_over_its_spend_cap_is_blocked_before_any_http_call() {
         let (mock_url, hits) = start_mock_openai_server(999, 999).await;
         let core = crate::Core::new_in_memory().unwrap();
         let manager = ModelManager::new(core.persistence.clone());
@@ -4429,13 +4730,13 @@ mod spend_tracking_tests {
             .persistence
             .connect_repo("/tmp/spend-cap-test", None)
             .unwrap();
-        let mission = core
+        let session = core
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
-                "Over-budget mission",
+                "Over-budget session",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -4457,28 +4758,31 @@ mod spend_tracking_tests {
             .auth_manager
             .register("owner", "test-password-123", None)
             .unwrap();
-        let session = app_state
+        // Named `auth_session`, not `session`: since Mission became Session,
+        // a bare `session` here would shadow the Session created above and
+        // silently feed a login token where a Session id belongs.
+        let auth_session = app_state
             .auth_manager
             .login("owner", "test-password-123")
             .unwrap();
         let _ = owner;
 
         let mut policy = app_state.governance_manager.get_policy(&repo.workspace_id);
-        policy.mission_spend_cap_usd = Some(1.0);
+        policy.session_spend_cap_usd = Some(1.0);
         app_state
             .governance_manager
-            .set_policy(&session, policy)
+            .set_policy(&auth_session, policy)
             .unwrap();
         app_state.governance_manager.record_spend(
             &repo.workspace_id,
-            &mission.id,
+            &session.id,
             5.0,
             Some("prior spend".into()),
         );
 
         manager
             .process_message_with_role(
-                &mission.id,
+                &session.id,
                 "do something",
                 AgentRole::Implementer,
                 app_state.clone(),
@@ -4489,18 +4793,18 @@ mod spend_tracking_tests {
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "a Mission already over its spend cap must never reach the provider call"
+            "a Session already over its spend cap must never reach the provider call"
         );
 
-        let messages = core.persistence.list_messages(&mission.id).unwrap();
+        let messages = core.persistence.list_messages(&session.id).unwrap();
         assert!(
             messages.iter().any(|m| m.content.contains("spend cap")),
-            "the Mission thread should explain why nothing ran"
+            "the Session thread should explain why nothing ran"
         );
     }
 
     #[tokio::test]
-    async fn a_mission_within_its_spend_cap_is_not_blocked() {
+    async fn a_session_within_its_spend_cap_is_not_blocked() {
         let (mock_url, hits) = start_mock_openai_server(10, 10).await;
         let core = crate::Core::new_in_memory().unwrap();
         let manager = ModelManager::new(core.persistence.clone());
@@ -4510,13 +4814,13 @@ mod spend_tracking_tests {
             .persistence
             .connect_repo("/tmp/spend-cap-test-2", None)
             .unwrap();
-        let mission = core
+        let session = core
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
-                "Within-budget mission",
+                "Within-budget session",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -4529,12 +4833,12 @@ mod spend_tracking_tests {
         core.persistence.update_settings(&settings).unwrap();
 
         // Default policy has no spend cap and nothing has been recorded yet
-        // for this Mission — the gate should pass through without needing
+        // for this Session — the gate should pass through without needing
         // any explicit policy setup.
 
         manager
             .process_message_with_role(
-                &mission.id,
+                &session.id,
                 "do something",
                 AgentRole::Implementer,
                 app_state.clone(),
@@ -4545,7 +4849,7 @@ mod spend_tracking_tests {
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "a Mission within its spend cap must reach the provider call"
+            "a Session within its spend cap must reach the provider call"
         );
     }
 }
@@ -4576,30 +4880,30 @@ mod tool_execution_tests {
         format!("data: {v}\n\n")
     }
 
-    /// A fixture Mission whose root is a real temp directory containing
+    /// A fixture Session whose root is a real temp directory containing
     /// `secret.txt` — Autonomous so `read_file` auto-approves (a test can't
     /// interactively approve a pending tool call), proving the executed tool
     /// actually touched a real file rather than just returning a canned value.
     fn tool_call_fixture(
         manager: &ModelManager,
-    ) -> (tempfile::TempDir, crate::api::types::Mission) {
+    ) -> (tempfile::TempDir, crate::api::types::Session) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("secret.txt"), "hello from disk").unwrap();
         let repo = manager
             .persistence
             .connect_repo(&dir.path().to_string_lossy(), None)
             .unwrap();
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Tool exec test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::Autonomous,
             )
             .unwrap();
-        (dir, mission)
+        (dir, session)
     }
 
     async fn start_mock_openai_tool_calling_server() -> (String, Arc<AtomicUsize>) {
@@ -4662,11 +4966,11 @@ mod tool_execution_tests {
     async fn call_openai_with_tools_actually_executes_a_requested_tool_call() {
         let (mock_url, hits) = start_mock_openai_tool_calling_server().await;
         let (manager, app_state) = manager_and_state();
-        let (_dir, mission) = tool_call_fixture(&manager);
+        let (_dir, session) = tool_call_fixture(&manager);
 
         let usage = manager
             .call_openai_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "what's in secret.txt?",
@@ -4687,7 +4991,7 @@ mod tool_execution_tests {
         assert_eq!(usage.input_tokens, 130); // 50 + 80, summed across both rounds
         assert_eq!(usage.output_tokens, 25); // 10 + 15
 
-        let messages = manager.persistence.list_messages(&mission.id).unwrap();
+        let messages = manager.persistence.list_messages(&session.id).unwrap();
         let round1_msg = messages
             .iter()
             .find(|m| !m.tool_calls.is_empty())
@@ -4713,11 +5017,11 @@ mod tool_execution_tests {
     async fn call_openai_compatible_with_tools_actually_executes_a_requested_tool_call() {
         let (mock_url, hits) = start_mock_openai_tool_calling_server().await;
         let (manager, app_state) = manager_and_state();
-        let (_dir, mission) = tool_call_fixture(&manager);
+        let (_dir, session) = tool_call_fixture(&manager);
 
         manager
             .call_openai_compatible_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "what's in secret.txt?",
@@ -4731,7 +5035,7 @@ mod tool_execution_tests {
             .unwrap();
 
         assert_eq!(hits.load(Ordering::SeqCst), 2);
-        let messages = manager.persistence.list_messages(&mission.id).unwrap();
+        let messages = manager.persistence.list_messages(&session.id).unwrap();
         let round1_msg = messages
             .iter()
             .find(|m| !m.tool_calls.is_empty())
@@ -4799,11 +5103,11 @@ mod tool_execution_tests {
     async fn call_anthropic_with_tools_actually_executes_a_requested_tool_call() {
         let (mock_url, hits) = start_mock_anthropic_tool_calling_server().await;
         let (manager, app_state) = manager_and_state();
-        let (_dir, mission) = tool_call_fixture(&manager);
+        let (_dir, session) = tool_call_fixture(&manager);
 
         let usage = manager
             .call_anthropic_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "what's in secret.txt?",
@@ -4824,7 +5128,7 @@ mod tool_execution_tests {
         assert_eq!(usage.input_tokens, 130);
         assert_eq!(usage.output_tokens, 25);
 
-        let messages = manager.persistence.list_messages(&mission.id).unwrap();
+        let messages = manager.persistence.list_messages(&session.id).unwrap();
         let round1_msg = messages
             .iter()
             .find(|m| !m.tool_calls.is_empty())
@@ -4895,11 +5199,11 @@ mod tool_execution_tests {
     async fn call_google_with_tools_actually_executes_a_requested_tool_call() {
         let (mock_base, hits) = start_mock_google_tool_calling_server().await;
         let (manager, app_state) = manager_and_state();
-        let (_dir, mission) = tool_call_fixture(&manager);
+        let (_dir, session) = tool_call_fixture(&manager);
 
         let usage = manager
             .call_google_with_tools(
-                &mission.id,
+                &session.id,
                 "system prompt".to_string(),
                 vec![],
                 "what's in secret.txt?",
@@ -4920,7 +5224,7 @@ mod tool_execution_tests {
         assert_eq!(usage.input_tokens, 130);
         assert_eq!(usage.output_tokens, 25);
 
-        let messages = manager.persistence.list_messages(&mission.id).unwrap();
+        let messages = manager.persistence.list_messages(&session.id).unwrap();
         let round1_msg = messages
             .iter()
             .find(|m| !m.tool_calls.is_empty())
@@ -5003,7 +5307,7 @@ mod tool_execution_tests {
     async fn run_subagent_turn_actually_writes_a_real_file() {
         let (mock_url, hits) = start_mock_write_file_server().await;
         let (manager, app_state) = manager_and_state();
-        let (dir, mission) = tool_call_fixture(&manager);
+        let (dir, session) = tool_call_fixture(&manager);
 
         let mut settings = manager.persistence.get_settings().unwrap();
         settings.implementer_provider = Some("openai_compatible".to_string());
@@ -5013,7 +5317,7 @@ mod tool_execution_tests {
 
         let outcome = manager
             .run_subagent_turn(
-                &mission.id,
+                &session.id,
                 "You are an implementation subagent.",
                 "Write 'written by subagent' to notes.txt",
                 app_state,
@@ -5044,7 +5348,7 @@ mod tool_execution_tests {
     async fn subagent_orchestrator_end_to_end_reports_the_real_file_it_wrote() {
         let (mock_url, _hits) = start_mock_write_file_server().await;
         let (manager, app_state) = manager_and_state();
-        let (dir, mission) = tool_call_fixture(&manager);
+        let (dir, session) = tool_call_fixture(&manager);
 
         let mut settings = manager.persistence.get_settings().unwrap();
         settings.implementer_provider = Some("openai_compatible".to_string());
@@ -5057,7 +5361,7 @@ mod tool_execution_tests {
         let subagent = orch
             .spawn(
                 crate::api::types::SubagentSpawnParams {
-                    mission_id: mission.id.clone(),
+                    session_id: session.id.clone(),
                     role: crate::api::types::SubagentRole::ParallelImpl,
                     prompt: "Write 'written by subagent' to notes.txt".to_string(),
                     tool_permissions: None,
@@ -5165,7 +5469,7 @@ mod tool_execution_tests {
 
 /// An unconfigured provider used to produce a fabricated Assistant turn
 /// ("here's a simulated response... I would have: 1. Analyzed the repo...")
-/// and then mark the Mission `Review`, as though work had completed and was
+/// and then mark the Session `Review`, as though work had completed and was
 /// waiting to be looked at — on the first turn a new user without a key would
 /// ever take. These pin the honest replacement.
 ///
@@ -5194,29 +5498,29 @@ mod unconfigured_provider_tests {
         settings.openai_compatible_endpoint = None;
         manager.persistence.update_settings(&settings).unwrap();
 
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Unconfigured",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
         manager
-            .process_message_with_role(&mission.id, "hello", AgentRole::Implementer, app_state)
+            .process_message_with_role(&session.id, "hello", AgentRole::Implementer, app_state)
             .await
             .unwrap();
 
-        (manager, mission.id)
+        (manager, session.id)
     }
 
     #[tokio::test]
     async fn an_unconfigured_provider_never_fabricates_an_assistant_turn() {
-        let (manager, mission_id) = run_turn_with_no_endpoint().await;
-        let messages = manager.persistence.list_messages(&mission_id).unwrap();
+        let (manager, session_id) = run_turn_with_no_endpoint().await;
+        let messages = manager.persistence.list_messages(&session_id).unwrap();
 
         assert!(
             !messages
@@ -5245,26 +5549,26 @@ mod unconfigured_provider_tests {
     }
 
     #[tokio::test]
-    async fn an_unconfigured_provider_does_not_mark_the_mission_ready_for_review() {
-        let (manager, mission_id) = run_turn_with_no_endpoint().await;
-        let mission = manager.persistence.get_mission(&mission_id).unwrap();
+    async fn an_unconfigured_provider_does_not_mark_the_session_ready_for_review() {
+        let (manager, session_id) = run_turn_with_no_endpoint().await;
+        let session = manager.persistence.get_session(&session_id).unwrap();
 
         assert_eq!(
-            mission.status,
-            crate::api::types::MissionStatus::Failed,
-            "nothing ran, so the Mission must not look like it has work to review"
+            session.status,
+            crate::api::types::SessionStatus::Failed,
+            "nothing ran, so the Session must not look like it has work to review"
         );
     }
 }
 
-/// Task 3 regression tests: a Mission created with an explicit
+/// Task 3 regression tests: a Session created with an explicit
 /// `model_provider`/`model_id` override must actually resolve to that model
 /// on its real turns — not just in a resolver nothing calls. Exercises the
 /// exact real call path (`process_message_with_role`) rather than testing
-/// `apply_mission_model_override` in isolation, per this codebase's
+/// `apply_session_model_override` in isolation, per this codebase's
 /// documented history of tested-but-unwired resolvers.
 #[cfg(test)]
-mod mission_model_override_tests {
+mod session_model_override_tests {
     use super::*;
     use axum::{routing::post, Json, Router};
 
@@ -5318,7 +5622,7 @@ mod mission_model_override_tests {
     }
 
     #[tokio::test]
-    async fn a_mission_with_an_explicit_model_id_resolves_to_it_not_the_global_setting() {
+    async fn a_session_with_an_explicit_model_id_resolves_to_it_not_the_global_setting() {
         let (mock_url, captured) = start_model_capturing_server().await;
         let (manager, app_state) = manager_and_state();
 
@@ -5335,30 +5639,30 @@ mod mission_model_override_tests {
         settings.openai_compatible_endpoint = Some(mock_url);
         manager.persistence.update_settings(&settings).unwrap();
 
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Override test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
-        // Mirrors what `handle_mission_create` does when `CreateMissionParams`
+        // Mirrors what `handle_session_create` does when `CreateSessionParams`
         // carries `model_provider`/`model_id`.
         manager
             .persistence
-            .update_mission_model(
-                &mission.id,
+            .update_session_model(
+                &session.id,
                 Some("openai_compatible".to_string()),
-                Some("mission-pinned-model".to_string()),
+                Some("session-pinned-model".to_string()),
             )
             .unwrap();
 
         manager
             .process_message_with_role(
-                &mission.id,
+                &session.id,
                 "hello",
                 AgentRole::Implementer,
                 app_state.clone(),
@@ -5369,14 +5673,14 @@ mod mission_model_override_tests {
         let seen = captured.lock().unwrap().clone();
         assert_eq!(
             seen,
-            vec!["mission-pinned-model".to_string()],
-            "the Mission's own model_id override must reach the provider call, \
+            vec!["session-pinned-model".to_string()],
+            "the Session's own model_id override must reach the provider call, \
              not the role's global implementer_model"
         );
     }
 
     #[tokio::test]
-    async fn a_mission_without_an_override_uses_the_global_setting() {
+    async fn a_session_without_an_override_uses_the_global_setting() {
         let (mock_url, captured) = start_model_capturing_server().await;
         let (manager, app_state) = manager_and_state();
 
@@ -5391,20 +5695,20 @@ mod mission_model_override_tests {
         settings.openai_compatible_endpoint = Some(mock_url);
         manager.persistence.update_settings(&settings).unwrap();
 
-        let mission = manager
+        let session = manager
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "No override",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
         manager
             .process_message_with_role(
-                &mission.id,
+                &session.id,
                 "hello",
                 AgentRole::Implementer,
                 app_state.clone(),
@@ -5419,7 +5723,7 @@ mod mission_model_override_tests {
 
 /// Regression tests for review_prompt.md §3.1: the full message history was
 /// sent on every turn with no summarization, truncation, or token
-/// accounting at all — a long Mission would grow until it exceeded the
+/// accounting at all — a long Session would grow until it exceeded the
 /// model's context window and then failed permanently.
 #[cfg(test)]
 mod context_compaction_tests {
@@ -5428,7 +5732,7 @@ mod context_compaction_tests {
     fn msg(role: MessageRole, content: &str) -> ChatMessage {
         ChatMessage {
             id: uuid::Uuid::new_v4().to_string(),
-            mission_id: "m1".into(),
+            session_id: "m1".into(),
             role,
             content: content.to_string(),
             tool_calls: vec![],
@@ -5659,13 +5963,13 @@ mod context_compaction_tests {
             .persistence
             .connect_repo("/tmp/compact-test", None)
             .unwrap();
-        let mission = core
+        let session = core
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Compaction test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -5673,7 +5977,7 @@ mod context_compaction_tests {
         for i in 0..15 {
             core.persistence
                 .create_message(
-                    &mission.id,
+                    &session.id,
                     MessageRole::User,
                     &format!("message {i}"),
                     vec![],
@@ -5681,7 +5985,7 @@ mod context_compaction_tests {
                 .unwrap();
         }
 
-        let digest_message = manager.compact_context_now(&mission.id).unwrap().expect(
+        let digest_message = manager.compact_context_now(&session.id).unwrap().expect(
             "15 messages against KEEP_RECENT_MESSAGES=8 should have something to fold away",
         );
 
@@ -5689,7 +5993,7 @@ mod context_compaction_tests {
 
         // The digest is a real, persisted message — visible in the full
         // history (History panel), not a side-channel.
-        let full_history = core.persistence.list_messages(&mission.id).unwrap();
+        let full_history = core.persistence.list_messages(&session.id).unwrap();
         assert!(full_history.iter().any(|m| m.id == digest_message.id));
         assert_eq!(
             full_history.len(),
@@ -5710,21 +6014,21 @@ mod context_compaction_tests {
             .persistence
             .connect_repo("/tmp/compact-test-2", None)
             .unwrap();
-        let mission = core
+        let session = core
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
-                "Short mission",
+                "Short session",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
         core.persistence
-            .create_message(&mission.id, MessageRole::User, "just one message", vec![])
+            .create_message(&session.id, MessageRole::User, "just one message", vec![])
             .unwrap();
 
-        let result = manager.compact_context_now(&mission.id).unwrap();
+        let result = manager.compact_context_now(&session.id).unwrap();
         assert!(result.is_none());
     }
 
@@ -5736,18 +6040,18 @@ mod context_compaction_tests {
             .persistence
             .connect_repo("/tmp/usage-test", None)
             .unwrap();
-        let mission = core
+        let session = core
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Usage test",
                 "a short task description",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
 
-        let usage = manager.context_usage(&mission.id).unwrap();
+        let usage = manager.context_usage(&session.id).unwrap();
         assert!(usage.window_tokens > 0);
         assert!(
             usage.used_tokens > 0,
@@ -5755,7 +6059,7 @@ mod context_compaction_tests {
         );
         assert!(
             (0.0..1.0).contains(&usage.ratio),
-            "a fresh Mission should be nowhere near its window: {}",
+            "a fresh Session should be nowhere near its window: {}",
             usage.ratio
         );
         assert!(!usage.compaction_recommended);

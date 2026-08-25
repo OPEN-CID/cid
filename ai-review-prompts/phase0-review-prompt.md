@@ -11,10 +11,10 @@ checkpoint — read both, in order).
    (`create_router`, routes `/health`, `/api/rpc`, `/ws`, and — added later, Phase 6 —
    `/metrics`). Run `cargo run -p cid-core -- --port 5919` and `curl
    http://127.0.0.1:5919/health`.
-2. **Missions run in an isolated git worktree by default, or a shared clone.** Check:
-   `cid-core/src/api/types.rs`'s `SessionMode` enum, `cid-core/src/git/mod.rs`'s worktree
+2. **Sessions run in an isolated git worktree by default, or a shared clone.** Check:
+   `cid-core/src/api/types.rs`'s `IsolationMode` enum, `cid-core/src/git/mod.rs`'s worktree
    functions, `cid-core/tests/worktree_property.rs` (11 property tests).
-3. **A real native PTY per Mission, not xterm.js-only emulation.** Check:
+3. **A real native PTY per Session, not xterm.js-only emulation.** Check:
    `cid-core/src/pty/mod.rs` (`portable-pty`-backed), `pty.create`/`pty.write`/
    `pty.resize`/`pty.kill`/`pty.list` RPC methods in `router.rs`.
 4. **Per-hunk diff accept/reject, not just whole-file.** Check: `git.hunk.apply` RPC
@@ -28,7 +28,7 @@ checkpoint — read both, in order).
    `mcp.tool.call` RPC methods, `src/components/mcp/McpPanel.tsx`.
 6. **`AGENTS.md` auto-detection on repo connect.** Check: `cid-core/src/context/mod.rs`'s
    `detect_agents_md`, called from `handle_repo_connect` in `router.rs`.
-7. **SQLite persistence for missions/messages/settings**, now using WAL journal mode
+7. **SQLite persistence for sessions/messages/settings**, now using WAL journal mode
    (added during Release validation — see Failure Modes below). Check:
    `cid-core/src/persistence/mod.rs`'s `init_schema` and the `pragma_update` calls in
    `Persistence::new`.

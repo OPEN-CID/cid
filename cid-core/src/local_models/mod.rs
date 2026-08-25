@@ -5,10 +5,14 @@
 //! - llama.cpp: http://localhost:8080/health + /v1/models + /props
 //!
 //! Design goals:
-//! - Swappable mid-Mission: detection is stateless and can be re-run anytime
+//! - Swappable mid-Session: detection is stateless and can be re-run anytime
 //! - Graceful degradation: unavailable runtime => available=false, no error bubbling
 //! - 2s timeout per request via reqwest client
 //! - Tracing for observability
+
+pub mod catalog;
+pub mod manager;
+pub mod system;
 
 use std::time::Duration;
 

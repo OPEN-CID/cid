@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { TerminalPane } from "./TerminalPane";
 import { api } from "@/lib/api";
 import { useCid } from "@/hooks/useCid";
@@ -69,25 +69,95 @@ describe("TerminalPane", () => {
     vi.mocked(api.pty.write).mockResolvedValue(undefined);
   });
 
-  it("prompts to select a mission when none is selected, and creates no PTY", () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: null } as any);
+  it("prompts to select a session when none is selected, and creates no PTY", () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: null } as any);
     render(<TerminalPane />);
-    expect(screen.getByText("Select a mission to open terminal")).toBeInTheDocument();
+    expect(screen.getByText("Select a session to open terminal")).toBeInTheDocument();
     expect(api.pty.create).not.toHaveBeenCalled();
   });
 
-  it("creates a PTY for the selected mission and shows Connected", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
-    vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-abc12345" });
+  it("creates a PTY in the Session's own worktree by default", async () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
+    vi.mocked(api.pty.create).mockResolvedValueOnce({
+      id: "pty-abc12345",
+      cwd: "/repo/.cid/worktrees/session-1",
+    });
     render(<TerminalPane />);
 
-    await waitFor(() => expect(api.pty.create).toHaveBeenCalledWith("mission-1", 120, 30));
+    await waitFor(() => expect(api.pty.create).toHaveBeenCalledWith("session-1", 120, 30, "session"));
     expect(await screen.findByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText(/pty-abc1/)).toBeInTheDocument();
+    // The real directory, reported by Core rather than reconstructed here.
+    expect(screen.getByText("/repo/.cid/worktrees/session-1")).toBeInTheDocument();
+  });
+
+  /// Switching working directory used to register a second `onData` handler and
+  /// a second notification subscription without disposing the first, because the
+  /// disposers were returned from the async body rather than from the effect —
+  /// so every keystroke went to both shells and the old PTY kept writing here.
+  it("switching working directory tears down the previous PTY's handlers", async () => {
+    vi.mocked(useCid).mockReturnValue({
+      selectedSessionId: "session-1",
+      sessions: [{ id: "session-1", title: "S1", repo_channel_id: "repo-1", worktree_path: "/wt" }],
+      repos: [{ id: "repo-1", name: "cid", path: "/repo" }],
+    } as any);
+    // Keep the shared capture behaviour — only the disposer is observed here —
+    // and restore it afterwards so later tests still see notificationHandler.
+    const unsub = vi.fn();
+    const original = vi.mocked(api.onNotification).getMockImplementation();
+    vi.mocked(api.onNotification).mockImplementation(((handler: (notif: unknown) => void) => {
+      notificationHandler = handler;
+      return unsub;
+    }) as never);
+    vi.mocked(api.pty.create)
+      .mockResolvedValueOnce({ id: "pty-one", cwd: "/wt" })
+      .mockResolvedValueOnce({ id: "pty-two", cwd: "/repo" });
+
+    render(<TerminalPane />);
+    await waitFor(() => expect(api.pty.create).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Terminal working directory"), {
+      target: { value: "session-1::repo" },
+    });
+    await waitFor(() => expect(api.pty.create).toHaveBeenCalledTimes(2));
+
+    // The first subscription must have been released.
+    expect(unsub).toHaveBeenCalled();
+
+    // And a keystroke must reach only the current shell.
+    vi.mocked(api.pty.write).mockClear();
+    onDataHandler?.("x");
+    expect(api.pty.write).toHaveBeenCalledTimes(1);
+    expect(api.pty.write).toHaveBeenCalledWith("pty-two", "x");
+
+    if (original) vi.mocked(api.onNotification).mockImplementation(original);
+  });
+
+  it("opening the main repo re-creates the PTY there and flags it as outside the Session", async () => {
+    vi.mocked(useCid).mockReturnValue({
+      selectedSessionId: "session-1",
+      sessions: [{ id: "session-1", title: "S1", repo_channel_id: "repo-1", worktree_path: "/repo/.cid/worktrees/session-1" }],
+      repos: [{ id: "repo-1", name: "cid", path: "/repo" }],
+    } as any);
+    vi.mocked(api.pty.create)
+      .mockResolvedValueOnce({ id: "pty-session", cwd: "/repo/.cid/worktrees/session-1" })
+      .mockResolvedValueOnce({ id: "pty-main", cwd: "/repo" });
+    render(<TerminalPane />);
+    await waitFor(() => expect(api.pty.create).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Terminal working directory"), {
+      target: { value: "session-1::repo" },
+    });
+
+    await waitFor(() =>
+      expect(api.pty.create).toHaveBeenLastCalledWith("session-1", 120, 30, "repo"),
+    );
+    // Not decorative: work done here is not captured by the Session's
+    // checkpoints and never appears in its diff.
+    expect(await screen.findByText("outside Session")).toBeInTheDocument();
   });
 
   it("typing into the terminal writes to the freshly-created PTY, not a stale id", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-abc12345" });
     render(<TerminalPane />);
     await waitFor(() => expect(onDataHandler).not.toBeNull());
@@ -98,7 +168,7 @@ describe("TerminalPane", () => {
   });
 
   it("routes pty.output notifications for this PTY into the terminal", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-abc12345" });
     render(<TerminalPane />);
     await waitFor(() => expect(notificationHandler).not.toBeNull());
@@ -109,7 +179,7 @@ describe("TerminalPane", () => {
   });
 
   it("ignores pty.output notifications for a different PTY", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-abc12345" });
     render(<TerminalPane />);
     await waitFor(() => expect(notificationHandler).not.toBeNull());
@@ -120,7 +190,7 @@ describe("TerminalPane", () => {
   });
 
   it("writes a failure message if PTY creation fails", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.pty.create).mockRejectedValueOnce(new Error("core unreachable"));
     render(<TerminalPane />);
 
@@ -129,9 +199,9 @@ describe("TerminalPane", () => {
 
   it("disposes the xterm instance on unmount", async () => {
     // The terminal container (and so the xterm instance) only mounts once a
-    // mission is selected — the "select a mission" early return never
+    // session is selected — the "select a session" early return never
     // renders the ref'd container at all.
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-abc12345" });
     const { unmount } = render(<TerminalPane />);
     await waitFor(() => expect(api.pty.create).toHaveBeenCalled());

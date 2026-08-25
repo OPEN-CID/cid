@@ -13,14 +13,14 @@ pub struct RepoChannel {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct Mission {
+pub struct Session {
     pub id: String,
     pub title: String,
     pub status: String,
     pub autonomy_level: String,
     pub repo_channel_id: String,
-    // Worktree-mode Missions diff against their own worktree; shared-clone
-    // Missions (this is None) diff against the Repo Channel's own path.
+    // Worktree-mode Sessions diff against their own worktree; shared-clone
+    // Sessions (this is None) diff against the Repo Channel's own path.
     pub worktree_path: Option<String>,
 }
 
@@ -63,12 +63,12 @@ pub struct PendingApproval {
     pub arguments: Value,
 }
 
-/// Which pane has keyboard focus. `Diff` replaces the whole body (mission
+/// Which pane has keyboard focus. `Diff` replaces the whole body (session
 /// list + thread) with the diff view rather than sitting alongside it —
 /// there isn't screen width in a terminal for both at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    MissionList,
+    SessionList,
     Thread,
     Composer,
     Diff,
@@ -80,8 +80,8 @@ pub struct App {
     pub status_line: String,
 
     pub repos: Vec<RepoChannel>,
-    pub missions: Vec<Mission>,
-    pub selected_mission_index: usize,
+    pub sessions: Vec<Session>,
+    pub selected_session_index: usize,
 
     pub messages: Vec<ChatMessage>,
     pub pending_approvals: Vec<PendingApproval>,
@@ -103,13 +103,13 @@ impl App {
             connected: false,
             status_line: "Connecting…".to_string(),
             repos: Vec::new(),
-            missions: Vec::new(),
-            selected_mission_index: 0,
+            sessions: Vec::new(),
+            selected_session_index: 0,
             messages: Vec::new(),
             pending_approvals: Vec::new(),
             selected_approval_index: 0,
             composer: String::new(),
-            focus: Focus::MissionList,
+            focus: Focus::SessionList,
             should_quit: false,
             last_error: None,
             diff_files: Vec::new(),
@@ -117,26 +117,26 @@ impl App {
         }
     }
 
-    pub fn selected_mission(&self) -> Option<&Mission> {
-        self.missions.get(self.selected_mission_index)
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.sessions.get(self.selected_session_index)
     }
 
-    /// A worktree-mode Mission diffs against its own worktree; a
-    /// shared-clone Mission (`worktree_path: None`) diffs against the Repo
+    /// A worktree-mode Session diffs against its own worktree; a
+    /// shared-clone Session (`worktree_path: None`) diffs against the Repo
     /// Channel's own path directly — same fallback `DiffViewer.tsx` uses.
-    fn repo_path_for_selected_mission(&self) -> Option<String> {
-        let mission = self.selected_mission()?;
-        if let Some(wt) = &mission.worktree_path {
+    fn repo_path_for_selected_session(&self) -> Option<String> {
+        let session = self.selected_session()?;
+        if let Some(wt) = &session.worktree_path {
             return Some(wt.clone());
         }
         self.repos
             .iter()
-            .find(|r| r.id == mission.repo_channel_id)
+            .find(|r| r.id == session.repo_channel_id)
             .map(|r| r.path.clone())
     }
 
     pub async fn refresh_diff(&mut self) {
-        let Some(repo_path) = self.repo_path_for_selected_mission() else {
+        let Some(repo_path) = self.repo_path_for_selected_session() else {
             self.diff_files.clear();
             return;
         };
@@ -160,8 +160,8 @@ impl App {
         }
     }
 
-    /// Full state refresh: connection, repo channels, missions across all of
-    /// them, and — if a Mission is selected — its thread and pending
+    /// Full state refresh: connection, repo channels, sessions across all of
+    /// them, and — if a Session is selected — its thread and pending
     /// approvals. Called on a fixed interval by the event loop, and
     /// immediately after any action that changes state (send, approve, deny).
     pub async fn refresh(&mut self) {
@@ -183,52 +183,52 @@ impl App {
             }
         }
 
-        let mut all_missions = Vec::new();
+        let mut all_sessions = Vec::new();
         for repo in &self.repos {
             if let Ok(result) = self
                 .client
                 .call(
-                    "mission.list",
+                    "session.list",
                     serde_json::json!({ "repo_channel_id": repo.id }),
                 )
                 .await
             {
-                if let Ok(mut parsed) = serde_json::from_value::<Vec<Mission>>(result) {
-                    all_missions.append(&mut parsed);
+                if let Ok(mut parsed) = serde_json::from_value::<Vec<Session>>(result) {
+                    all_sessions.append(&mut parsed);
                 }
             }
         }
-        self.missions = all_missions;
-        if self.selected_mission_index >= self.missions.len() && !self.missions.is_empty() {
-            self.selected_mission_index = self.missions.len() - 1;
+        self.sessions = all_sessions;
+        if self.selected_session_index >= self.sessions.len() && !self.sessions.is_empty() {
+            self.selected_session_index = self.sessions.len() - 1;
         }
 
         self.status_line = format!(
-            "{} repo channel(s), {} mission(s)",
+            "{} repo channel(s), {} session(s)",
             self.repos.len(),
-            self.missions.len()
+            self.sessions.len()
         );
 
-        if let Some(mission) = self.selected_mission().cloned() {
-            self.refresh_mission_detail(&mission.id).await;
+        if let Some(session) = self.selected_session().cloned() {
+            self.refresh_session_detail(&session.id).await;
         } else {
             self.messages.clear();
             self.pending_approvals.clear();
         }
 
         // Kept live on the same cadence as the thread — a stale diff view
-        // during an active Mission would defeat the point of watching it.
+        // during an active Session would defeat the point of watching it.
         if self.focus == Focus::Diff {
             self.refresh_diff().await;
         }
     }
 
-    async fn refresh_mission_detail(&mut self, mission_id: &str) {
+    async fn refresh_session_detail(&mut self, session_id: &str) {
         if let Ok(result) = self
             .client
             .call(
                 "message.list",
-                serde_json::json!({ "mission_id": mission_id }),
+                serde_json::json!({ "session_id": session_id }),
             )
             .await
         {
@@ -245,12 +245,12 @@ impl App {
         use crate::events::CoreEvent;
         match event {
             CoreEvent::ToolCallRequest {
-                mission_id,
+                session_id,
                 tool_call_id,
                 tool_name,
                 arguments,
             } => {
-                if self.selected_mission().is_some_and(|m| m.id == mission_id) {
+                if self.selected_session().is_some_and(|m| m.id == session_id) {
                     self.pending_approvals.push(PendingApproval {
                         tool_call_id,
                         tool_name,
@@ -267,12 +267,12 @@ impl App {
                     self.selected_approval_index -= 1;
                 }
             }
-            CoreEvent::MissionChanged => {}
+            CoreEvent::SessionChanged => {}
         }
     }
 
     pub async fn send_message(&mut self) {
-        let Some(mission) = self.selected_mission().cloned() else {
+        let Some(session) = self.selected_session().cloned() else {
             return;
         };
         let content = self.composer.trim().to_string();
@@ -284,18 +284,18 @@ impl App {
         if let Err(e) = self
             .client
             .call(
-                "mission.send_message",
-                serde_json::json!({ "mission_id": mission.id, "content": content }),
+                "session.send_message",
+                serde_json::json!({ "session_id": session.id, "content": content }),
             )
             .await
         {
             self.last_error = Some(e.to_string());
         }
-        self.refresh_mission_detail(&mission.id).await;
+        self.refresh_session_detail(&session.id).await;
     }
 
     pub async fn approve_selected(&mut self, approved: bool) {
-        let Some(mission) = self.selected_mission().cloned() else {
+        let Some(session) = self.selected_session().cloned() else {
             return;
         };
         let Some(approval) = self
@@ -309,9 +309,9 @@ impl App {
         if let Err(e) = self
             .client
             .call(
-                "mission.approve_tool",
+                "session.approve_tool",
                 serde_json::json!({
-                    "mission_id": mission.id,
+                    "session_id": session.id,
                     "tool_call_id": approval.tool_call_id,
                     "approved": approved,
                 }),
@@ -329,25 +329,25 @@ impl App {
         }
     }
 
-    pub fn select_next_mission(&mut self) {
-        if !self.missions.is_empty() {
-            self.selected_mission_index = (self.selected_mission_index + 1) % self.missions.len();
-            self.on_mission_selection_changed();
+    pub fn select_next_session(&mut self) {
+        if !self.sessions.is_empty() {
+            self.selected_session_index = (self.selected_session_index + 1) % self.sessions.len();
+            self.on_session_selection_changed();
         }
     }
 
-    pub fn select_prev_mission(&mut self) {
-        if !self.missions.is_empty() {
-            self.selected_mission_index =
-                (self.selected_mission_index + self.missions.len() - 1) % self.missions.len();
-            self.on_mission_selection_changed();
+    pub fn select_prev_session(&mut self) {
+        if !self.sessions.is_empty() {
+            self.selected_session_index =
+                (self.selected_session_index + self.sessions.len() - 1) % self.sessions.len();
+            self.on_session_selection_changed();
         }
     }
 
-    /// Pending approvals are tracked only for the currently selected Mission
+    /// Pending approvals are tracked only for the currently selected Session
     /// (see `apply_event`) — switching away must not leave a stale approval
-    /// card showing for a Mission that isn't on screen anymore.
-    fn on_mission_selection_changed(&mut self) {
+    /// card showing for a Session that isn't on screen anymore.
+    fn on_session_selection_changed(&mut self) {
         self.pending_approvals.clear();
         self.selected_approval_index = 0;
         self.messages.clear();
@@ -375,10 +375,10 @@ mod tests {
     use super::*;
     use crate::api::CoreClient;
 
-    fn mission(worktree_path: Option<&str>) -> Mission {
-        Mission {
-            id: "mission-1".into(),
-            title: "Test Mission".into(),
+    fn session(worktree_path: Option<&str>) -> Session {
+        Session {
+            id: "session-1".into(),
+            title: "Test Session".into(),
             status: "running".into(),
             autonomy_level: "co_pilot".into(),
             repo_channel_id: "repo-1".into(),
@@ -394,38 +394,38 @@ mod tests {
         }
     }
 
-    fn app_with(mission: Option<Mission>) -> App {
+    fn app_with(session: Option<Session>) -> App {
         let mut app = App::new(CoreClient::new("127.0.0.1", 5919, None));
         app.repos = vec![repo()];
-        if let Some(m) = mission {
-            app.missions = vec![m];
-            app.selected_mission_index = 0;
+        if let Some(m) = session {
+            app.sessions = vec![m];
+            app.selected_session_index = 0;
         }
         app
     }
 
     #[test]
-    fn repo_path_prefers_the_missions_own_worktree() {
-        let app = app_with(Some(mission(Some("/worktrees/mission-1"))));
+    fn repo_path_prefers_the_sessions_own_worktree() {
+        let app = app_with(Some(session(Some("/worktrees/session-1"))));
         assert_eq!(
-            app.repo_path_for_selected_mission().as_deref(),
-            Some("/worktrees/mission-1")
+            app.repo_path_for_selected_session().as_deref(),
+            Some("/worktrees/session-1")
         );
     }
 
     #[test]
-    fn repo_path_falls_back_to_the_repo_channel_for_a_shared_clone_mission() {
-        let app = app_with(Some(mission(None)));
+    fn repo_path_falls_back_to_the_repo_channel_for_a_shared_clone_session() {
+        let app = app_with(Some(session(None)));
         assert_eq!(
-            app.repo_path_for_selected_mission().as_deref(),
+            app.repo_path_for_selected_session().as_deref(),
             Some("/repos/test-repo")
         );
     }
 
     #[test]
-    fn repo_path_is_none_when_no_mission_is_selected() {
+    fn repo_path_is_none_when_no_session_is_selected() {
         let app = app_with(None);
-        assert_eq!(app.repo_path_for_selected_mission(), None);
+        assert_eq!(app.repo_path_for_selected_session(), None);
     }
 
     #[test]
@@ -458,10 +458,10 @@ mod tests {
     }
 
     #[test]
-    fn switching_missions_clears_stale_diff_state() {
+    fn switching_sessions_clears_stale_diff_state() {
         let mut app = App::new(CoreClient::new("127.0.0.1", 5919, None));
         app.repos = vec![repo()];
-        app.missions = vec![mission(None), mission(None)];
+        app.sessions = vec![session(None), session(None)];
         app.diff_files = vec![DiffFile {
             path: "a.rs".into(),
             status: "M".into(),
@@ -471,11 +471,11 @@ mod tests {
         }];
         app.selected_diff_file_index = 0;
 
-        app.select_next_mission();
+        app.select_next_session();
 
         assert!(
             app.diff_files.is_empty(),
-            "a stale diff from the previous Mission must not linger"
+            "a stale diff from the previous Session must not linger"
         );
         assert_eq!(app.selected_diff_file_index, 0);
     }
@@ -531,8 +531,8 @@ mod tests {
 
         let mut app = App::new(CoreClient::new(&host, port, None));
         app.repos = vec![repo()];
-        app.missions = vec![mission(None)];
-        app.selected_mission_index = 0;
+        app.sessions = vec![session(None)];
+        app.selected_session_index = 0;
 
         app.refresh_diff().await;
 
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_diff_clears_stale_files_when_no_mission_is_selected() {
+    async fn refresh_diff_clears_stale_files_when_no_session_is_selected() {
         let mut app = App::new(CoreClient::new("127.0.0.1", 5919, None));
         app.diff_files = vec![DiffFile {
             path: "stale.rs".into(),

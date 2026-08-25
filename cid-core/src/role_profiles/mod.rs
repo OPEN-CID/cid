@@ -5,12 +5,12 @@
  * kept as configurable profiles on top of the existing three-role engine
  * (Part 5), not ten independent agent subsystems with their own memory and
  * budget. A profile is still exactly a prompt + tool-permission set + model
- * config running through the same Mission, worktree, and model router as
+ * config running through the same Session, worktree, and model router as
  * Planner/Implementer/Reviewer — never its own subsystem.
  *
- * A Mission's Planner can invoke a profile as an additional scoped subagent
+ * A Session's Planner can invoke a profile as an additional scoped subagent
  * when the task calls for it ("this touches auth code — also run the
- * Security Reviewer profile"), sharing the parent Mission's worktree per the
+ * Security Reviewer profile"), sharing the parent Session's worktree per the
  * same rule Phase 2's subagents already follow.
  */
 

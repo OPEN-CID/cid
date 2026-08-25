@@ -35,14 +35,14 @@ regresses silently in a later refactor.
    `.github/workflows/ci.yml`'s `test-rust-linux`/`-windows`/`-macos` jobs run
    `cargo test --workspace --exclude cid --all-features`, not a narrower `-p cid-core
    --lib` that would silently exclude `cid-core/tests/*.rs` and all of `cid-tui`.
-5. **Vibe-coding Mission preset**: `vibe: true` on `mission.create` produces an
+5. **Vibe-coding Session preset**: `vibe: true` on `session.create` produces an
    already-`Approved` plan with `approved_by: "vibe-preset"`, so the Implementer is
    unblocked immediately — but tool-call approval (Co-Pilot) and the diff viewer are
    unaffected. Check: `RoleRunner::generate_vibe_plan` in `cid-core/src/roles/mod.rs`.
-   Run `vibe_preset_mission_starts_with_an_already_approved_plan`,
+   Run `vibe_preset_session_starts_with_an_already_approved_plan`,
    `vibe_preset_does_not_bypass_tool_call_approval`,
-   `non_vibe_mission_still_uses_the_full_planner` in `api_integration.rs`, and confirm
-   the frontend actually exposes this (a checkbox in `MissionCreationModal` in
+   `non_vibe_session_still_uses_the_full_planner` in `api_integration.rs`, and confirm
+   the frontend actually exposes this (a checkbox in `SessionCreationModal` in
    `src/App.tsx`, not just a backend flag nothing in the UI sets).
 6. **Dependency audit is real and dated**, not a repeat of the original Part 18 table.
    Check: `docs/045-Dependency-Audit.md` cites specific, checkable findings (e.g., the

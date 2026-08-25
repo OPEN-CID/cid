@@ -2,12 +2,12 @@
 
 ## Vision
 
-The real state machines governing Missions, Plans, Reviews, and ACP handoffs — as
+The real state machines governing Sessions, Plans, Reviews, and ACP handoffs — as
 implemented in `api/types.rs` and their owning managers.
 
 ## Goals
 
-### MissionStatus
+### SessionStatus
 
 ```mermaid
 stateDiagram-v2
@@ -25,18 +25,18 @@ stateDiagram-v2
 ```
 
 `BlockedOnApproval` is entered both while waiting for plan approval and (per
-`mission.send_message`'s gate) if a message arrives before the plan is approved — the
+`session.send_message`'s gate) if a message arrives before the plan is approved — the
 state name is shared for both cases rather than split into two, since the resolution
 (approve the plan) is identical either way.
 
-### MissionPlanStatus
+### SessionPlanStatus
 
 ```mermaid
 stateDiagram-v2
     [*] --> Draft
-    Draft --> Approved: mission.plan.approve
-    Draft --> Rejected: mission.plan.reject
-    Approved --> Draft: plan edited (mission.plan.update)
+    Draft --> Approved: session.plan.approve
+    Draft --> Rejected: session.plan.reject
+    Approved --> Draft: plan edited (session.plan.update)
     Rejected --> Draft: plan edited
     Approved --> [*]
 ```
@@ -83,7 +83,7 @@ N/A — this document is the state view of the architecture in `004-System-Archi
 
 ## Tradeoffs
 
-`BlockedOnApproval`'s dual use (see MissionStatus above) trades a slightly overloaded
+`BlockedOnApproval`'s dual use (see SessionStatus above) trades a slightly overloaded
 state name for not introducing a fifth status value for a distinction the UI doesn't
 currently need to make.
 
@@ -93,16 +93,16 @@ N/A — see each linked subsystem's own Failure Modes section.
 
 ## Security
 
-The `MissionPlanStatus` machine is the literal mechanism behind the plan-approval
+The `SessionPlanStatus` machine is the literal mechanism behind the plan-approval
 security gate (`031-Security.md`) — an approval cannot silently carry over to edited
 content, which is what `Approved → Draft` on edit exists to prevent.
 
 ## Testing
 
 Every transition shown above has a corresponding test:
-`co_pilot_mission_is_gated_until_a_plan_is_approved`,
+`co_pilot_session_is_gated_until_a_plan_is_approved`,
 `editing_an_approved_plan_revokes_the_approval`,
-`rejecting_a_plan_keeps_the_gate_closed`, `acp_handoff_rejects_unknown_mission`,
+`rejecting_a_plan_keeps_the_gate_closed`, `acp_handoff_rejects_unknown_session`,
 `acp_take_back_requires_a_handoff_id`.
 
 ## Implementation Order

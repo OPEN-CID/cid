@@ -91,7 +91,7 @@ impl BackgroundModelRouter {
             id: id.clone(),
             task_type: params.task_type.clone(),
             repo_channel_id: repo_id.clone(),
-            mission_id: params.mission_id.clone(),
+            session_id: params.session_id.clone(),
             input: params.input,
             status: BackgroundTaskStatus::Pending,
             result: None,
@@ -505,7 +505,7 @@ mod tests {
             .submit_task(BackgroundTaskSubmitParams {
                 task_type: BackgroundTaskType::Summarize,
                 repo_channel_id: "repo-1".to_string(),
-                mission_id: None,
+                session_id: None,
                 input: serde_json::json!({"content": "test"}),
             })
             .await

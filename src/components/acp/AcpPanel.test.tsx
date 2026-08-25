@@ -35,30 +35,30 @@ describe("AcpPanel", () => {
     vi.mocked(api.acp.handoffs).mockResolvedValue([]);
   });
 
-  it("prompts to select a mission when none is selected, but still lists editors", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: null } as any);
+  it("prompts to select a session when none is selected, but still lists editors", async () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: null } as any);
     render(<AcpPanel />);
 
-    expect(await screen.findByText(/Select a Mission to hand its worktree off/)).toBeInTheDocument();
+    expect(await screen.findByText(/Select a Session to hand its worktree off/)).toBeInTheDocument();
     expect(await screen.findByText("Zed")).toBeInTheDocument();
     expect(screen.getByText("Hand off")).toBeDisabled();
   });
 
-  it("handing off calls acp.handoff with the selected mission and reloads", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+  it("handing off calls acp.handoff with the selected session and reloads", async () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.acp.handoff).mockResolvedValueOnce({ id: "handoff-1" });
     render(<AcpPanel />);
     await screen.findByText("Zed");
 
     fireEvent.click(screen.getByText("Hand off"));
 
-    await waitFor(() => expect(api.acp.handoff).toHaveBeenCalledWith("mission-1", "zed"));
+    await waitFor(() => expect(api.acp.handoff).toHaveBeenCalledWith("session-1", "zed"));
   });
 
   it("shows active handoffs with a Take back action", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.acp.handoffs).mockResolvedValue([
-      { id: "handoff-1", mission_id: "mission-1", editor_id: "zed", status: "handed_off", worktree_path: "/tmp/wt", created_at: "2026-07-27T00:00:00Z" },
+      { id: "handoff-1", session_id: "session-1", editor_id: "zed", status: "handed_off", worktree_path: "/tmp/wt", created_at: "2026-07-27T00:00:00Z" },
     ]);
     vi.mocked(api.acp.takeBack).mockResolvedValueOnce({ ok: true });
     render(<AcpPanel />);
@@ -70,7 +70,7 @@ describe("AcpPanel", () => {
   });
 
   it("an unavailable editor cannot be handed off", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: "mission-1" } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
     vi.mocked(api.acp.editors).mockResolvedValueOnce([{ ...editor, available: false }]);
     render(<AcpPanel />);
 
@@ -79,7 +79,7 @@ describe("AcpPanel", () => {
   });
 
   it("shows an error message if loading editors fails", async () => {
-    vi.mocked(useCid).mockReturnValue({ selectedMissionId: null } as any);
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: null } as any);
     vi.mocked(api.acp.editors).mockRejectedValueOnce(new Error("core unreachable"));
     render(<AcpPanel />);
 

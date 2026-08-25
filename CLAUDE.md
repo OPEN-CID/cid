@@ -30,7 +30,7 @@ opencode run --auto --model openrouter/openrouter/free "<task description>"
 ## What CID is
 
 A chat-native, multi-agent software engineering platform — see `README.md` for the full
-pitch. In one line: Workspace → Repo Channel → Mission Thread (Slack-shaped), Missions
+pitch. In one line: Workspace → Repo Channel → Session Thread (Slack-shaped), Sessions
 run in isolated git worktrees with a Planner → Implementer → Reviewer loop, three
 autonomy levels (Manual / Co-Pilot / Autonomous), inline diff review, a real terminal,
 and MCP tool access. One Rust/Tokio daemon (`cid-core`) exposes everything over
@@ -116,7 +116,7 @@ structure for re-verifying older "done" claims against actual code.
   `cid.db` to "fix" a `FOREIGN KEY constraint failed` was long assumed to be SQLite
   corruption from abrupt process kills. It was actually `connect_repo`'s `INSERT OR
   REPLACE` colliding with the `repo_channels.path` `UNIQUE` constraint on every repo
-  reconnect, deleting the old row and violating `missions.repo_channel_id`'s FK — fixed
+  reconnect, deleting the old row and violating `sessions.repo_channel_id`'s FK — fixed
   at the source (now `INSERT ... ON CONFLICT DO UPDATE`), with a regression test. If a
   fresh FK-constraint error shows up again, don't assume it's the same class of "just
   delete the DB" issue without checking first.
@@ -205,7 +205,7 @@ explain *why* each needed a real decision, not just effort, before starting):
 - **Subagent real tool execution + per-path locking.** The actual prerequisite gap —
   `perform_subagent_work` was fully simulated — got fixed first
   (`ModelManager::run_subagent_turn` reuses the same 4 provider tool-execution loops the
-  main agent uses, dispatched against the subagent's parent Mission). Only *then* did
+  main agent uses, dispatched against the subagent's parent Session). Only *then* did
   locking make sense: `ModelManager::file_locks` + `acquire_path_lock`, keyed by the
   resolved real path, held for the whole `execute_tool_with_approval` call including any
   human-approval wait. Verified with a lock-contention test proving actual serialization
@@ -269,7 +269,7 @@ itself). Most claims held up. What didn't, now fixed:
   `bg-background`/`border-border` token classes like the rest of the app.
 - **This file's own "two deliberately unwired RPCs" claim undercounted.** `docs/051`'s
   §5.1 table itself already documented four more (`deployment.webhook`,
-  `slack.trigger_mission`, `teams.trigger_mission`, `code.analyze_directory`) — this file
+  `slack.trigger_session`, `teams.trigger_session`, `code.analyze_directory`) — this file
   just phrased it as if `mcp.task.subscribe`/`workspace.get` were the only two. Separately,
   a genuinely new, undocumented orphan turned up on re-running §4's `comm` check:
   `semantic_engine.test_impact.for_symbols` (the batch/union variant of the already-wired
@@ -319,7 +319,7 @@ confinement gap) all run clean after every change in this pass, on this machine,
 
 ## Product-review pass — 2026-08-10
 
-Driven by a UX review rather than a code audit (Mission description should be optional,
+Driven by a UX review rather than a code audit (Session description should be optional,
 no repo folder picker, no model selection, stale model catalog, clean up dummy data).
 The features were built by delegated agents; **this pass was the verification on top,
 and it found seven real defects — several in the brand-new code — none of which the
@@ -346,18 +346,18 @@ warns about:
   **Check new frontend types against a real RPC response, not against the code that
   consumes them.** `call()` returns an asserted type; TypeScript cannot save you here.
 - **Use the feature before believing it.** `repo.disconnect` failed for *any* repo with
-  a Mission (bare `DELETE` vs. a live FK) — found by trying to click it.
+  a Session (bare `DELETE` vs. a live FK) — found by trying to click it.
 - **Tests were writing to the real database.** `playwright.config.ts` started Core with
   no `--db`, so E2E runs polluted `%APPDATA%/cid/cid.db`; 15 dead channels had piled up
   in the real install and (because of the bug above) could not be removed. Now
   `npm run dev:core:e2e` → disposable `.cid-e2e/`.
 - **The last simulated implementation on the user path is gone.** With no API key, Core
   used to write an *Assistant* message — "here's a simulated response… I would have:
-  1. Analyzed the repo…" — and set the Mission to `Review`, as if work were awaiting
+  1. Analyzed the repo…" — and set the Session to `Review`, as if work were awaiting
   inspection. Now a `System` notice stating only what is true, and `Failed`.
-- **`.cid/` is excluded from Vite's watcher** — a worktree Mission on CID's own repo
+- **`.cid/` is excluded from Vite's watcher** — a worktree Session on CID's own repo
   copies a `tsconfig.json` into `.cid/worktrees/`, which forced a full page reload and
-  wiped the store mid-Mission.
+  wiped the store mid-Session.
 
 Verified live end-to-end (real Core, real `cid.db`, real browser: 11/11 Playwright
 checks, console-clean), not just green tests. Gates after the final change: 541 Rust
@@ -498,6 +498,257 @@ Windows issues section above for what does and doesn't clear that, and for the c
 fallback that runs CI's exact clippy command instead of skipping the gate. Related: do
 **not** run an emulated `buildx --platform linux/arm64` build alongside another container
 build on this machine — doing so killed the Docker daemon mid-run and took both with it.
+
+## Pre-release sanity pass — 2026-08-21
+
+A verification pass over the previous session's *uncommitted* work, run before release.
+The work itself was sound; **it was not finished**, and the gap was in the places a
+session tends to stop checking once the interesting part works.
+
+- **`cargo fmt` had never been run on the change that was left in the tree.** Two lines in
+  `cid-core/tests/api_integration.rs` were over-width, so `cargo fmt --all -- --check` —
+  a CI gate — failed on the first thing checked. Fixed. Worth internalizing: a working
+  tree left mid-session is not a gate-passing tree, and fmt is the cheapest possible
+  thing to get wrong.
+- **The flaky-test fix it contained is real and correct.** `session_context_compact_is_a_real_manual_trigger`
+  moved from a `before + 1` *count* assertion to *set containment over message ids*,
+  because each `send_message` in the setup spawns a background turn that appends its own
+  System notice at an arbitrary time. Re-verified under full-suite load, which is the only
+  condition that reproduced it. The replacement is also a strictly stronger assertion (no
+  prior message deleted, **and** the digest actually persisted into the Session's history).
+- **The arm64 claim in the doc diff was true — checked, not assumed.** `cid-core:arm64-verify`
+  was still in the local image store; `docker image inspect` confirms `linux/arm64`, and it
+  was re-run here under QEMU: `uname -m` → `aarch64`, `/health` 200, `/api/rpc` 401 with no
+  token *and* a wrong one → 200 with the right one, `cid.db` owned by `cid:cid` in the
+  volume. This is the "use the feature before believing it" rule applied to a *doc claim*.
+- **`.github/workflows/publish-image.yml` was new, untracked, and undocumented** — and it
+  contradicted the runbook it exists to serve. It publishes the repo-root Dockerfile to
+  GHCR as a multi-arch manifest list (`linux/amd64` + `linux/arm64`, each built **natively**
+  on its own runner, merged by digest, with a job that fails if either architecture is
+  missing). But `docs/054` §3 Option C step 2 still told you to build from source on the
+  Oracle ARM box — a multi-hour compile that can OOM on a small shape, which is the exact
+  thing the workflow removes. `docs/052` §1 and `docs/054` Option C now document the
+  image; `docs/054` also referenced **`ghcr.io/open-cid/cid`**, an image name that will
+  never exist (the workflow publishes **`cid-core`**). The workflow itself has **not run
+  yet** — it first runs on the commit that adds it — and `docs/052` says so rather than
+  implying a verified pipeline.
+- **`docs/054` §4 contradicted its own header.** The header said arm64 was covered; §4
+  still carried the "built for linux/amd64, that cross-build has not been run here"
+  caveat. Same document, opposite claims — the drift this file warns about, three
+  paragraphs apart.
+- **The E2E suite's `webServer` timeout could never pass a genuinely cold run.**
+  `dev:core:e2e` is `cargo run`, so on a cold `target/` that 120s budget had to cover
+  compiling the entire dependency graph before Core could answer `/health` — it didn't,
+  and the whole suite failed before a single spec ran. Raised to 900s with the reason
+  recorded inline. CI never hit this because CI builds and starts Core in a separate step;
+  only local cold runs pay it. (This is the *same shape* as the 2026-08-19 per-test
+  timeout fix — a cold-start cost exceeding a default budget — one layer further out.)
+- **The bundled model catalog had drifted** (`npm run models:check` failing, snapshot dated
+  2026-07-24 vs. the registry's 2026-08-13). Deliberately not a CI gate, but the snapshot
+  *is* what a fresh install uses when offline, so shipping a release on a month-old
+  fallback is not what "degrades gracefully" was supposed to mean. Regenerated; the diff is
+  additions/reordering/pricing only — no `default`-model change, so none of the
+  `docs/053` §1 "schema defaults don't migrate existing rows" hazard applies here.
+
+**WDAC note, updated:** `cargo clippy` runs **natively again** on this machine — the
+`clippy-driver.exe` block described in the previous section has cleared. Try native first
+now; the Docker fallback is still there if it returns.
+
+Gates, all run this session: `cargo fmt --check` ✓, `cargo clippy -p cid-core -p cid-tui
+--all-targets -- -D warnings` ✓ (native), **574 Rust tests** (0 failed, 1 ignored — the
+network-dependent real-embeddings test), **201 frontend tests**, **32/32 Playwright E2E**,
+`tsc --noEmit` ✓, `npm run lint` ✓, `npm run theme:check` ✓, `npm run build` ✓,
+`npm audit` 0 vulnerabilities, `cargo audit` 0 vulnerabilities / 21 warnings (the same
+transitive set dispositioned above, 704 crates). Plus a real browser against a real Core
+on the real `cid.db`: app renders, `Core: connected (ws://127.0.0.1:5919)`, a page-origin
+`workspace.list` returns 200, **zero console errors**.
+
+## Product pass — "Mission" is now "Session", and Search actually works (2026-08-21)
+
+Driven by the user *using* the app and reporting that "most of the functionality" was
+broken. Every complaint was real, and none of the 587 tests covered any of them. Read
+this before touching search, the editor, or the naming.
+
+**What was actually wrong** (all reproduced against a running Core with a scripted
+browser, not inferred):
+
+- **Search hung forever.** `analyzer::analyze_directory` recursed with *no ignore list* —
+  `target/`, `node_modules/`, `.git/`, and CID's own `.cid/worktrees/` copies of the repo
+  — reading and tree-sitter parsing every `.rs/.ts/.js/.py/.go/.json` it found. 27,301
+  files on this repo; one `code.search_symbols` took **218 seconds**, and it ran
+  *synchronously inside an async handler*, holding a Tokio worker the whole time. The
+  `.cid` case also returned a duplicate of every hit, since a Session worktree is a full
+  copy of the repo.
+- **The editor was a CDN download.** `@monaco-editor/react` was never given
+  `loader.config({ monaco })`, so it fetched Monaco from **cdn.jsdelivr.net** at runtime —
+  in a self-hosted tool. Offline, behind a proxy, or under a CSP it showed "Loading..."
+  forever. It also served a *different build* than the one vite bundles (CDN 0.55.1 vs
+  installed 0.56.0), and `monaco-editor` **was not even in `package.json`** despite
+  `vite.config.ts` naming it in `manualChunks` — it resolved by hoisting luck.
+- **Creating a Session looked like it failed.** `session.create` succeeded, but nothing
+  selected the new row, so the header stayed on "no session selected" and the thread on
+  its empty state.
+- **Twelve right-panel tabs on by default**, including acronyms (`Mcp`, `Acp`) that told a
+  first-time user nothing.
+- **`\\?\` leaked into the UI.** Confinement canonicalizes, and the extended-length path
+  went straight to the file tree and editor tabs. Fixed at the shared boundary
+  (`path_confine` now returns `dunce::simplified`) — the comparisons still run on the
+  canonical form, which is what makes them sound.
+
+**Search is now ripgrep's engine.** New `cid-core/src/search` on `ignore` +
+`grep-searcher` + `grep-regex` (the crates ripgrep itself is built from, which is also
+what VS Code ships), behind a new `search.text` RPC, confined to connected repo roots
+exactly like the `file.*` RPCs and run in `spawn_blocking`. `.gitignore`-aware, so build
+output is skipped because the repo already says to skip it rather than because of a list
+that drifts. Literal-by-default (a stray `(` must not error), smart-case, bounded by a hit
+cap that reports `truncated` instead of streaming forever. **218,000 ms → 39 ms** on the
+same query, verified against the real repo. `analyze_directory` keeps symbol search but
+now has its own ignore list, a file cap and a size cap.
+
+**"Mission" became "Session" everywhere** — UI, RPC methods, DB tables — at the user's
+explicit direction, twice. `SessionMode` (worktree vs shared) became **`IsolationMode`**,
+and the auth system's login-session concept became **`AuthSession`/`auth_sessions`**,
+because `Session`, `sessions` and `SessionMode` were all already taken by it.
+
+**Three hazards this rename hit. All three are traps for the next person.**
+
+1. **PowerShell's `-replace` is case-INSENSITIVE.** The first sweep ran
+   `-replace 'MISSION','SESSION'` first, which matched *every* casing and rewrote the
+   whole codebase to `SESSION_id`/`SESSIONs`. Reverted from a `git diff` patch taken
+   beforehand — take one before any sweep. Use `-creplace`.
+2. **`permission` contains `mission`.** The second sweep turned 114 of them into
+   `persession`, including the `role_profile.check_permission` RPC string and the
+   serialized `tool_permissions` field — **and it still compiled**, because the corruption
+   was self-consistent. Only a targeted grep for `[A-Za-z]+session` found it. Any
+   identifier sweep needs a `(?<![A-Za-z])` guard *and* a corruption grep afterwards.
+3. **A rename cannot be an ordinary entry in `MIGRATIONS`.** `ALTER TABLE ... RENAME` is
+   not idempotent and the base `CREATE TABLE IF NOT EXISTS` batch runs on *every* open, so
+   whichever names the base batch used, something broke: new names → an empty
+   `auth_sessions` gets created before the real one can be renamed there; old names → a
+   stray empty `missions` table reappears beside the real `sessions` forever. It is now
+   `rename_mission_schema_to_session`, which runs **before** the base batch and guards
+   every step on `sqlite_master`, so it is a no-op on a fresh DB and on an already-migrated
+   one. The auth table is identified by its `token` column, not its name — after the
+   rename a table called `sessions` also exists and is a completely different thing.
+   Migrations 18/19 were edited from `missions` to `sessions` (normally forbidden) because
+   the fixup guarantees the table is already renamed by the time they run.
+
+**Verified on the real database, not just fixtures.** A copy of the actual
+`%APPDATA%/cid/cid.db` (4 Sessions, 4 messages, 4 plans) was migrated by starting the real
+binary against it: every row survived under the new names, the login table moved to
+`auth_sessions`, and no stray `missions` table was left. There is a backup at
+`scratchpad/real-cid-backup.db`. Two regression tests pin it — one builds a pre-rename
+database *with data* and reopens it through `Persistence::new`, the other proves a second
+open is a no-op.
+
+**A test that was pinning the wrong thing.** `estimate_cost_usd_prices_google_by_model_tier`
+hardcoded Gemini's price list and broke the moment Google repriced Flash from $1.50/$7.50
+to $0.75/$3.75 — an assertion about a vendor's pricing decisions, not about our code. All
+three pricing tests now derive the expected figure from the catalog and assert the
+*behaviour* (per-model lookup, tiers ordered correctly, two same-family ids not collapsing
+to one price), which is what the family-heuristic bug was actually about.
+
+**The default UI is now Editor / Terminal / Diff**, with the other nine one click away
+behind a ＋ menu that persists to `localStorage`; every panel still works, and the command
+palette and LeftRail rows reveal a hidden one rather than silently doing nothing. Tab
+labels are words now (`Tools`, `External agents`, `Decision log`, `Repo health`). The left
+rail's Context section is collapsed by default. Note for tests: panel visibility persists,
+so `localStorage.clear()` belongs in `beforeEach` — without it one test's reveal leaks
+into the next.
+
+## Follow-up from real use — same day (2026-08-21)
+
+Found by the user driving the app, not by tests. Each one is recorded because
+the test suite was green through all of them.
+
+- **A file saved in the Editor never appeared in Diff.** The Editor resolved its
+  path from `repos.find(...).path` — the *main* checkout — while the Diff panel
+  and the Terminal (`pty.create` in `router.rs`) both use
+  `worktree_path.unwrap_or(repo.path)`. So with a worktree Session selected, the
+  Editor was writing to a different working tree than the one being diffed, and
+  human edits landed **outside the Session entirely**: never checkpointed, never
+  reviewed, never merged. Both panels now share `useSessionRepoPath`, which is
+  the point — two copies of this rule is what let them drift. Panels that
+  configure the repo as a whole (Skills, Repo health, Automation) still use the
+  main repo path deliberately.
+- **Opening `.coverage` showed "stream did not contain valid UTF-8" as the file's
+  contents.** It is a SQLite database. The real hazard was the next step: that
+  error text sat in the editor buffer as if it were the file, so pressing Save
+  would have written it over the real bytes. `file.read` now reports `binary` /
+  `too_large` as *properties*, the Editor renders a read-only notice, and every
+  save path refuses a tab that carries `readOnlyReason`.
+- **The Terminal never said which tree it was in.** It silently used the
+  Session's worktree with no way to reach the main checkout. `pty.create` takes
+  `workdir: "session" | "repo"` (defaulting to `session`, so existing clients are
+  unaffected) and returns the resolved `cwd`, which the UI displays rather than
+  reconstructs. Opening the main repo — or another Session's worktree — is
+  flagged amber, because commands run there are not captured by the selected
+  Session's checkpoints and will not show in its diff.
+
+**Local models became a real feature rather than a status line.** It was
+detection-only: three HTTP probes and a list. Now split into `Cloud providers` /
+`Local models` tabs, with:
+
+- `local_models::system` — measured RAM/cores/GPU (`sysinfo`, which was a
+  declared dependency that nothing had ever used, plus `nvidia-smi`/CIM/
+  `system_profiler` for GPUs). Unknown VRAM is reported as `None`, never guessed,
+  because a made-up number would change a recommendation.
+- `local_models::catalog` — a curated, code-capable model list classified
+  `Comfortable | Tight | TooLarge` against that machine's real budget (VRAM, or
+  RAM minus 4 GB of OS headroom). Sizing is off *working memory*, not download
+  size, which is the usual way these recommendations go wrong.
+- `local_models::manager` — start/stop and `ollama pull` with streamed progress.
+
+**Two boundaries here are deliberate and should not be "improved" away.** First,
+CID does **not** install the runtime: that is software installation on someone's
+machine and it belongs to the user, so an absent binary links to the official
+download instead. Second, `stop` only ever kills a child *this process* spawned —
+a server already running as a service is reported `External` and refused, with
+the reason shown in the UI. Both have tests.
+
+## Why "most things don't work" — the root cause (2026-08-22)
+
+The user reported the product was broken. Every panel opened, all 186 RPCs
+resolved, all 7 notifications matched, 603 Rust and 216 frontend tests passed —
+and the product still did nothing useful. **Start from the agent loop, not the
+UI.** The audit that found it, in order, was: enumerate frontend RPC calls vs.
+backend handlers (clean) → notification names both directions (clean) → open
+every panel and record RPC errors (clean) → *actually send a message* (broken).
+
+**`provider_default_model` hardcoded `gemini-1.5-flash`.** Google retired that
+id. With `GEMINI_API_KEY` set in the environment and no explicit `google_model`,
+every Planner and Implementer turn resolved to it and got a **404 on every
+call**. `model.list` correctly reported Google as enabled, so nothing looked
+misconfigured — the Session just silently produced a placeholder plan and the
+Implementer stayed blocked, forever.
+
+This is the *same failure* `docs/054` already fixed once. `model::catalog` was
+built specifically so no hand-written model id could rot — but this function
+never consulted it, so the fix didn't reach the code path that actually picks a
+model. **Grepping for the fixed symbol is not the same as grepping for the
+pattern.** The defaults now come from the catalog, skipping `preview` ids, and
+`each_providers_default_model_actually_exists_in_the_catalog` fails if any
+provider's default is not in its catalog — the assertion that would have caught
+this on day one.
+
+Two honesty bugs found alongside it, both of which actively misdirected:
+
+- **The placeholder plan always said "No planning model is configured"**, even
+  when a model *was* configured and the call failed. It now states the real
+  reason (`The planning model was called but failed: …`), so a 503 or a rejected
+  key doesn't send someone to re-do correct settings.
+- **The status bar always reported a model.** It defaulted the provider to
+  `"anthropic"` and the id to the schema default regardless of whether a key
+  existed, so an unconfigured install displayed `claude-sonnet-5 (anthropic)`.
+  It now derives from `model.list`'s own `available` flag and says
+  "none configured" when nothing is callable, with a banner
+  (`ModelReadinessBanner`) and an inline warning in the Session dialog.
+
+**Environment variables count as configuration.** `provider_api_key` falls back
+to `ANTHROPIC_API_KEY`/`GEMINI_API_KEY`/etc., so "the settings table is empty"
+does not mean "no provider is available" — checking the DB alone gave the wrong
+answer here and cost a detour building a readiness banner for a state the
+machine wasn't in.
 
 ## Website
 

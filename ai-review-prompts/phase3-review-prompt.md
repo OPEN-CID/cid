@@ -19,8 +19,8 @@ Source of truth: `docs/CHECKPOINT-Phase3.md`.
    caps. Check: `cid-core/src/governance/mod.rs` (`GovernanceManager`,
    `can_enable_autonomous`/`can_approve_plan`/`can_merge`/`check_spend`/`record_spend`).
    Run `governance_policy_defaults_to_autonomous_disabled`,
-   `creating_an_autonomous_mission_is_refused_by_default_policy`,
-   `an_autonomous_mission_is_allowed_once_policy_permits_the_repo`,
+   `creating_an_autonomous_session_is_refused_by_default_policy`,
+   `an_autonomous_session_is_allowed_once_policy_permits_the_repo`,
    `only_an_admin_can_change_governance_policy`,
    `spend_caps_are_enforced_before_the_spend`,
    `plan_approval_records_the_approving_user`.

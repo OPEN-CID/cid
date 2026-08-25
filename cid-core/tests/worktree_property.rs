@@ -167,7 +167,7 @@ fn removing_a_worktree_leaves_sibling_worktrees_intact() {
     assert!(Path::new(&b).exists(), "sibling worktree must survive");
     assert!(
         Path::new(&b).join("keep.txt").exists(),
-        "a Mission's work must not be collateral damage"
+        "a Session's work must not be collateral damage"
     );
 }
 

@@ -12,8 +12,9 @@ whole stack on top of it.
   clean build from a `git archive` of `HEAD`, 185 MB image, and a real container passing
   `/health` 200, `/api/rpc` 401→200, `/ws` 401→101 with the bearer subprotocol, and
   `cid.db` owned by `cid` in the volume. Details in `docs/052` §1; §3 Option C step 8 and
-  §4 below are updated. The remaining container caveat is **arm64** — Oracle's box is ARM
-  and the verified build was amd64.
+  §4 below are updated. **Both architectures**: the same Dockerfile was also cross-built
+  for `linux/arm64` — the architecture Oracle's Always Free box actually runs — and that
+  image was run under emulation and passed the same health/auth/volume checks.
 - **`git2` 0.19 → 0.21** (clearing the three `unsound` advisories that were ours) and
   **`portable-pty` 0.8 → 0.9** (dropping the unmaintained `serial` crate for `serial2`,
   no code change needed): `cargo audit` 25 warnings → **21**. The remaining 21 are all
@@ -159,10 +160,10 @@ the `vite preview` check above just proved works. First things to do in the UI:
 1. Settings → Providers: add at least one API key (Anthropic/OpenAI/Google, or your
    OpenAI-compatible endpoint). Without one, Core now shows an honest "not configured"
    system notice instead of a fake simulated response (`docs/053` §1 defect #6) — you
-   won't get a working Mission until a key is set.
+   won't get a working Session until a key is set.
 2. Connect a repo via the folder picker (not a typed path — `docs/053` #2's dedupe fix
    only fires through `repo.connect`'s real storage path).
-3. Create a Mission — task description is now optional (`docs/053` §0 item 1).
+3. Create a Session — task description is now optional (`docs/053` §0 item 1).
 
 ### Option B — reachable beyond your own machine (share it with a team today)
 
@@ -230,6 +231,16 @@ vars for a hosted deploy: `VITE_CID_CORE_HOST=cid-core.opencid.dev`,
 1. Projects → New Resource → Public Repository → `https://github.com/OPEN-CID/cid`.
 2. Build Pack: **Dockerfile** (the repo-root `Dockerfile`, headless-core-only per its own
    header comment). Base directory `/`.
+
+   **Prefer the prebuilt image instead.** `.github/workflows/publish-image.yml` (added
+   2026-08-20) publishes this same Dockerfile to GHCR as a **multi-arch manifest list**
+   (`linux/amd64` + `linux/arm64`, each built natively on its own runner) at
+   `ghcr.io/open-cid/cid-core:latest`, tracking `main`. Pointing Coolify at that image
+   (Build Pack: **Docker Image**) rather than building from source avoids compiling the
+   whole Rust workspace on a free-tier ARM box, where the release build is a multi-hour
+   job and can exhaust memory on a small shape. The image is public, so no registry
+   credentials are needed to pull. Everything below — start command, env, volume, port —
+   is identical either way.
 3. Port: `5919`.
 4. **Start Command override** (Coolify → resource → General): the image's default `CMD`
    has no `--allow-origin`, and that flag has no env-var form (`cid-core --help`) —
@@ -237,7 +248,7 @@ vars for a hosted deploy: `VITE_CID_CORE_HOST=cid-core.opencid.dev`,
    cid-core --host 0.0.0.0 --port 5919 --db /home/cid/data/cid.db --allow-origin https://cid.opencid.dev
    ```
 5. Environment Variables (runtime, not build): `CID_AUTH_TOKEN` — generate with
-   `docker run --rm ghcr.io/open-cid/cid --generate-token` (or any built image) once, then
+   `docker run --rm ghcr.io/open-cid/cid-core --generate-token` (or any built image) once, then
    paste the value in; Core refuses to start non-loopback without it (`SECURITY.md` §2).
 6. Storage: persistent volume mounted at `/home/cid/data` (Coolify's volume UI, matching
    the image's own `VOLUME` declaration — already fixed this pass, see `docs/053` §4, to
@@ -283,7 +294,7 @@ bundle, not the server):
    instead says `ws://` (not `wss://`) or shows a host of `127.0.0.1`, the Build Variables
    weren't set as *build* variables and the bundle needs rebuilding, not just redeploying.
    If the banner keeps asking for a token, the token is wrong, not the deployment.
-4. Connect a repo, create a Mission, confirm a message round-trips — the real golden
+4. Connect a repo, create a Session, confirm a message round-trips — the real golden
    path, not just a reachable socket.
 
 This Option C was **not verified end-to-end this session** — it depends on Coolify/Oracle
@@ -296,9 +307,13 @@ before trusting resource 1 to come up clean on the first try.
 - ~~**`Dockerfile` still isn't build-verified**~~ — **closed 2026-08-19.** Docker Desktop
   was working on this machine by then, so the build finally ran: clean build from a clean
   `git archive`, 185 MB image, and a real container passing the health/auth/volume checks
-  listed in `docs/052` §1. Remaining caveat, stated rather than hidden: it was built for
-  **linux/amd64**, and Oracle's Always Free box is **ARM64** — the Dockerfile has no
-  architecture-specific content, but that specific cross-build has not been run here.
+  listed in `docs/052` §1. The amd64-only caveat this bullet used to carry is **also
+  closed (2026-08-20/21)**: the same Dockerfile was cross-built for **linux/arm64** — the
+  architecture Oracle's Always Free box runs — and that image was started under QEMU and
+  re-checked on 2026-08-21 (`uname -m` → `aarch64`, `/health` 200, `/api/rpc` 401 with no
+  token and with a wrong one → 200 with the right one, `cid.db` owned by `cid:cid` in the
+  volume). Building on the box itself is still not the intended path — see
+  `.github/workflows/publish-image.yml` and Option C step 2 above.
 - **Windows has no kernel-level filesystem confinement for Autonomous mode** — command
   allow-list and path policy are real, but not a hard sandbox boundary on Windows
   specifically (`SECURITY.md`, `docs/RELEASE-REPORT-v1.0.0.md` #16). Relevant if you turn

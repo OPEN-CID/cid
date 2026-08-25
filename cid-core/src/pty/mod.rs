@@ -37,10 +37,11 @@ impl PtyManager {
     #[allow(unused_mut)]
     pub fn create_pty(
         &self,
-        mission_id: &str,
+        session_id: &str,
         workdir: &str,
         cols: u16,
         rows: u16,
+        workdir_kind: crate::api::types::PtyWorkdir,
     ) -> Result<PtyInstance> {
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -78,10 +79,12 @@ impl PtyManager {
 
         let instance = PtyInstance {
             id: id.clone(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             cols,
             rows,
             created_at: Utc::now(),
+            cwd: workdir.to_string(),
+            workdir: workdir_kind,
         };
 
         // Spawn reader task - single thread per PTY that broadcasts output
@@ -150,11 +153,11 @@ impl PtyManager {
         }
     }
 
-    pub fn list(&self, mission_id: &str) -> Vec<PtyInstance> {
+    pub fn list(&self, session_id: &str) -> Vec<PtyInstance> {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .values()
-            .filter(|s| s.instance.mission_id == mission_id)
+            .filter(|s| s.instance.session_id == session_id)
             .map(|s| s.instance.clone())
             .collect()
     }

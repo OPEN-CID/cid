@@ -26,8 +26,8 @@ const en = {
     saveAndClose: "Save & close",
     discardAndClose: "Discard & close",
   },
-  mission: {
-    newMission: "New Mission",
+  session: {
+    newSession: "New Session",
   },
   commandPalette: {
     placeholder: "Type a command…",

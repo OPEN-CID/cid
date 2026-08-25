@@ -19,12 +19,12 @@ vi.mock("@/hooks/useCid", () => ({
   useCid: vi.fn(),
 }));
 
-const mission = { id: "mission-1", repo_channel_id: "repo-1" };
+const session = { id: "session-1", repo_channel_id: "repo-1" };
 const unapprovedRepo = { id: "repo-1", name: "cid", path: "/tmp/repo", agents_md_approved: false };
 const approvedRepo = { ...unapprovedRepo, agents_md_approved: true };
 
 function mockState(repo: typeof unapprovedRepo, loadRepos = vi.fn()) {
-  vi.mocked(useCid).mockReturnValue({ missions: [mission], repos: [repo], loadRepos } as any);
+  vi.mocked(useCid).mockReturnValue({ sessions: [session], repos: [repo], loadRepos } as any);
   return loadRepos;
 }
 
@@ -36,21 +36,21 @@ describe("AgentsMdReviewCard", () => {
 
   it("renders nothing once AGENTS.md is already approved", () => {
     mockState(approvedRepo);
-    const { container } = render(<AgentsMdReviewCard missionId="mission-1" />);
+    const { container } = render(<AgentsMdReviewCard sessionId="session-1" />);
     expect(container).toBeEmptyDOMElement();
     expect(api.repo.agentsMd).not.toHaveBeenCalled();
   });
 
-  it("renders nothing when there's no mission selected", () => {
-    vi.mocked(useCid).mockReturnValue({ missions: [], repos: [], loadRepos: vi.fn() } as any);
-    const { container } = render(<AgentsMdReviewCard missionId={null} />);
+  it("renders nothing when there's no session selected", () => {
+    vi.mocked(useCid).mockReturnValue({ sessions: [], repos: [], loadRepos: vi.fn() } as any);
+    const { container } = render(<AgentsMdReviewCard sessionId={null} />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("shows the review gate with content hidden by default when unapproved", async () => {
     mockState(unapprovedRepo);
     vi.mocked(api.repo.agentsMd).mockResolvedValueOnce({ content: "Always run tests before committing." });
-    render(<AgentsMdReviewCard missionId="mission-1" />);
+    render(<AgentsMdReviewCard sessionId="session-1" />);
 
     expect(await screen.findByText("This repo ships agent instructions")).toBeInTheDocument();
     expect(screen.queryByText("Always run tests before committing.")).not.toBeInTheDocument();
@@ -59,7 +59,7 @@ describe("AgentsMdReviewCard", () => {
   it("Show contents reveals the untrusted AGENTS.md text", async () => {
     mockState(unapprovedRepo);
     vi.mocked(api.repo.agentsMd).mockResolvedValueOnce({ content: "Always run tests before committing." });
-    render(<AgentsMdReviewCard missionId="mission-1" />);
+    render(<AgentsMdReviewCard sessionId="session-1" />);
     await screen.findByText("This repo ships agent instructions");
 
     fireEvent.click(screen.getByText("Show contents"));
@@ -71,7 +71,7 @@ describe("AgentsMdReviewCard", () => {
     const loadRepos = mockState(unapprovedRepo);
     vi.mocked(api.repo.agentsMd).mockResolvedValueOnce({ content: "Some instructions." });
     vi.mocked(api.repo.agentsMdApprove).mockResolvedValueOnce({ ok: true });
-    render(<AgentsMdReviewCard missionId="mission-1" />);
+    render(<AgentsMdReviewCard sessionId="session-1" />);
     await screen.findByText("This repo ships agent instructions");
 
     fireEvent.click(screen.getByText("Looks fine — use it"));
@@ -84,7 +84,7 @@ describe("AgentsMdReviewCard", () => {
     mockState(unapprovedRepo);
     vi.mocked(api.repo.agentsMd).mockResolvedValueOnce({ content: "Some instructions." });
     vi.mocked(api.repo.agentsMdApprove).mockRejectedValueOnce(new Error("network down"));
-    render(<AgentsMdReviewCard missionId="mission-1" />);
+    render(<AgentsMdReviewCard sessionId="session-1" />);
     await screen.findByText("This repo ships agent instructions");
 
     fireEvent.click(screen.getByText("Looks fine — use it"));

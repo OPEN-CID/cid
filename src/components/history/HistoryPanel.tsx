@@ -8,7 +8,7 @@ import { toast } from "@/lib/dialog";
 // message's real `tool_calls` (id/name/arguments/status/result), plus
 // notifications broadcast while this panel is open. Anything not
 // recoverable from those two sources (e.g. which specific sub-role issued a
-// live tool-call notification, once its `mission.tool_call.complete` no
+// live tool-call notification, once its `session.tool_call.complete` no
 // longer carries `tool_name`) is labeled "unknown" rather than guessed.
 type HistoryStatus = "pending_approval" | "approved" | "denied" | "running" | "completed" | "failed" | "unknown";
 
@@ -58,18 +58,18 @@ function eventsFromMessages(messages: RpcMessage[]): HistoryEvent[] {
 type RpcToolCall = { id: string; name: string; arguments: unknown; status: string; result?: unknown };
 type RpcMessage = { role: string; created_at: string; tool_calls?: RpcToolCall[] };
 
-// Tool calls are always issued by the model executing a mission turn — there
+// Tool calls are always issued by the model executing a session turn — there
 // is no persisted Planner/Implementer/Reviewer distinction at the
 // notification layer, so "assistant" is the most specific honest label.
 // Everything else broadcast on this socket (diff updates, pty output, plan
 // changes, ...) isn't attributable to a role at all.
 function actorForNotification(method: string): string {
-  return method.startsWith("mission.tool_call") ? "Assistant" : "System";
+  return method.startsWith("session.tool_call") ? "Assistant" : "System";
 }
 
 function statusForNotification(method: string): HistoryStatus {
-  if (method === "mission.tool_call.request") return "pending_approval";
-  if (method === "mission.tool_call.complete") return "completed";
+  if (method === "session.tool_call.request") return "pending_approval";
+  if (method === "session.tool_call.complete") return "completed";
   return "unknown";
 }
 
@@ -84,20 +84,20 @@ const STATUS_COLOR: Record<HistoryStatus, string> = {
 };
 
 export function HistoryPanel() {
-  const { selectedMissionId } = useCid();
+  const { selectedSessionId } = useCid();
   const [events, setEvents] = useState<HistoryEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<"all" | "file" | "terminal" | "mcp" | "git">("all");
 
   useEffect(() => {
-    if (!selectedMissionId) {
+    if (!selectedSessionId) {
       setEvents([]);
       return;
     }
     let cancelled = false;
     setLoading(true);
     api.message
-      .list(selectedMissionId)
+      .list(selectedSessionId)
       .then((messages: RpcMessage[]) => {
         if (!cancelled) setEvents(eventsFromMessages(messages ?? []));
       })
@@ -110,12 +110,12 @@ export function HistoryPanel() {
     return () => {
       cancelled = true;
     };
-  }, [selectedMissionId]);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     const handleNotif = (notif: JsonRpcNotification) => {
-      if (notif.params?.mission_id !== selectedMissionId) return;
-      if (["pty.output", "mission.message.delta"].includes(notif.method)) return; // noisy
+      if (notif.params?.session_id !== selectedSessionId) return;
+      if (["pty.output", "session.message.delta"].includes(notif.method)) return; // noisy
 
       const toolName = typeof notif.params?.tool_name === "string" ? notif.params.tool_name : null;
       const event: HistoryEvent = {
@@ -137,10 +137,10 @@ export function HistoryPanel() {
 
     const unsub = api.onNotification(handleNotif);
     return () => unsub();
-  }, [selectedMissionId]);
+  }, [selectedSessionId]);
 
-  if (!selectedMissionId) {
-    return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a mission to view history</div>;
+  if (!selectedSessionId) {
+    return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Select a session to view history</div>;
   }
 
   const filtered = filter === "all" ? events : events.filter((e) => e.action.includes(filter));
@@ -154,7 +154,7 @@ export function HistoryPanel() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `cid-history-${selectedMissionId}.json`;
+    a.download = `cid-history-${selectedSessionId}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };

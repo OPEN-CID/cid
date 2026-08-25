@@ -81,7 +81,7 @@ RPC: `confidence.score`, `confidence.history`.
 ## Storage Layout
 
 `confidence_scores` table, one row per score, full `ConfidenceScore` JSON blob plus
-indexed `mission_id`/`overall` for querying (`persistence::save_confidence_score`).
+indexed `session_id`/`overall` for querying (`persistence::save_confidence_score`).
 
 ## Performance Targets
 

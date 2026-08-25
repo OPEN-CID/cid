@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { LeftRail } from "./components/layout/LeftRail";
 import { ChatThread } from "./components/chat/ChatThread";
 import { DiffViewer } from "./components/diff/DiffViewer";
@@ -12,6 +12,7 @@ import { RepoHealthPanel } from "./components/health/RepoHealthPanel";
 import { AutonomyPanel } from "./components/autonomy/AutonomyPanel";
 import { DecisionsPanel } from "./components/chat/DecisionsPanel";
 import { useCid } from "./hooks/useCid";
+import { useModelReadiness } from "./hooks/useModelReadiness";
 import { useTheme } from "./theme/useTheme";
 import { api, type ModelInfo } from "./lib/api";
 import { toast } from "./lib/dialog";
@@ -29,6 +30,33 @@ import { Plus, GripVertical, Maximize2, Minimize2 } from "lucide-react";
 // fetch until the tab housing it is first rendered.
 const EditorPane = lazy(() => import("./components/editor/EditorPane").then((m) => ({ default: m.EditorPane })));
 const TerminalPane = lazy(() => import("./components/terminal/TerminalPane").then((m) => ({ default: m.TerminalPane })));
+
+/// Without a callable model CID cannot run an agent at all: the Planner records
+/// a placeholder plan, the Implementer stays blocked, and nothing explains why.
+/// Every panel works, so the product reads as broken rather than unconfigured.
+/// This is the one state worth interrupting for.
+function ModelReadinessBanner({ onConfigure }: { onConfigure: () => void }) {
+  const { connected } = useCid();
+  const { ready, checking } = useModelReadiness(connected);
+
+  if (!connected || checking || ready) return null;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-500/15 border-b border-amber-500/30 text-amber-200">
+      <span className="font-medium">No model configured.</span>
+      <span className="text-amber-200/80">
+        CID can&apos;t run agents yet — Sessions will only record a placeholder plan. Add a provider
+        API key, or set up a model that runs on this machine.
+      </span>
+      <button
+        onClick={onConfigure}
+        className="ml-auto shrink-0 px-2 py-0.5 rounded bg-amber-500/25 hover:bg-amber-500/40"
+      >
+        Configure models
+      </button>
+    </div>
+  );
+}
 
 function TabPaneFallback() {
   return <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
@@ -48,18 +76,153 @@ type RightTab =
   | "health"
   | "server";
 
-function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+const ALL_TABS: RightTab[] = [
+  "editor",
+  "terminal",
+  "diff",
+  "history",
+  "decisions",
+  "mcp",
+  "skills",
+  "acp",
+  "models",
+  "autonomy",
+  "health",
+  "server",
+];
+
+// Titles rather than `capitalize` on the raw key, which rendered the acronym
+// tabs as "Mcp"/"Acp" and told a first-time user nothing about what they do.
+const TAB_LABELS: Record<RightTab, string> = {
+  editor: "Editor",
+  terminal: "Terminal",
+  diff: "Diff",
+  history: "History",
+  decisions: "Decision log",
+  mcp: "Tools",
+  skills: "Skills",
+  acp: "External agents",
+  models: "Models",
+  autonomy: "Automation",
+  health: "Repo health",
+  server: "Server",
+};
+
+/// Showing all twelve panels by default buried the three that the core loop
+/// actually uses. The rest stay one click away in the ＋ menu and keep working
+/// — this is disclosure, not removal.
+const DEFAULT_VISIBLE_TABS: RightTab[] = ["editor", "terminal", "diff"];
+const VISIBLE_TABS_KEY = "cid-visible-tabs";
+
+function loadVisibleTabs(): RightTab[] {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(VISIBLE_TABS_KEY) : null;
+    if (!raw) return DEFAULT_VISIBLE_TABS;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_VISIBLE_TABS;
+    // Drop anything not a current tab id, so a stale key from an older build
+    // can't render a tab that no longer exists or leave the bar empty.
+    const valid = parsed.filter((t): t is RightTab => ALL_TABS.includes(t as RightTab));
+    return valid.length ? valid : DEFAULT_VISIBLE_TABS;
+  } catch {
+    return DEFAULT_VISIBLE_TABS;
+  }
+}
+
+function PanelCustomizer({
+  visibleTabs,
+  onToggle,
+  onReset,
+}: {
+  visibleTabs: RightTab[];
+  onToggle: (tab: RightTab) => void;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+        title="Choose panels"
+        aria-label="Choose panels"
+        aria-expanded={open}
+        aria-haspopup="menu"
+      >
+        <Plus className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Choose panels"
+          className="absolute right-0 top-7 z-50 w-52 bg-card border rounded-md shadow-lg p-1.5"
+        >
+          <div className="px-1.5 py-1 text-[11px] text-muted-foreground">Panels</div>
+          {ALL_TABS.map((tab) => {
+            const checked = visibleTabs.includes(tab);
+            const isLast = checked && visibleTabs.length === 1;
+            return (
+              <label
+                key={tab}
+                className={`flex items-center gap-2 px-1.5 py-1 text-xs rounded ${isLast ? "opacity-50" : "cursor-pointer hover:bg-accent"}`}
+                title={isLast ? "At least one panel must stay visible" : undefined}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={isLast}
+                  onChange={() => onToggle(tab)}
+                />
+                <span>{TAB_LABELS[tab]}</span>
+              </label>
+            );
+          })}
+          <button
+            onClick={() => {
+              onReset();
+              setOpen(false);
+            }}
+            className="w-full text-left px-1.5 py-1 mt-1 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent rounded"
+          >
+            Reset to defaults
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionCreationModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const modalRef = useFocusTrap<HTMLDivElement>(true, onClose);
-  const { selectedRepoId, loadMissions } = useCid();
+  const { selectedRepoId, loadSessions, selectSession, connected } = useCid();
+  const { ready: modelsReady, checking: checkingModels } = useModelReadiness(connected);
   const [title, setTitle] = useState("");
   const [task, setTask] = useState("");
-  const [sessionMode, setSessionMode] = useState<"worktree" | "shared">("worktree");
+  const [isolationMode, setIsolationMode] = useState<"worktree" | "shared">("worktree");
   const [autonomy, setAutonomy] = useState<"manual" | "co_pilot" | "autonomous">("co_pilot");
   const [vibe, setVibe] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   // Value is "" for "use default" or `${provider}::${id}` — a select can only
-  // carry one string, and provider+id must travel together to mission.create.
+  // carry one string, and provider+id must travel together to session.create.
   const [modelChoice, setModelChoice] = useState("");
 
   useEffect(() => {
@@ -70,7 +233,7 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
         if (!cancelled) setModels(Array.isArray(list) ? list : []);
       })
       .catch(() => {
-        // Model picking is a convenience, not a prerequisite — mission
+        // Model picking is a convenience, not a prerequisite — session
         // creation must still work with just the "use default" option.
         if (!cancelled) setModels([]);
       });
@@ -85,21 +248,28 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
     if (!selectedRepoId || !title.trim()) return;
     setIsCreating(true);
     try {
-      await api.mission.create({
+      // `call()` is typed as RpcValue, so the shape is asserted, not proven —
+      // hence the runtime `created?.id` guard below rather than trusting it.
+      const created = (await api.session.create({
         repo_channel_id: selectedRepoId,
         title: title.trim(),
         task: task.trim() || undefined,
-        session_mode: sessionMode,
+        isolation_mode: isolationMode,
         autonomy_level: autonomy,
         vibe,
         model_provider: selectedModel?.provider ?? null,
         model_id: selectedModel?.id ?? null,
-      });
-      await loadMissions(selectedRepoId);
+      })) as { id?: string } | null;
+      await loadSessions(selectedRepoId);
+      // Without this the create succeeded but the header still read "no
+      // session selected" and the thread stayed on the empty state, so a
+      // working create looked like a failure until you hunted for the new row
+      // in the rail and clicked it yourself.
+      if (created?.id) selectSession(created.id);
       onCreated();
       onClose();
     } catch (e) {
-      toast.error(`Failed to create mission: ${e}`);
+      toast.error(`Failed to create session: ${e}`);
     } finally {
       setIsCreating(false);
     }
@@ -111,13 +281,22 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
         ref={modalRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="new-mission-title"
+        aria-labelledby="new-session-title"
         tabIndex={-1}
         className="bg-card border rounded-lg p-6 w-[480px] max-w-[90vw]"
       >
-        <h2 id="new-mission-title" className="font-semibold mb-4">
-          {t().mission.newMission}
+        <h2 id="new-session-title" className="font-semibold mb-4">
+          {t().session.newSession}
         </h2>
+        {/* Stated before the work is created, not discovered afterwards in a
+            placeholder plan. Creation is still allowed — the Session is a real
+            record either way, and the plan is editable by hand. */}
+        {!modelsReady && !checkingModels && (
+          <div className="mb-3 p-2 rounded border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-200">
+            No model is configured, so the Planner will record a placeholder plan and the
+            Implementer will stay blocked. Add a provider key or a local model under Models.
+          </div>
+        )}
         <div className="space-y-3">
           <div>
             <label className="text-xs text-muted-foreground">Title</label>
@@ -163,17 +342,17 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-muted-foreground">Session Mode</label>
+              <label className="text-xs text-muted-foreground">Isolation</label>
               <select
                 className="w-full mt-1 bg-background border rounded px-2 py-2 text-sm"
-                value={sessionMode}
-                onChange={(e) => setSessionMode(e.target.value as "worktree" | "shared")}
+                value={isolationMode}
+                onChange={(e) => setIsolationMode(e.target.value as "worktree" | "shared")}
               >
                 <option value="worktree">Isolated worktree (default)</option>
                 <option value="shared">Shared clone</option>
               </select>
               <div className="text-[11px] text-muted-foreground mt-1">
-                {sessionMode === "worktree" ? "Creates a dedicated branch + worktree, safe for parallel work" : "Works directly in main repo, solo sequential work"}
+                {isolationMode === "worktree" ? "Creates a dedicated branch + worktree, safe for parallel work" : "Works directly in main repo, solo sequential work"}
               </div>
             </div>
             <div>
@@ -222,7 +401,7 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
             disabled={isCreating || !title.trim()}
             className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded disabled:opacity-50"
           >
-            {isCreating ? "Creating..." : "Create Mission"}
+            {isCreating ? "Creating..." : "Create Session"}
           </button>
         </div>
       </div>
@@ -231,21 +410,14 @@ function MissionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
 }
 
 function BottomStatus() {
-  const { connected, selectedMissionId, missions } = useCid();
-  const mission = missions.find((m) => m.id === selectedMissionId);
-  const [activeModel, setActiveModel] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!connected) return;
-    api.settings
-      .get()
-      .then((s) => {
-        const provider = s?.implementer_provider || "anthropic";
-        const model = s?.implementer_model || s?.anthropic_model || "unset";
-        setActiveModel(`${model} (${provider})`);
-      })
-      .catch(() => setActiveModel(null));
-  }, [connected]);
+  const { connected, selectedSessionId, sessions } = useCid();
+  const session = sessions.find((m) => m.id === selectedSessionId);
+  // Previously this read settings and defaulted the provider to "anthropic" and
+  // the id to the schema default, so it displayed `claude-sonnet-5 (anthropic)`
+  // on an install with no Anthropic key — asserting a working configuration
+  // that did not exist. Readiness now comes from `model.list`'s own
+  // `available` flag.
+  const { ready, activeModel } = useModelReadiness(connected);
 
   return (
     <div className="h-7 border-t bg-card flex items-center px-3 text-[11px] text-muted-foreground gap-4">
@@ -253,19 +425,22 @@ function BottomStatus() {
         <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-yellow-500"}`} />
         <span>Core: {connected ? "connected" : "offline"} (ws://127.0.0.1:5919)</span>
       </div>
-      {mission && (
+      {session && (
         <>
           <span>•</span>
           <span>
-            Autonomy: <span className="text-foreground">{mission.autonomy_level}</span>
+            Autonomy: <span className="text-foreground">{session.autonomy_level}</span>
           </span>
           <span>•</span>
           <span>
-            Model: <span className="text-foreground">{activeModel ?? "…"}</span>
+            Model:{" "}
+            <span className={ready ? "text-foreground" : "text-amber-400"}>
+              {ready ? activeModel : "none configured"}
+            </span>
           </span>
           <span>•</span>
           <span>
-            Session: <span className="text-foreground">{mission.session_mode}</span>
+            Isolation: <span className="text-foreground">{session.isolation_mode}</span>
           </span>
         </>
       )}
@@ -279,9 +454,9 @@ const MIN_RIGHT_PANEL_WIDTH = 320;
 const MAX_RIGHT_PANEL_WIDTH = 1200;
 
 export default function App() {
-  const { setConnected, selectedRepoId, selectedMissionId, repos, missions } = useCid();
+  const { setConnected, selectedRepoId, selectedSessionId, repos, sessions } = useCid();
   const [rightTab, setRightTab] = useState<RightTab>("editor");
-  const [showNewMission, setShowNewMission] = useState(false);
+  const [showNewSession, setShowNewSession] = useState(false);
   // 051-Editor-Excellence-Roadmap.md Wave 4.6: the fixed 520px right panel
   // was the real constraint on the editor being usable at all — no drag
   // resize meant no way to see more than a sliver of a wide file.
@@ -292,6 +467,21 @@ export default function App() {
   });
   const [isResizing, setIsResizing] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  const [visibleTabs, setVisibleTabs] = useState<RightTab[]>(loadVisibleTabs);
+
+  useEffect(() => {
+    localStorage.setItem(VISIBLE_TABS_KEY, JSON.stringify(visibleTabs));
+  }, [visibleTabs]);
+
+  // Hiding the panel you are currently on would otherwise leave the pane blank
+  // with no tab highlighted.
+  useEffect(() => {
+    if (!visibleTabs.includes(rightTab)) setRightTab(visibleTabs[0] ?? "editor");
+  }, [visibleTabs, rightTab]);
+
+  // Anything that jumps to a tab by name (LeftRail rows, the command palette)
+  // reveals it first if hidden — see the `cid:open-tab` handler and the
+  // palette's tab commands, both of which add it back rather than no-op.
 
   // LeftRail's settings/Skills/MCP Servers rows have no reach into this
   // component's tab state otherwise — a lightweight DOM event rather than
@@ -302,6 +492,7 @@ export default function App() {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent<RightTab>).detail;
       if (!tab) return;
+      setVisibleTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
       setMaximized(false);
       setRightTab(tab);
     };
@@ -375,32 +566,21 @@ export default function App() {
   }, []);
 
   const commands = useMemo<Command[]>(() => {
-    const tabLabels: Record<RightTab, string> = {
-      editor: "Editor",
-      terminal: "Terminal",
-      diff: "Diff",
-      history: "History",
-      decisions: "Decisions",
-      mcp: "MCP",
-      skills: "Skills",
-      acp: "ACP",
-      models: "Models",
-      autonomy: "Autonomy",
-      health: "Health",
-      server: "Server",
-    };
-    const tabCommands: Command[] = (Object.keys(tabLabels) as RightTab[]).map((tab) => ({
+    // Every tab stays reachable from the palette even when hidden from the
+    // bar — the action reveals it rather than failing silently.
+    const tabCommands: Command[] = ALL_TABS.map((tab) => ({
       id: `tab-${tab}`,
-      label: `Go to ${tabLabels[tab]}`,
+      label: `Go to ${TAB_LABELS[tab]}`,
       hint: "tab",
       keywords: tab,
       action: () => {
+        setVisibleTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
         setMaximized(false);
         setRightTab(tab);
       },
     }));
     return [
-      { id: "new-mission", label: "New Mission…", hint: "N", action: () => setShowNewMission(true) },
+      { id: "new-session", label: "New Session…", hint: "N", action: () => setShowNewSession(true) },
       {
         id: "toggle-theme",
         label: "Toggle light/dark theme",
@@ -419,6 +599,13 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col bg-background text-foreground">
       <ConnectionBanner />
+      <ModelReadinessBanner
+        onConfigure={() => {
+          setVisibleTabs((tabs) => (tabs.includes("models") ? tabs : [...tabs, "models"]));
+          setMaximized(false);
+          setRightTab("models");
+        }}
+      />
       <div className="flex-1 flex min-h-0">
         {/* Left rail */}
         <LeftRail />
@@ -431,19 +618,19 @@ export default function App() {
               {selectedRepoId ? (
                 <>
                   <span className="text-sm font-medium">
-                    {repos.find((r) => r.id === selectedRepoId)?.name ?? "Mission Thread"}
+                    {repos.find((r) => r.id === selectedRepoId)?.name ?? "Session Thread"}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     •{" "}
-                    {selectedMissionId
-                      ? missions.find((m) => m.id === selectedMissionId)?.title ?? selectedMissionId.slice(0, 8)
-                      : "no mission selected"}
+                    {selectedSessionId
+                      ? sessions.find((m) => m.id === selectedSessionId)?.title ?? selectedSessionId.slice(0, 8)
+                      : "no session selected"}
                   </span>
                   <button
-                    onClick={() => setShowNewMission(true)}
+                    onClick={() => setShowNewSession(true)}
                     className="ml-auto flex items-center gap-1 text-xs bg-primary text-primary-foreground px-2 py-1 rounded"
                   >
-                    <Plus className="w-3 h-3" /> New Mission
+                    <Plus className="w-3 h-3" /> New Session
                   </button>
                 </>
               ) : (
@@ -473,24 +660,37 @@ export default function App() {
           className={`flex flex-col bg-card ${maximized ? "flex-1" : ""} ${isResizing ? "select-none" : ""}`}
           style={maximized ? undefined : { width: rightPanelWidth }}
         >
-          <div className="h-10 border-b flex items-center gap-1 px-2 overflow-x-auto">
-            {(["editor", "terminal", "diff", "history", "decisions", "mcp", "skills", "acp", "models", "autonomy", "health", "server"] as RightTab[]).map((tab) => (
+          <div className="h-10 border-b flex items-center gap-1 px-2">
+            <div className="flex items-center gap-1 overflow-x-auto">
+              {visibleTabs.map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setRightTab(tab)}
+                  className={`text-xs px-2.5 py-1 rounded whitespace-nowrap ${rightTab === tab ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"}`}
+                >
+                  {TAB_LABELS[tab]}
+                </button>
+              ))}
+            </div>
+            <div className="ml-auto flex items-center gap-1 shrink-0">
+              <PanelCustomizer
+                visibleTabs={visibleTabs}
+                onToggle={(tab) =>
+                  setVisibleTabs((tabs) =>
+                    tabs.includes(tab) ? tabs.filter((t) => t !== tab) : [...tabs, tab],
+                  )
+                }
+                onReset={() => setVisibleTabs(DEFAULT_VISIBLE_TABS)}
+              />
               <button
-                key={tab}
-                onClick={() => setRightTab(tab)}
-                className={`text-xs px-2.5 py-1 rounded capitalize whitespace-nowrap ${rightTab === tab ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"}`}
+                onClick={() => setMaximized((v) => !v)}
+                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+                title={maximized ? "Restore" : "Maximize"}
+                aria-label={maximized ? "Restore panel" : "Maximize panel"}
               >
-                {tab}
+                {maximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
               </button>
-            ))}
-            <button
-              onClick={() => setMaximized((v) => !v)}
-              className="ml-auto p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
-              title={maximized ? "Restore" : "Maximize"}
-              aria-label={maximized ? "Restore panel" : "Maximize panel"}
-            >
-              {maximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-            </button>
+            </div>
           </div>
 
           <div className="flex-1 min-h-0 overflow-hidden">
@@ -519,7 +719,7 @@ export default function App() {
 
       <BottomStatus />
 
-      {showNewMission && <MissionCreationModal onClose={() => setShowNewMission(false)} onCreated={() => {}} />}
+      {showNewSession && <SessionCreationModal onClose={() => setShowNewSession(false)} onCreated={() => {}} />}
       {showShortcuts && <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />}
       <CommandPalette commands={commands} />
       <DialogHost />

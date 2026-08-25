@@ -5,7 +5,7 @@ const FOCUSABLE_SELECTOR =
 
 /**
  * 051-Editor-Excellence-Roadmap.md Wave 5.2: every modal in this app (the
- * Mission-creation dialog, EditorPane's unsaved-changes/close prompts,
+ * Session-creation dialog, EditorPane's unsaved-changes/close prompts,
  * DialogHost's confirm/info dialogs) had no focus trap and no Escape
  * handling — a keyboard user could Tab straight out into the page behind
  * it, and Escape did nothing. Attach the returned ref to the modal's

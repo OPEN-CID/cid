@@ -15,7 +15,7 @@ type AutonomyAllowlist = {
 
 /**
  * Autonomous-mode command controls (Part 14): which command patterns an
- * Autonomous Mission may run without a per-step approval, and which always
+ * Autonomous Session may run without a per-step approval, and which always
  * stop for a human — e.g. `git commit` auto-approved, `git push`/PR-opening
  * commands always asked for. Scoped per repo, matching how the backend
  * allow-list is scoped (`autonomy.allowlist.*`, repo_channel id as scope_id).
@@ -130,7 +130,7 @@ export function AutonomyPanel() {
       <div className="text-[10px] text-muted-foreground">
         In Autonomous mode, a command matching a pattern below with &quot;auto-run&quot; runs without
         stopping; a pattern set to &quot;ask first&quot; (or no match at all) always waits for your
-        approval. Manual and Co-Pilot missions are unaffected — every tool call there is already
+        approval. Manual and Co-Pilot sessions are unaffected — every tool call there is already
         approved individually regardless of this list.
       </div>
 

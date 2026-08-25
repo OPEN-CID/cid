@@ -7,8 +7,8 @@
 
 Part 14 specifies that Autonomous-mode terminal commands run "inside a lightweight
 sandbox (OS-level: `sandbox-exec` on macOS, a restricted job object on Windows, a
-namespaced process on Linux) scoped to the Mission's worktree directory, so an
-autonomous Mission can't touch files outside its own worktree even if a command tries to."
+namespaced process on Linux) scoped to the Session's worktree directory, so an
+autonomous Session can't touch files outside its own worktree even if a command tries to."
 
 Two of the three named mechanisms deliver that. The Windows one does not.
 
@@ -26,7 +26,7 @@ Mechanisms that *would* give kernel-level filesystem confinement on Windows:
 
 - **AppContainer** — real isolation, but requires `CreateProcessW` with
   `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, capability SIDs, and per-directory ACL
-  grants for every path the Mission legitimately needs. Substantial unsafe FFI.
+  grants for every path the Session legitimately needs. Substantial unsafe FFI.
 - **Write-restricted token** (`CreateRestrictedToken` with `WRITE_RESTRICTED` plus a
   restricting SID ACE on the worktree) — also real, also substantial, and needs
   `CreateProcessAsUser`, whose privilege requirements vary by host configuration.
@@ -37,11 +37,11 @@ Enforce the boundary in two layers, and describe each one accurately.
 
 **Layer 1 — command path policy, on every platform.** Before any process is spawned,
 the command and its arguments are scanned for path-shaped tokens. Any token that is
-absolute, or that uses `..` to climb out, is resolved and checked against the Mission's
+absolute, or that uses `..` to climb out, is resolved and checked against the Session's
 worktree and its configured allowed paths. Anything landing outside is refused before
 execution. Read-only system locations (`/usr`, `/bin`, `C:\Windows`, `C:\Program Files`)
-are exempt so invoking an interpreter is not mistaken for an escape. A Mission's
-`run_terminal` working directory is additionally clamped into the Mission root, so a
+are exempt so invoking an interpreter is not mistaken for an escape. A Session's
+`run_terminal` working directory is additionally clamped into the Session root, so a
 model-supplied `workdir` cannot redirect execution elsewhere.
 
 **Layer 2 — kernel isolation where the OS provides it.** macOS `sandbox-exec` with a
@@ -67,7 +67,7 @@ stopped. Layer 1 cannot see paths that do not appear in the command text.
 
 **Therefore:** Autonomous mode on Windows is guarded by the command allow-list plus path
 policy, not by kernel isolation. `SECURITY.md` states this plainly. A user who needs a
-hard boundary on Windows should run Missions in a VM or container until AppContainer
+hard boundary on Windows should run Sessions in a VM or container until AppContainer
 support lands.
 
 **Revisit when** there is real demand for unattended Autonomous runs on Windows hosts

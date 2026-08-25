@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type ModelInfo, type RpcValue } from "../../lib/api";
 import { RefreshCw, Save } from "lucide-react";
 import { TeamIntegrationsPanel } from "./TeamIntegrationsPanel";
+import { LocalModelsPanel } from "./LocalModelsPanel";
 
 // Every value here is treated as string-ish with no narrowing throughout this
 // file (rendered straight into <input value>) — genuinely the RpcValue case,
@@ -38,7 +39,7 @@ function isRedacted(value: string | null | undefined): boolean {
   return !!value && value.includes("...");
 }
 
-export function ProvidersPanel() {
+function CloudProvidersPanel() {
   const [settings, setSettings] = useState<Settings>({});
   const [runtimes, setRuntimes] = useState<LocalRuntime[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -229,43 +230,49 @@ export function ProvidersPanel() {
         </div>
       </div>
 
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <div className="text-xs font-medium">Local runtimes</div>
-          <button
-            onClick={rescanRuntimes}
-            disabled={loading}
-            className="text-[11px] flex items-center gap-1 px-2 py-0.5 rounded bg-secondary disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Rescan
-          </button>
-        </div>
-        <div className="space-y-1.5">
-          {runtimes.map((r) => (
-            <div key={r.name} className="p-2 border rounded bg-background">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${r.available ? "bg-green-500" : "bg-muted-foreground/40"}`} />
-                <span className="text-xs font-medium">{r.name}</span>
-                {r.version && <span className="text-[10px] text-muted-foreground">{r.version}</span>}
-                <span className="ml-auto text-[10px] text-muted-foreground">{r.models?.length ?? 0} models</span>
-              </div>
-              {r.available && r.models?.length > 0 && (
-                <div className="text-[10px] text-muted-foreground mt-1 truncate">
-                  {r.models.slice(0, 6).map((m) => m.id).join(", ")}
-                  {r.models.length > 6 ? " …" : ""}
-                </div>
-              )}
-            </div>
-          ))}
-          {availableRuntimes.length === 0 && (
-            <div className="text-[11px] text-muted-foreground">
-              No local runtime detected. Install Ollama or LM Studio, or start <code>llama.cpp --server</code>.
-            </div>
-          )}
-        </div>
+      {/* Detected runtimes stay visible here as a one-line summary; setting
+          them up lives on the Local tab, which has the machine's capability and
+          the start/stop controls. */}
+      <div className="text-[11px] text-muted-foreground">
+        {availableRuntimes.length > 0
+          ? `${availableRuntimes.length} local runtime${availableRuntimes.length === 1 ? "" : "s"} detected — see the Local tab.`
+          : "No local runtime running. See the Local tab to set one up."}{" "}
+        <button onClick={rescanRuntimes} disabled={loading} className="underline disabled:opacity-50">
+          <RefreshCw className={`w-3 h-3 inline ${loading ? "animate-spin" : ""}`} /> Rescan
+        </button>
       </div>
 
       <TeamIntegrationsPanel />
+    </div>
+  );
+}
+
+/// Cloud providers and local models are different jobs — one is API keys and
+/// per-role routing, the other is hardware, downloads and a server process.
+/// They were one scrolling page, which buried both.
+export function ProvidersPanel() {
+  const [tab, setTab] = useState<"cloud" | "local">("cloud");
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="h-9 border-b flex items-center gap-1 px-2 shrink-0" role="tablist">
+        {(["cloud", "local"] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={`text-xs px-2.5 py-1 rounded ${
+              tab === t ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+            }`}
+          >
+            {t === "cloud" ? "Cloud providers" : "Local models"}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0">
+        {tab === "cloud" ? <CloudProvidersPanel /> : <LocalModelsPanel />}
+      </div>
     </div>
   );
 }

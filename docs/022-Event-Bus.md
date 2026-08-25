@@ -29,9 +29,9 @@ graph LR
   Bus --> ClientN["WS client N"]
 ```
 
-Notification methods used across the codebase: `mission.message.delta`,
-`mission.message.complete`, `mission.tool_call.request`, `mission.tool_call.complete`,
-`mission.plan.changed`, `mission.review.completed`, `mission.blocked`, `pty.output`,
+Notification methods used across the codebase: `session.message.delta`,
+`session.message.complete`, `session.tool_call.request`, `session.tool_call.complete`,
+`session.plan.changed`, `session.review.completed`, `session.blocked`, `pty.output`,
 `git.diff.update`, `confidence.scored`, `deployment.recorded`,
 `governance.policy.changed`, `tracker.link.changed`, `forge.change_request.created`,
 `acp.handoff.changed`.
@@ -85,7 +85,7 @@ additional data exposure beyond what a client with API access could already see.
 ## Testing
 
 Exercised indirectly by every test that relies on a notification firing (e.g.
-`confidence_score_is_computed_and_logged_to_the_mission` implicitly depends on the
+`confidence_score_is_computed_and_logged_to_the_session` implicitly depends on the
 `confidence.scored` broadcast, though the test asserts on the persisted/returned data
 rather than subscribing to the WS channel directly).
 
@@ -96,7 +96,7 @@ event-producing capability — no structural change to the bus itself.
 
 ## Acceptance Criteria
 
-A WebSocket client connected to Core receives real-time notifications for Mission-scoped
+A WebSocket client connected to Core receives real-time notifications for Session-scoped
 events without polling.
 
 ## AI Coding Rules

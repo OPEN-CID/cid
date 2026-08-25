@@ -57,7 +57,12 @@ export default defineConfig({
       command: "npm run dev:core:e2e",
       url: "http://127.0.0.1:5919/health",
       reuseExistingServer: true,
-      timeout: 120000,
+      // `dev:core:e2e` is `cargo run`, so on a cold target/ this timeout has to
+      // cover compiling the entire dependency graph before Core can answer
+      // /health at all — which took well past 120s here and failed the whole
+      // suite before a single spec ran. CI never hit it because CI builds and
+      // starts Core in a separate step; only local cold runs pay it.
+      timeout: 900000,
     },
   ],
 });

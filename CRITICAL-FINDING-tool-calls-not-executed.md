@@ -43,7 +43,7 @@ than by obtaining a live key.)
   HashMap<usize, String>`, built from `delta.tool_calls[].function.arguments` deltas,
   never read after the loop either.
 - `execute_tool_with_approval` (~line 2610, the function that actually runs a tool —
-  applies the autonomy gate, requests human approval via `mission.tool_call.request` for
+  applies the autonomy gate, requests human approval via `session.tool_call.request` for
   Co-Pilot, and calls `execute_tool_direct_in`) **has no callers anywhere in the
   codebase** (`grep -rn "execute_tool_with_approval" cid-core/src/` returns only its own
   definition).
@@ -52,7 +52,7 @@ than by obtaining a live key.)
 file, edit a file, run a command) and CID silently drops the request.** No approval
 prompt appears (Co-Pilot's whole selling point — "every tool call is shown and requires
 approval" — never fires for a real model). No file is read or written. No command runs.
-The Mission just ends with whatever text the model streamed before or around the
+The Session just ends with whatever text the model streamed before or around the
 tool-call request, and nothing else happens. This was not caught anywhere else in this
 project's history because every E2E/manual verification pass this session (and, from the
 checkpoint history, prior sessions too) ran without a configured API key, which routes
@@ -90,7 +90,7 @@ does not function against a real provider today.
    (not just `id`), accumulating `input_json_delta.partial_json` per index, and
    finalizing/parsing each block's JSON at `content_block_stop`.
 2. After a turn's stream ends: if any tool_use blocks were parsed, for each one (in
-   order), call `self.execute_tool_with_approval(mission_id, &name, input,
+   order), call `self.execute_tool_with_approval(session_id, &name, input,
    app_state.clone()).await` — this already implements the autonomy gate and the
    Co-Pilot approval wait correctly; it just needs to be invoked.
 3. Persist the assistant's turn (text + `ToolCall` entries with results) via
@@ -121,7 +121,7 @@ does not function against a real provider today.
 While tracing where `process_message_with_role` and its provider-call functions fit
 together to add an auto-checkpoint hook (review_prompt.md §3.2), a call site search for
 `execute_tool_with_approval` — the function that actually executes a tool and emits the
-`mission.tool_call.request`/`.complete` notifications the frontend listens for — returned
+`session.tool_call.request`/`.complete` notifications the frontend listens for — returned
 zero callers. Tracing backward from there to how tool calls are parsed out of each
 provider's streaming response confirmed the buffers are built and then discarded in both
 providers checked (Anthropic, OpenAI).

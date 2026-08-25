@@ -19,7 +19,7 @@ overlays. Phase 4 added the two genuinely new pieces:
   because the symbol they describe no longer exists.
   `cid-core/src/semantic_engine/graphs.rs::DocGraph`.
 
-"Mission history" and "AI memory" from the original proposal are treated as the Mission
+"Session history" and "AI memory" from the original proposal are treated as the Session
 Thread/History data that already exists (`013-Repository-Health.md`,
 `cid-core/src/persistence`), not a new graph type. "Runtime graph" stays optional/deferred,
 carrying the same tag it had in the original proposal.

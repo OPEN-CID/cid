@@ -27,9 +27,9 @@ Defaults are closed — Autonomous mode is off, no repo is allow-listed, until a
 configures it. 13 unit tests.
 
 Enforced at two real decision points, not just exposed as a checkable RPC:
-- `mission.create` refuses an Autonomous-mode Mission unless the session's role and the
+- `session.create` refuses an Autonomous-mode Session unless the session's role and the
   target repo both clear the Workspace policy.
-- `mission.plan.approve` checks the approver's role against `min_role_for_plan_approval`
+- `session.plan.approve` checks the approver's role against `min_role_for_plan_approval`
   and records their real username as `approved_by`, replacing the free-text string the
   Phase 1 implementation accepted from any caller.
 
@@ -39,32 +39,32 @@ RPC: `governance.policy.get/.set`, `.check.autonomous/.plan_approval/.merge`,
 ### GitLab and Bitbucket bridges (`cid-core/src/forges/`)
 
 Parity with the existing GitHub bridge behind one abstraction (`ForgeManager`,
-`ForgeKind::GitLab | Bitbucket`): connect a Repo Channel to a project, issue→Mission
+`ForgeKind::GitLab | Bitbucket`): connect a Repo Channel to a project, issue→Session
 trigger, and merge/pull-request create/list/status. GitLab uses `PRIVATE-TOKEN` auth and
 `iid` for the visible issue number; Bitbucket uses HTTP basic (`user:app_password`) and
 paginates under `values`. Both map to one normalized `ForgeIssue`/`ForgeChangeRequest`
 shape. 16 unit tests covering response mapping, URL encoding, and connection validation.
 
 RPC: `forge.connect`, `.config.get`, `.disconnect`, `.issues.list`, `.issue.get`,
-`.issue.to_mission`, `.change_request.create/.list/.status`.
+`.issue.to_session`, `.change_request.create/.list/.status`.
 
 ### Jira and Linear linkage (`cid-core/src/trackers/`)
 
-Deliberately narrow per Part 1's non-goal: **Mission ↔ ticket linkage**, not a tracker
-replacement. Attach a ticket to a Mission, fetch its summary for display, post a progress
-comment, open a Mission from a ticket. Cannot create tickets, change status, or manage
+Deliberately narrow per Part 1's non-goal: **Session ↔ ticket linkage**, not a tracker
+replacement. Attach a ticket to a Session, fetch its summary for display, post a progress
+comment, open a Session from a ticket. Cannot create tickets, change status, or manage
 sprints. Jira uses REST v3 with Atlassian Document Format flattened to plain text for
-Mission context; Linear uses its GraphQL API. 19 unit tests.
+Session context; Linear uses its GraphQL API. 19 unit tests.
 
 RPC: `tracker.token.set`, `.status`, `.issue.get`, `.link`, `.links.list`, `.unlink`,
-`.issue.to_mission`, `.comment`.
+`.issue.to_session`, `.comment`.
 
 ### Mobile companion app (`src/mobile/MobileApp.tsx`)
 
 Built on the Phase 2 bake-off decision (ADR 0010: Tauri v2 Mobile, same React bundle,
 same JSON-RPC contract) — approval/monitoring only, per Part 1's mobile non-goal and Part
-19's screen spec: Mission list (blocked-on-approval Missions surface first) → tap into a
-Mission → approve/deny/comment on pending tool calls → read-only diff and terminal tabs.
+19's screen spec: Session list (blocked-on-approval Sessions surface first) → tap into a
+Session → approve/deny/comment on pending tool calls → read-only diff and terminal tabs.
 No file tree, no editor, no code written from mobile. Push-style approval alerts via the
 Notification API when the tab is backgrounded; voice input via the Web Speech API where
 the platform provides it (`useVoiceInput` reports `supported: false` rather than showing
@@ -121,8 +121,8 @@ window still gets the full app; `?mobile=1` forces it for testing.
   runtime.** It has been exercised as a web build with touch/narrow-viewport emulation.
   Part 3's own guidance says a real-device pass matters most for push notifications and
   voice input specifically — both are real risk areas until that pass happens.
-- **Governance is enforced only at Mission creation and plan approval,** not yet at merge
-  time or mid-Mission autonomy switches (Flow 2: switching a running Mission to Autonomous
+- **Governance is enforced only at Session creation and plan approval,** not yet at merge
+  time or mid-Session autonomy switches (Flow 2: switching a running Session to Autonomous
   mid-run). `governance.check.merge` exists as an RPC but nothing calls it automatically
   yet.
 - **Spend tracking has no automatic recording.** `governance.spend.record` exists and is

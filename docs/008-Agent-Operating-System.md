@@ -11,7 +11,7 @@ budget, and permissions).
 
 Kept as **configurable role profiles** on top of the existing three-role engine, not ten
 independent agent subsystems. A profile is still a prompt + tool-permission set + model
-config running through the same Mission, worktree, and model router — never its own
+config running through the same Session, worktree, and model router — never its own
 independent subsystem. `cid-core/src/role_profiles/mod.rs`.
 
 ## Non-Goals
@@ -35,7 +35,7 @@ graph TB
 
 Three built-in roles (Planner, Implementer, Reviewer — `cid-core/src/roles/mod.rs`) are
 unchanged. A `RoleProfile` is an *additional*, named, Workspace- or Repo-scoped
-configuration a Mission's Planner can invoke as a scoped subagent when the task calls for
+configuration a Session's Planner can invoke as a scoped subagent when the task calls for
 it — "this touches auth code, also run the Security Reviewer profile."
 
 ## Data Structures
@@ -94,7 +94,7 @@ calls the real `execute_tool_direct_in` path and confirms the file is never crea
 ## Implementation Order
 
 Built in Phase 4 on top of Phase 0's three-role engine — no architecture change to the
-underlying Mission/worktree/model-router machinery was needed.
+underlying Session/worktree/model-router machinery was needed.
 
 ## Acceptance Criteria
 

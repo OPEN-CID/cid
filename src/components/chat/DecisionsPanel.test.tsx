@@ -5,11 +5,11 @@ import { api } from "@/lib/api";
 import { useCid } from "@/hooks/useCid";
 
 // 051-Editor-Excellence-Roadmap.md Wave 5.1c: decisions.* and deployment.*
-// had real backends, zero UI — this pins the new Mission-thread tab.
+// had real backends, zero UI — this pins the new Session-thread tab.
 
 vi.mock("@/lib/api", () => ({
   api: {
-    decisions: { list: vi.fn(), forMission: vi.fn() },
+    decisions: { list: vi.fn(), forSession: vi.fn() },
     deployment: { record: vi.fn(), list: vi.fn() },
   },
 }));
@@ -19,36 +19,36 @@ vi.mock("@/hooks/useCid", () => ({
 }));
 
 const state = {
-  missions: [{ id: "mission-1", repo_channel_id: "repo-1" }],
+  sessions: [{ id: "session-1", repo_channel_id: "repo-1" }],
   repos: [{ id: "repo-1", path: "/tmp/repo" }],
-  selectedMissionId: "mission-1",
+  selectedSessionId: "session-1",
 };
 
 describe("DecisionsPanel", () => {
   beforeEach(() => {
     vi.mocked(api.decisions.list).mockReset();
-    vi.mocked(api.decisions.forMission).mockReset();
+    vi.mocked(api.decisions.forSession).mockReset();
     vi.mocked(api.deployment.record).mockReset();
     vi.mocked(api.deployment.list).mockReset();
     vi.mocked(useCid).mockReturnValue(state as any);
-    vi.mocked(api.decisions.forMission).mockResolvedValue([]);
+    vi.mocked(api.decisions.forSession).mockResolvedValue([]);
     vi.mocked(api.deployment.list).mockResolvedValue([]);
   });
 
-  it("prompts to select a mission when none is selected", () => {
-    vi.mocked(useCid).mockReturnValue({ missions: [], repos: [], selectedMissionId: null } as any);
+  it("prompts to select a session when none is selected", () => {
+    vi.mocked(useCid).mockReturnValue({ sessions: [], repos: [], selectedSessionId: null } as any);
     render(<DecisionsPanel />);
-    expect(screen.getByText(/Select a mission/)).toBeInTheDocument();
+    expect(screen.getByText(/Select a session/)).toBeInTheDocument();
   });
 
-  it("shows ADRs relevant to the mission", async () => {
-    vi.mocked(api.decisions.forMission).mockResolvedValueOnce([
+  it("shows ADRs relevant to the session", async () => {
+    vi.mocked(api.decisions.forSession).mockResolvedValueOnce([
       { number: "0011", title: "Windows sandbox limits", path: "docs/adr/0011-windows-sandbox.md" },
     ]);
     render(<DecisionsPanel />);
 
     expect(await screen.findByText(/ADR 0011: Windows sandbox limits/)).toBeInTheDocument();
-    expect(api.decisions.forMission).toHaveBeenCalledWith("mission-1");
+    expect(api.decisions.forSession).toHaveBeenCalledWith("session-1");
   });
 
   it("Show all repo ADRs lists every ADR in the repo", async () => {
@@ -56,7 +56,7 @@ describe("DecisionsPanel", () => {
       { number: "0001", title: "Storage engine", path: "docs/adr/0001-storage.md", status: "Accepted" },
     ]);
     render(<DecisionsPanel />);
-    await waitFor(() => expect(api.decisions.forMission).toHaveBeenCalled());
+    await waitFor(() => expect(api.decisions.forSession).toHaveBeenCalled());
 
     fireEvent.click(screen.getByText("Show all repo ADRs"));
 
@@ -64,11 +64,11 @@ describe("DecisionsPanel", () => {
     expect(await screen.findByText(/ADR 0001: Storage engine/)).toBeInTheDocument();
   });
 
-  it("lists deployments for the mission", async () => {
+  it("lists deployments for the session", async () => {
     vi.mocked(api.deployment.list).mockResolvedValueOnce([
       {
         id: "dep-1",
-        mission_id: "mission-1",
+        session_id: "session-1",
         environment: "production",
         commit_or_tag: "abc1234",
         source: "manual",
@@ -81,11 +81,11 @@ describe("DecisionsPanel", () => {
     expect(screen.getByText("abc1234")).toBeInTheDocument();
   });
 
-  it("recording a deployment sends the mission-scoped payload and reloads", async () => {
+  it("recording a deployment sends the session-scoped payload and reloads", async () => {
     vi.mocked(api.deployment.list).mockResolvedValueOnce([]).mockResolvedValueOnce([
       {
         id: "dep-1",
-        mission_id: "mission-1",
+        session_id: "session-1",
         environment: "staging",
         commit_or_tag: "def5678",
         source: "manual",
@@ -103,7 +103,7 @@ describe("DecisionsPanel", () => {
 
     await waitFor(() =>
       expect(api.deployment.record).toHaveBeenCalledWith(
-        expect.objectContaining({ mission_id: "mission-1", environment: "staging", commit_or_tag: "def5678" })
+        expect.objectContaining({ session_id: "session-1", environment: "staging", commit_or_tag: "def5678" })
       )
     );
     expect(await screen.findByText("staging")).toBeInTheDocument();

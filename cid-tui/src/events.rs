@@ -1,7 +1,7 @@
 //! Background WebSocket listener.
 //!
-//! Core's `/ws` endpoint already carries `mission.tool_call.request` and
-//! `mission.tool_call.complete` notifications for every other shell (Part 15's
+//! Core's `/ws` endpoint already carries `session.tool_call.request` and
+//! `session.tool_call.complete` notifications for every other shell (Part 15's
 //! "one Core, many surfaces") — nothing new was added to Core for this. The
 //! TUI's own state refresh runs over plain HTTP for simplicity (see the ADR),
 //! but pending-approval visibility genuinely needs the push channel: HTTP
@@ -14,21 +14,21 @@ use tokio_tungstenite::tungstenite::Message;
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     ToolCallRequest {
-        mission_id: String,
+        session_id: String,
         tool_call_id: String,
         tool_name: String,
         arguments: serde_json::Value,
     },
     ToolCallComplete {
         // Kept for shape-symmetry with `ToolCallRequest` and for a future
-        // per-Mission (rather than selected-Mission-only) approval view;
+        // per-Session (rather than selected-Session-only) approval view;
         // `apply_event` currently matches on `tool_call_id` alone since
-        // `pending_approvals` is already scoped to the selected Mission.
+        // `pending_approvals` is already scoped to the selected Session.
         #[allow(dead_code)]
-        mission_id: String,
+        session_id: String,
         tool_call_id: String,
     },
-    MissionChanged,
+    SessionChanged,
 }
 
 /// Connect to Core's WebSocket and forward decoded notifications. Runs until
@@ -70,8 +70,8 @@ pub async fn listen(
         };
 
         let event = match method {
-            "mission.tool_call.request" => Some(CoreEvent::ToolCallRequest {
-                mission_id: value["params"]["mission_id"]
+            "session.tool_call.request" => Some(CoreEvent::ToolCallRequest {
+                session_id: value["params"]["session_id"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
@@ -85,8 +85,8 @@ pub async fn listen(
                     .to_string(),
                 arguments: value["params"]["arguments"].clone(),
             }),
-            "mission.tool_call.complete" => Some(CoreEvent::ToolCallComplete {
-                mission_id: value["params"]["mission_id"]
+            "session.tool_call.complete" => Some(CoreEvent::ToolCallComplete {
+                session_id: value["params"]["session_id"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
@@ -95,7 +95,7 @@ pub async fn listen(
                     .unwrap_or_default()
                     .to_string(),
             }),
-            m if m.starts_with("mission.") => Some(CoreEvent::MissionChanged),
+            m if m.starts_with("session.") => Some(CoreEvent::SessionChanged),
             _ => None,
         };
 
@@ -113,15 +113,15 @@ mod tests {
     fn tool_call_request_parses_from_a_realistic_notification() {
         let raw = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "mission.tool_call.request",
+            "method": "session.tool_call.request",
             "params": {
-                "mission_id": "m1",
+                "session_id": "m1",
                 "tool_call_id": "tc1",
                 "tool_name": "write_file",
                 "arguments": { "path": "src/x.rs" }
             }
         });
-        assert_eq!(raw["method"], "mission.tool_call.request");
+        assert_eq!(raw["method"], "session.tool_call.request");
         assert_eq!(raw["params"]["tool_call_id"], "tc1");
     }
 }

@@ -41,11 +41,11 @@ CLI and the `cid-tui` shell) and atomic per-change commits (Aider's pattern, mir
 **Agent multiplexers** (Herdr, cmux, amux, dmux, workmux, and a dozen others): validate
 the worktree-per-unit-of-work mechanic hard — but per Part 1's own analysis, this category
 is now crowded at the session-manager layer. CID's differentiation is not the worktree
-mechanic (table stakes) but the fuller platform around it: chat/Mission model, embedded
+mechanic (table stakes) but the fuller platform around it: chat/Session model, embedded
 editor, cross-platform reach, model routing, governance.
 
 **Fully autonomous cloud agents** (Devin Cloud, Copilot's coding agent): validate the
-issue→Mission trigger pattern, mirrored in `cid-core/src/github/mod.rs` and
+issue→Session trigger pattern, mirrored in `cid-core/src/github/mod.rs` and
 `cid-core/src/forges/mod.rs`.
 
 ## Open Source Comparison

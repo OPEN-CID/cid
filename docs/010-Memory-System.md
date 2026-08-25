@@ -9,20 +9,20 @@ Skills layering, Part 13's History panel), not a hidden agent-only store.
 ## Goals
 
 - **Context layering** (Part 12): Workspace `SKILL.md` library → Repo Channel
-  `AGENTS.md`/`SKILL.md` → Mission Thread scratch notes, nearest-scope-wins, assembled
-  fresh at Mission start by `skills::resolve_context` / the `skills.resolve` RPC.
-- **Chat history**: every message persisted per-Mission (`persistence::create_message`,
+  `AGENTS.md`/`SKILL.md` → Session Thread scratch notes, nearest-scope-wins, assembled
+  fresh at Session start by `skills::resolve_context` / the `skills.resolve` RPC.
+- **Chat history**: every message persisted per-Session (`persistence::create_message`,
   `list_messages`), forming the model's conversation context on each turn.
 - **Action History** (Part 13): every tool call, terminal command, and approval decision
   logged, filterable, exportable — `013-Repository-Health.md` covers this in more depth.
-- **Ephemeral Mission context**: plain scratch notes scoped to one Mission, cleared/
+- **Ephemeral Session context**: plain scratch notes scoped to one Session, cleared/
   archived on close, never written back to the repo.
 
 ## Non-Goals
 
-A persistent vector-based "agent memory" that survives across unrelated Missions —
-CID's memory is scoped to what's visible in the product (a Mission's own history, a
-repo's own files), not a hidden cross-Mission store an agent silently accumulates.
+A persistent vector-based "agent memory" that survives across unrelated Sessions —
+CID's memory is scoped to what's visible in the product (a Session's own history, a
+repo's own files), not a hidden cross-Session store an agent silently accumulates.
 
 ## Architecture
 
@@ -30,15 +30,15 @@ repo's own files), not a hidden cross-Mission store an agent silently accumulate
 graph TB
   WS["Workspace SKILL.md library"] --> Resolve["skills::resolve_context<br/>nearest-scope-wins"]
   Repo["Repo AGENTS.md / SKILL.md"] --> Resolve
-  Mission["Mission scratch context"] --> Resolve
-  Resolve --> Prompt["System prompt<br/>at Mission start"]
+  Session["Session scratch context"] --> Resolve
+  Resolve --> Prompt["System prompt<br/>at Session start"]
   History["persistence::list_messages"] --> Prompt
 ```
 
 ## Data Structures
 
 `Skill`, `SkillBundle`, `SkillScope` (Workspace/Repo) — `api/types.rs`. `ChatMessage`
-carries the actual conversational memory per Mission.
+carries the actual conversational memory per Session.
 
 ## Traits / Interfaces
 
@@ -55,13 +55,13 @@ CID doesn't migrate anything).
 ## Performance Targets
 
 Context resolution is a handful of file reads plus string concatenation — not separately
-benchmarked; not currently a bottleneck at Mission-start scale.
+benchmarked; not currently a bottleneck at Session-start scale.
 
 ## Tradeoffs
 
-No embedding-based "relevant memory retrieval" across a Mission's history — the full
+No embedding-based "relevant memory retrieval" across a Session's history — the full
 message list is passed as context each turn. Simple and correct at current conversation
-lengths; would need summarization/truncation at much longer Mission threads, not yet
+lengths; would need summarization/truncation at much longer Session threads, not yet
 built because not yet needed.
 
 ## Failure Modes
@@ -79,7 +79,7 @@ model provider.
 
 ## Testing
 
-`skills_resolve_puts_mission_context_last`, `skills_bundles_list_finds_multi_file_skill_md`,
+`skills_resolve_puts_session_context_last`, `skills_bundles_list_finds_multi_file_skill_md`,
 and related tests in `api_integration.rs` cover resolution order and multi-file bundle
 discovery.
 
@@ -97,5 +97,5 @@ that repo's own `AGENTS.md`, which takes precedence on any overlapping instructi
 ## AI Coding Rules
 
 Never invent a new context-storage location outside the three documented scopes
-(Workspace/Repo/Mission) — a fourth ad hoc scope would break the "nearest-scope-wins"
+(Workspace/Repo/Session) — a fourth ad hoc scope would break the "nearest-scope-wins"
 guarantee every caller depends on.

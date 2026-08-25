@@ -82,9 +82,9 @@ test.describe("Health Check & API Coverage", () => {
     });
   });
 
-  test.describe("Mission API", () => {
+  test.describe("Session API", () => {
     let repoId: string;
-    let missionId: string;
+    let sessionId: string;
 
     test.beforeAll(async () => {
       try {
@@ -95,34 +95,34 @@ test.describe("Health Check & API Coverage", () => {
       }
     });
 
-    test("mission.create should create a mission", async () => {
-      const data = await rpc("mission.create", {
+    test("session.create should create a session", async () => {
+      const data = await rpc("session.create", {
         repo_channel_id: repoId,
-        title: "E2E Health Check Mission",
-        task: "Verify the mission system works end-to-end",
-        session_mode: "worktree",
+        title: "E2E Health Check Session",
+        task: "Verify the session system works end-to-end",
+        isolation_mode: "worktree",
         autonomy_level: "co_pilot",
       });
       expect(data.result.id).toBeTruthy();
-      expect(data.result.title).toBe("E2E Health Check Mission");
-      missionId = data.result.id;
+      expect(data.result.title).toBe("E2E Health Check Session");
+      sessionId = data.result.id;
     });
 
-    test("mission.get should return mission", async () => {
-      const data = await rpc("mission.get", { id: missionId });
-      expect(data.result.id).toBe(missionId);
+    test("session.get should return session", async () => {
+      const data = await rpc("session.get", { id: sessionId });
+      expect(data.result.id).toBe(sessionId);
     });
 
-    test("mission.send_message should work", async () => {
-      const data = await rpc("mission.send_message", {
-        mission_id: missionId,
+    test("session.send_message should work", async () => {
+      const data = await rpc("session.send_message", {
+        session_id: sessionId,
         content: "Hello from E2E test",
       });
       expect(data.result).toBeDefined();
     });
 
     test("message.list should return messages", async () => {
-      const data = await rpc("message.list", { mission_id: missionId });
+      const data = await rpc("message.list", { session_id: sessionId });
       expect(data.result.length).toBeGreaterThan(0);
     });
   });
@@ -243,8 +243,8 @@ test.describe("Health Check & API Coverage", () => {
   });
 
   test.describe("PTY API", () => {
-    test("pty.list should return PTY instances for a mission", async () => {
-      const data = await rpc("pty.list", { mission_id: "e2e-health-check-nonexistent" }).catch(() => null);
+    test("pty.list should return PTY instances for a session", async () => {
+      const data = await rpc("pty.list", { session_id: "e2e-health-check-nonexistent" }).catch(() => null);
       if (data) {
         expect(Array.isArray(data.result)).toBe(true);
       }

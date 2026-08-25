@@ -14,7 +14,7 @@ verify none have regressed.
    therefore never compiled into the running binary at all. Check: `lib.rs` has
    `pub mod confidence;`, `Core` holds a `confidence_engine: Arc<ConfidenceEngine>` field,
    `AppState` in `router.rs` does too, and a real RPC method calls it. Run the 28 unit
-   tests in `confidence/mod.rs` plus `confidence_score_is_computed_and_logged_to_the_mission`,
+   tests in `confidence/mod.rs` plus `confidence_score_is_computed_and_logged_to_the_session`,
    `confidence_score_reads_the_worktree_file_when_no_content_is_supplied`,
    `confidence_score_without_content_or_an_existing_file_fails_clearly` in
    `api_integration.rs`.
@@ -42,12 +42,12 @@ verify none have regressed.
    `execute_tool_direct_in` — not just present as a field nothing reads. Run the
    `role_profile_enforcement_tests` module in `model/mod.rs`.
 6. **Decisions view and Deployment record.** Check: `cid-core/src/decisions/mod.rs`
-   (`list_adrs`, `adrs_relevant_to_mission`, `DeploymentLog`/`DeploymentRecord`).
+   (`list_adrs`, `adrs_relevant_to_session`, `DeploymentLog`/`DeploymentRecord`).
    Critical non-goal to confirm still holds: `DeploymentLog` must only *log* deployments
    (source, timestamp, what/where), never orchestrate one — re-read Part 0's deployment-
    provider exclusion and confirm no code path here calls out to a cloud provider SDK.
    Run `deployment_record_cannot_orchestrate_anything_it_can_only_log`.
-7. **`cid-tui` CLI/TUI shell**: chat, mission status, tool-call/plan approval over the
+7. **`cid-tui` CLI/TUI shell**: chat, session status, tool-call/plan approval over the
    same WebSocket event stream other surfaces use. Check: `cid-tui/src/main.rs`,
    `api.rs`, `app.rs`, `events.rs`, `ui.rs`. **Known, still-open gap** (confirmed as of
    Phase 5/6's own audits): no diff view. Confirm this is still true, or that it's been

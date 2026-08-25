@@ -3,7 +3,7 @@
  *
  * Sits above the per-repo Autonomous-mode allow-lists in `autonomy`: those say
  * *which commands* may run unattended, this says *who may turn Autonomous mode
- * on at all*, *which repos permit it*, and *how much a Mission may spend*.
+ * on at all*, *which repos permit it*, and *how much a Session may spend*.
  *
  * Every decision returns a reason, so a refusal can be shown to the user and
  * written to the History panel as an audit entry rather than surfacing as a
@@ -17,7 +17,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Role, Session};
+use crate::auth::{AuthSession, Role};
 
 /// Workspace policy. Defaults are deliberately restrictive: Autonomous mode is
 /// off, no repo is allow-listed, and there is no spend budget until someone
@@ -25,14 +25,14 @@ use crate::auth::{Role, Session};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspacePolicy {
     pub workspace_id: String,
-    /// Minimum role permitted to place a Mission in Autonomous mode.
+    /// Minimum role permitted to place a Session in Autonomous mode.
     pub min_role_for_autonomous: Role,
     /// Whether Autonomous mode is permitted anywhere in this Workspace.
     pub autonomous_enabled: bool,
     /// Repos where Autonomous mode is permitted. Empty means none.
     pub autonomous_repos: Vec<String>,
-    /// Per-Mission spend ceiling in USD. `None` means unlimited.
-    pub mission_spend_cap_usd: Option<f64>,
+    /// Per-Session spend ceiling in USD. `None` means unlimited.
+    pub session_spend_cap_usd: Option<f64>,
     /// Rolling daily spend ceiling for the whole Workspace, in USD.
     pub daily_spend_cap_usd: Option<f64>,
     /// Minimum role permitted to approve a plan.
@@ -49,7 +49,7 @@ impl WorkspacePolicy {
             min_role_for_autonomous: Role::Admin,
             autonomous_enabled: false,
             autonomous_repos: Vec::new(),
-            mission_spend_cap_usd: None,
+            session_spend_cap_usd: None,
             daily_spend_cap_usd: None,
             min_role_for_plan_approval: Role::Developer,
             min_role_for_merge: Role::Developer,
@@ -93,7 +93,7 @@ impl PolicyDecision {
 /// A recorded spend event, used for cap enforcement and for the audit trail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpendRecord {
-    pub mission_id: String,
+    pub session_id: String,
     pub workspace_id: String,
     pub usd: f64,
     pub at: DateTime<Utc>,
@@ -132,7 +132,7 @@ impl GovernanceManager {
     /// check is here rather than at the call site so no caller can skip it.
     pub fn set_policy(
         &self,
-        actor: &Session,
+        actor: &AuthSession,
         mut policy: WorkspacePolicy,
     ) -> Result<WorkspacePolicy> {
         crate::auth::require(actor, Role::Admin, "change Workspace policy")?;
@@ -144,13 +144,13 @@ impl GovernanceManager {
         Ok(policy)
     }
 
-    /// May this user put this Mission into Autonomous mode on this repo?
+    /// May this user put this Session into Autonomous mode on this repo?
     ///
     /// All three conditions must hold: the Workspace permits Autonomous mode at
     /// all, the repo is on its list, and the user's role clears the bar.
     pub fn can_enable_autonomous(
         &self,
-        actor: &Session,
+        actor: &AuthSession,
         workspace_id: &str,
         repo_path: &str,
     ) -> PolicyDecision {
@@ -185,7 +185,7 @@ impl GovernanceManager {
         ))
     }
 
-    pub fn can_approve_plan(&self, actor: &Session, workspace_id: &str) -> PolicyDecision {
+    pub fn can_approve_plan(&self, actor: &AuthSession, workspace_id: &str) -> PolicyDecision {
         let policy = self.get_policy(workspace_id);
         if actor.role.satisfies(policy.min_role_for_plan_approval) {
             PolicyDecision::allow(format!("'{}' may approve plans.", actor.username))
@@ -198,7 +198,7 @@ impl GovernanceManager {
         }
     }
 
-    pub fn can_merge(&self, actor: &Session, workspace_id: &str) -> PolicyDecision {
+    pub fn can_merge(&self, actor: &AuthSession, workspace_id: &str) -> PolicyDecision {
         let policy = self.get_policy(workspace_id);
         if actor.role.satisfies(policy.min_role_for_merge) {
             PolicyDecision::allow(format!("'{}' may merge or open PRs.", actor.username))
@@ -211,28 +211,28 @@ impl GovernanceManager {
         }
     }
 
-    /// Whether a Mission may spend `additional_usd` more.
+    /// Whether a Session may spend `additional_usd` more.
     ///
     /// Checked before the spend, not after, so a cap actually prevents overrun
     /// rather than reporting it.
     pub fn check_spend(
         &self,
         workspace_id: &str,
-        mission_id: &str,
+        session_id: &str,
         additional_usd: f64,
     ) -> PolicyDecision {
         let policy = self.get_policy(workspace_id);
         let spend = self.spend.read().unwrap();
 
-        if let Some(cap) = policy.mission_spend_cap_usd {
+        if let Some(cap) = policy.session_spend_cap_usd {
             let so_far: f64 = spend
                 .iter()
-                .filter(|r| r.mission_id == mission_id)
+                .filter(|r| r.session_id == session_id)
                 .map(|r| r.usd)
                 .sum();
             if so_far + additional_usd > cap {
                 return PolicyDecision::deny(format!(
-                    "Mission spend cap reached: ${:.2} spent, ${:.2} requested, cap ${:.2}.",
+                    "Session spend cap reached: ${:.2} spent, ${:.2} requested, cap ${:.2}.",
                     so_far, additional_usd, cap
                 ));
             }
@@ -260,12 +260,12 @@ impl GovernanceManager {
     pub fn record_spend(
         &self,
         workspace_id: &str,
-        mission_id: &str,
+        session_id: &str,
         usd: f64,
         note: Option<String>,
     ) -> SpendRecord {
         let record = SpendRecord {
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             workspace_id: workspace_id.to_string(),
             usd,
             at: Utc::now(),
@@ -275,12 +275,12 @@ impl GovernanceManager {
         record
     }
 
-    pub fn mission_spend(&self, mission_id: &str) -> f64 {
+    pub fn session_spend(&self, session_id: &str) -> f64 {
         self.spend
             .read()
             .unwrap()
             .iter()
-            .filter(|r| r.mission_id == mission_id)
+            .filter(|r| r.session_id == session_id)
             .map(|r| r.usd)
             .sum()
     }
@@ -296,12 +296,12 @@ impl GovernanceManager {
             .sum()
     }
 
-    pub fn spend_records(&self, mission_id: Option<&str>) -> Vec<SpendRecord> {
+    pub fn spend_records(&self, session_id: Option<&str>) -> Vec<SpendRecord> {
         self.spend
             .read()
             .unwrap()
             .iter()
-            .filter(|r| mission_id.map(|m| r.mission_id == m).unwrap_or(true))
+            .filter(|r| session_id.map(|m| r.session_id == m).unwrap_or(true))
             .cloned()
             .collect()
     }
@@ -329,8 +329,8 @@ fn paths_match(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn session(role: Role, username: &str) -> Session {
-        Session {
+    fn session(role: Role, username: &str) -> AuthSession {
+        AuthSession {
             token: "t".into(),
             user_id: format!("id-{username}"),
             username: username.into(),
@@ -459,10 +459,10 @@ mod tests {
     }
 
     #[test]
-    fn a_mission_spend_cap_blocks_before_the_overrun() {
+    fn a_session_spend_cap_blocks_before_the_overrun() {
         let gov = GovernanceManager::new();
         let policy = WorkspacePolicy {
-            mission_spend_cap_usd: Some(10.0),
+            session_spend_cap_usd: Some(10.0),
             ..WorkspacePolicy::default_for("ws")
         };
         gov.set_policy(&session(Role::Admin, "a"), policy).unwrap();
@@ -473,17 +473,17 @@ mod tests {
         let denied = gov.check_spend("ws", "m1", 5.0);
         assert!(!denied.allowed(), "the cap must be checked before spending");
         assert!(
-            denied.reason().contains("Mission spend cap"),
+            denied.reason().contains("Session spend cap"),
             "{}",
             denied.reason()
         );
     }
 
     #[test]
-    fn a_mission_cap_does_not_leak_across_missions() {
+    fn a_session_cap_does_not_leak_across_sessions() {
         let gov = GovernanceManager::new();
         let policy = WorkspacePolicy {
-            mission_spend_cap_usd: Some(10.0),
+            session_spend_cap_usd: Some(10.0),
             ..WorkspacePolicy::default_for("ws")
         };
         gov.set_policy(&session(Role::Admin, "a"), policy).unwrap();
@@ -491,12 +491,12 @@ mod tests {
         gov.record_spend("ws", "m1", 9.9, None);
         assert!(
             gov.check_spend("ws", "m2", 9.0).allowed(),
-            "each Mission has its own cap"
+            "each Session has its own cap"
         );
     }
 
     #[test]
-    fn a_daily_workspace_cap_aggregates_across_missions() {
+    fn a_daily_workspace_cap_aggregates_across_sessions() {
         let gov = GovernanceManager::new();
         let policy = WorkspacePolicy {
             daily_spend_cap_usd: Some(20.0),
@@ -536,7 +536,7 @@ mod tests {
         gov.record_spend("ws", "m1", 1.5, Some("implementer".into()));
         gov.record_spend("ws", "m2", 4.0, None);
 
-        assert!((gov.mission_spend("m1") - 4.0).abs() < 1e-9);
+        assert!((gov.session_spend("m1") - 4.0).abs() < 1e-9);
         assert!((gov.workspace_spend_24h("ws") - 8.0).abs() < 1e-9);
         assert_eq!(gov.spend_records(Some("m1")).len(), 2);
         assert_eq!(gov.spend_records(None).len(), 3);

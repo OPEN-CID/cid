@@ -4,7 +4,7 @@
 // Snapshot of the models.dev registry, used as the offline fallback for
 // `model::catalog`'s live fetch. See the generator for why this is generated
 // rather than hand-maintained.
-// Registry snapshot taken: 2026-07-24
+// Registry snapshot taken: 2026-08-13
 
 use super::catalog::CatalogModel;
 
@@ -159,6 +159,20 @@ pub const OPENAI_MODELS: &[CatalogModel] = &[
 /// models.dev provider `google` — 10 tool-calling text models.
 pub const GOOGLE_MODELS: &[CatalogModel] = &[
     CatalogModel {
+        id: "gemini-3.7-flash",
+        name: "Gemini 3.7 Flash",
+        context: 1048576,
+        input_per_million: 0.75,
+        output_per_million: 3.75,
+    },
+    CatalogModel {
+        id: "gemini-flash-latest",
+        name: "Gemini Flash Latest",
+        context: 1048576,
+        input_per_million: 0.75,
+        output_per_million: 3.75,
+    },
+    CatalogModel {
         id: "gemini-3.5-flash-lite",
         name: "Gemini 3.5 Flash Lite",
         context: 1048576,
@@ -169,8 +183,15 @@ pub const GOOGLE_MODELS: &[CatalogModel] = &[
         id: "gemini-3.6-flash",
         name: "Gemini 3.6 Flash",
         context: 1048576,
-        input_per_million: 1.5,
-        output_per_million: 7.5,
+        input_per_million: 0.75,
+        output_per_million: 3.75,
+    },
+    CatalogModel {
+        id: "gemini-flash-lite-latest",
+        name: "Gemini Flash-Lite Latest",
+        context: 1048576,
+        input_per_million: 0.3,
+        output_per_million: 2.5,
     },
     CatalogModel {
         id: "gemini-3.5-flash",
@@ -180,22 +201,8 @@ pub const GOOGLE_MODELS: &[CatalogModel] = &[
         output_per_million: 9.0,
     },
     CatalogModel {
-        id: "gemini-flash-latest",
-        name: "Gemini Flash Latest",
-        context: 1048576,
-        input_per_million: 1.5,
-        output_per_million: 9.0,
-    },
-    CatalogModel {
         id: "gemini-3.1-flash-lite",
         name: "Gemini 3.1 Flash Lite",
-        context: 1048576,
-        input_per_million: 0.25,
-        output_per_million: 1.5,
-    },
-    CatalogModel {
-        id: "gemini-flash-lite-latest",
-        name: "Gemini Flash-Lite Latest",
         context: 1048576,
         input_per_million: 0.25,
         output_per_million: 1.5,
@@ -217,13 +224,6 @@ pub const GOOGLE_MODELS: &[CatalogModel] = &[
     CatalogModel {
         id: "gemini-3.1-pro-preview",
         name: "Gemini 3.1 Pro Preview",
-        context: 1048576,
-        input_per_million: 2.0,
-        output_per_million: 12.0,
-    },
-    CatalogModel {
-        id: "gemini-3.1-pro-preview-customtools",
-        name: "Gemini 3.1 Pro Preview Custom Tools",
         context: 1048576,
         input_per_million: 2.0,
         output_per_million: 12.0,

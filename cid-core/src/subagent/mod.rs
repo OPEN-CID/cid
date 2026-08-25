@@ -1,7 +1,7 @@
 //! Phase 2 Subagent Orchestrator
 //!
-//! Mission's Implementer can spawn ad hoc subagents for parallel/research subtasks.
-//! Subagents SHARE the parent Mission's worktree (do NOT create separate worktrees) —
+//! Session's Implementer can spawn ad hoc subagents for parallel/research subtasks.
+//! Subagents SHARE the parent Session's worktree (do NOT create separate worktrees) —
 //! and, as of the real-execution fix below, its tool-execution boundary too: a
 //! subagent's tool calls go through the exact same `execute_tool_with_approval`
 //! (autonomy gate, human-approval wait, per-path locking) as the main agent's own.
@@ -9,7 +9,7 @@
 //! Subagent roles: ResearchWorker, ParallelImpl, CodeExplorer, TestRunner.
 //! Each subagent gets a prompt, tool permission set, and model config.
 //! Max concurrent subagents configurable (default 5).
-//! Subagent results reported back to parent Mission thread via events.
+//! Subagent results reported back to parent Session thread via events.
 //!
 //! review_prompt.md / Gemini-checklist follow-up: `perform_subagent_work` used to
 //! return a canned summary per role — no model call, no tool call, `files_changed`
@@ -36,7 +36,7 @@ const DEFAULT_MAX_CONCURRENT: usize = 5;
 
 pub struct SubagentOrchestrator {
     subagents: Arc<RwLock<HashMap<String, Subagent>>>,
-    mission_subagent_map: RwLock<HashMap<String, Vec<String>>>,
+    session_subagent_map: RwLock<HashMap<String, Vec<String>>>,
     semaphore: Arc<Semaphore>,
     event_tx: broadcast::Sender<String>,
     max_concurrent: RwLock<usize>,
@@ -46,7 +46,7 @@ impl SubagentOrchestrator {
     pub fn new(event_tx: broadcast::Sender<String>) -> Self {
         Self {
             subagents: Arc::new(RwLock::new(HashMap::new())),
-            mission_subagent_map: RwLock::new(HashMap::new()),
+            session_subagent_map: RwLock::new(HashMap::new()),
             semaphore: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT)),
             event_tx,
             max_concurrent: RwLock::new(DEFAULT_MAX_CONCURRENT),
@@ -68,16 +68,16 @@ impl SubagentOrchestrator {
         app_state: AppState,
     ) -> anyhow::Result<Subagent> {
         let count = {
-            let map = self.mission_subagent_map.read().await;
-            map.get(&params.mission_id).map(|v| v.len()).unwrap_or(0)
+            let map = self.session_subagent_map.read().await;
+            map.get(&params.session_id).map(|v| v.len()).unwrap_or(0)
         };
 
         let max = *self.max_concurrent.read().await;
         if count >= max {
             anyhow::bail!(
-                "Max concurrent subagents ({}) reached for mission {}",
+                "Max concurrent subagents ({}) reached for session {}",
                 max,
-                params.mission_id
+                params.session_id
             );
         }
 
@@ -87,7 +87,7 @@ impl SubagentOrchestrator {
 
         let subagent = Subagent {
             id: id.clone(),
-            mission_id: params.mission_id.clone(),
+            session_id: params.session_id.clone(),
             role: params.role,
             prompt: params.prompt.clone(),
             status: SubagentStatus::Pending,
@@ -106,15 +106,15 @@ impl SubagentOrchestrator {
         }
 
         {
-            let mut map = self.mission_subagent_map.write().await;
-            map.entry(params.mission_id.clone())
+            let mut map = self.session_subagent_map.write().await;
+            map.entry(params.session_id.clone())
                 .or_default()
                 .push(id.clone());
         }
 
         info!(
-            "Spawning subagent {} ({:?}) for mission {}",
-            id, subagent.role, subagent.mission_id
+            "Spawning subagent {} ({:?}) for session {}",
+            id, subagent.role, subagent.session_id
         );
 
         let subagent_clone = subagent.clone();
@@ -135,7 +135,7 @@ impl SubagentOrchestrator {
         let guard = self.subagents.read().await;
         guard
             .values()
-            .filter(|s| s.mission_id == params.mission_id)
+            .filter(|s| s.session_id == params.session_id)
             .cloned()
             .collect()
     }
@@ -219,8 +219,8 @@ impl SubagentOrchestratorRef {
     /// regardless of what the prompt asked for — no model call, no tool
     /// call, nothing real happened. Now runs a real, bounded tool-calling
     /// turn (`ModelManager::run_subagent_turn`) scoped to the parent
-    /// Mission's worktree, autonomy level, and approval flow — a subagent
-    /// has no separate identity from the Mission's tool-execution boundary,
+    /// Session's worktree, autonomy level, and approval flow — a subagent
+    /// has no separate identity from the Session's tool-execution boundary,
     /// it shares it, per this module's own doc comment above.
     async fn perform_subagent_work(&self, subagent: &Subagent) -> SubagentResult {
         let system_prompt = subagent_system_prompt(&subagent.role);
@@ -228,7 +228,7 @@ impl SubagentOrchestratorRef {
             .app_state
             .model_manager
             .run_subagent_turn(
-                &subagent.mission_id,
+                &subagent.session_id,
                 &system_prompt,
                 &subagent.prompt,
                 self.app_state.clone(),
@@ -253,8 +253,8 @@ impl SubagentOrchestratorRef {
             },
             Err(e) => {
                 warn!(
-                    "Subagent {} ({:?}) turn failed for mission {}: {:?}",
-                    subagent.id, subagent.role, subagent.mission_id, e
+                    "Subagent {} ({:?}) turn failed for session {}: {:?}",
+                    subagent.id, subagent.role, subagent.session_id, e
                 );
                 SubagentResult {
                     summary: format!("Failed: {e}"),
@@ -315,17 +315,17 @@ fn subagent_system_prompt(role: &SubagentRole) -> String {
         }
     };
     format!(
-        "{role_line}\n\nYou share this Mission's worktree with the main agent and any other \
+        "{role_line}\n\nYou share this Session's worktree with the main agent and any other \
          subagents running in parallel — another subagent may be editing a different file at \
          the same time. Stay within the scope of your own task. When you're done, summarize \
          what you actually did in your final response; that summary is reported back to the \
-         Mission thread."
+         Session thread."
     )
 }
 
 /// Advisory metadata surfaced to the UI (which tools this subagent role
 /// *typically* needs) — not yet an enforced restriction. A subagent's actual
-/// tool access is whatever its parent Mission's own role profile (if any)
+/// tool access is whatever its parent Session's own role profile (if any)
 /// allows; `run_subagent_turn` does not currently narrow the tool set
 /// further per subagent. Documented here rather than left implicit, since
 /// this exact gap (metadata that looks like enforcement but isn't) is the
@@ -421,7 +421,7 @@ mod tests {
         let orch = SubagentOrchestrator::new(tx);
 
         let params = SubagentSpawnParams {
-            mission_id: "mission-1".to_string(),
+            session_id: "session-1".to_string(),
             role: SubagentRole::ResearchWorker,
             prompt: "Research Rust async patterns".to_string(),
             tool_permissions: None,
@@ -430,13 +430,13 @@ mod tests {
         };
 
         let sa = orch.spawn(params, test_app_state()).await.unwrap();
-        assert_eq!(sa.mission_id, "mission-1");
+        assert_eq!(sa.session_id, "session-1");
         assert_eq!(sa.role, SubagentRole::ResearchWorker);
         assert_eq!(sa.status, SubagentStatus::Pending);
 
         let list = orch
             .list(SubagentListParams {
-                mission_id: "mission-1".to_string(),
+                session_id: "session-1".to_string(),
             })
             .await;
         assert_eq!(list.len(), 1);
@@ -452,7 +452,7 @@ mod tests {
         let orch = SubagentOrchestrator::new(tx);
 
         let params = SubagentSpawnParams {
-            mission_id: "mission-2".to_string(),
+            session_id: "session-2".to_string(),
             role: SubagentRole::CodeExplorer,
             prompt: "Explore the codebase".to_string(),
             tool_permissions: None,
@@ -483,7 +483,7 @@ mod tests {
         orch.set_max_concurrent(1).await;
 
         let params = SubagentSpawnParams {
-            mission_id: "mission-3".to_string(),
+            session_id: "session-3".to_string(),
             role: SubagentRole::ResearchWorker,
             prompt: "Task".to_string(),
             tool_permissions: None,
@@ -506,7 +506,7 @@ mod tests {
         let orch = SubagentOrchestrator::new(tx);
 
         let params = SubagentSpawnParams {
-            mission_id: "mission-lifecycle".to_string(),
+            session_id: "session-lifecycle".to_string(),
             role: SubagentRole::TestRunner,
             prompt: "Run integration tests".to_string(),
             tool_permissions: None,
@@ -529,26 +529,26 @@ mod tests {
         ));
     }
 
-    /// A real Mission a subagent turn can legitimately run against — plain
+    /// A real Session a subagent turn can legitimately run against — plain
     /// `resolve_active_config` in this dev environment can pick up
     /// `OPENROUTER_API_KEY` from the shell (set for this repo's own
     /// OpenCode delegation workflow, see CLAUDE.md), so tests can't assume
     /// "no provider configured." Explicit per-role settings pointing at an
     /// address nothing listens on make the outcome deterministic instead —
-    /// same principle as `a_mission_already_over_its_spend_cap_is_blocked...`
+    /// same principle as `a_session_already_over_its_spend_cap_is_blocked...`
     /// in `model::spend_tracking_tests`.
-    fn mission_with_unreachable_provider(app_state: &AppState) -> String {
+    fn session_with_unreachable_provider(app_state: &AppState) -> String {
         let repo = app_state
             .persistence
             .connect_repo("/tmp/subagent-test-repo", None)
             .unwrap();
-        let mission = app_state
+        let session = app_state
             .persistence
-            .create_mission(
+            .create_session(
                 &repo.id,
                 "Subagent test",
                 "test",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::CoPilot,
             )
             .unwrap();
@@ -557,7 +557,7 @@ mod tests {
         settings.openai_compatible_endpoint = Some("http://127.0.0.1:1".to_string());
         settings.openai_compatible_api_key = Some("unused".to_string());
         app_state.persistence.update_settings(&settings).unwrap();
-        mission.id
+        session.id
     }
 
     #[tokio::test]
@@ -565,10 +565,10 @@ mod tests {
         let (tx, _rx) = broadcast::channel(10);
         let orch = SubagentOrchestrator::new(tx);
         let app_state = test_app_state();
-        let mission_id = mission_with_unreachable_provider(&app_state);
+        let session_id = session_with_unreachable_provider(&app_state);
 
         let params = SubagentSpawnParams {
-            mission_id,
+            session_id,
             role: SubagentRole::ResearchWorker,
             prompt: "Find all usages of foo()".to_string(),
             tool_permissions: None,

@@ -1,5 +1,5 @@
 //! Rendering — a three-pane layout echoing the desktop/web shells' shape
-//! (Part 19) at terminal scale: Mission list, thread, composer, plus a
+//! (Part 19) at terminal scale: Session list, thread, composer, plus a
 //! pending-approvals strip when one exists.
 
 use ratatui::{
@@ -26,15 +26,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .constraints([Constraint::Length(36), Constraint::Min(20)])
             .split(root[0]);
 
-        draw_mission_list(frame, app, body[0]);
+        draw_session_list(frame, app, body[0]);
         draw_thread(frame, app, body[1]);
     }
     draw_status_bar(frame, app, root[1]);
 }
 
-fn draw_mission_list(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_session_list(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
-        .missions
+        .sessions
         .iter()
         .enumerate()
         .map(|(i, m)| {
@@ -49,7 +49,7 @@ fn draw_mission_list(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 "  "
             };
-            let style = if i == app.selected_mission_index {
+            let style = if i == app.selected_session_index {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
             } else if m.status == "blocked_on_approval" {
                 Style::default().fg(Color::Yellow)
@@ -64,7 +64,7 @@ fn draw_mission_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let border_style = if app.focus == Focus::MissionList {
+    let border_style = if app.focus == Focus::SessionList {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default()
@@ -72,7 +72,7 @@ fn draw_mission_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" Missions (j/k, Enter) ")
+            .title(" Sessions (j/k, Enter) ")
             .borders(Borders::ALL)
             .border_style(border_style),
     );
@@ -95,9 +95,9 @@ fn draw_thread(frame: &mut Frame, app: &App, area: Rect) {
         .constraints(constraints)
         .split(area);
 
-    let title = match app.selected_mission() {
+    let title = match app.selected_session() {
         Some(m) => format!(" {} — {} ({}) ", m.title, m.status, m.autonomy_level),
-        None => " No Mission selected ".to_string(),
+        None => " No Session selected ".to_string(),
     };
 
     let lines: Vec<Line> = app
@@ -180,11 +180,11 @@ fn draw_composer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// review_prompt.md / Gemini-checklist follow-up: `cid-tui` had chat, tool
-/// approvals, and Mission threads, per its own module doc's claim to handle
+/// approvals, and Session threads, per its own module doc's claim to handle
 /// "diffs from a shell" — but no diff rendering existed anywhere in the
 /// crate. Read-only for now: hunk accept/reject stay web/desktop-only, since
 /// this view's job is letting you actually *see* what an Autonomous or
-/// unattended Mission changed from a terminal, which was the real gap.
+/// unattended Session changed from a terminal, which was the real gap.
 fn draw_diff(frame: &mut Frame, app: &App, area: Rect) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -258,7 +258,7 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect) {
         }
     } else if app.diff_files.is_empty() {
         lines.push(Line::from(
-            "No changes detected — clean working tree, or no Mission selected.",
+            "No changes detected — clean working tree, or no Session selected.",
         ));
     }
 

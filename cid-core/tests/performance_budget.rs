@@ -153,7 +153,7 @@ fn repository_scan_indexes_a_moderate_repo_in_reasonable_time() {
 #[test]
 fn one_hundred_concurrent_rpc_calls_all_complete() {
     // A rough proxy for "the UI stays responsive under real concurrent load" —
-    // Missions, PTYs, and background scans all hit the same RPC surface at once
+    // Sessions, PTYs, and background scans all hit the same RPC surface at once
     // in real use.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {

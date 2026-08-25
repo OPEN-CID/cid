@@ -1,6 +1,6 @@
 //! Phase 1 Autonomy Manager
 //!
-//! Manages per-Mission autonomy levels, command allow-lists for Autonomous mode,
+//! Manages per-Session autonomy levels, command allow-lists for Autonomous mode,
 //! and role-to-model resolution for Planner/Implementer/Reviewer.
 //!
 //! Core concepts per Part 5 and Part 14:
@@ -290,7 +290,7 @@ impl AutonomyManager {
     // Tool-call budget enforcement
     // -----------------------------------------------------------------------
 
-    /// Check if the mission has exceeded its max tool call budget.
+    /// Check if the session has exceeded its max tool call budget.
     pub fn check_budget(&self, scope_id: &str, current_tool_calls: usize) -> AutonomyCheckResult {
         let allowlist = match self.get_allowlist(scope_id) {
             Some(a) => a,

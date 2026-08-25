@@ -54,9 +54,9 @@ async fn rpc_ok(base: &str, method: &str, params: Value) -> Value {
     }
 }
 
-/// Create a real git repo with one commit, connect it, and open a Mission.
-/// Returns (base_url, tempdir guard, mission_id).
-async fn mission_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) {
+/// Create a real git repo with one commit, connect it, and open a Session.
+/// Returns (base_url, tempdir guard, session_id).
+async fn session_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) {
     let base = start_core().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let repo = git2::Repository::init(dir.path()).expect("git init");
@@ -75,28 +75,28 @@ async fn mission_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) 
     let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
     let channel_id = channel["id"].as_str().expect("channel id").to_string();
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_id,
-            "title": "Fixture mission",
+            "title": "Fixture session",
             "task": "Add a greeting to README",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": autonomy,
         }),
     )
     .await;
-    let mission_id = mission["id"].as_str().expect("mission id").to_string();
-    (base, dir, mission_id)
+    let session_id = session["id"].as_str().expect("session id").to_string();
+    (base, dir, session_id)
 }
 
-// Task 2 regression: `task` is now optional on `mission.create` — an
+// Task 2 regression: `task` is now optional on `session.create` — an
 // absent field must not error, and must fall back to storing the title as
 // the task, because the Planner prompt (`build_system_context`) depends on
 // a non-empty task existing.
 #[tokio::test]
-async fn mission_create_with_no_task_field_falls_back_to_the_title() {
+async fn session_create_with_no_task_field_falls_back_to_the_title() {
     let base = start_core().await;
     let dir = tempfile::tempdir().expect("tempdir");
     git2::Repository::init(dir.path()).expect("git init");
@@ -105,26 +105,26 @@ async fn mission_create_with_no_task_field_falls_back_to_the_title() {
     let channel_id = channel["id"].as_str().expect("channel id").to_string();
 
     // Deliberately no "task" key at all — not even an empty string.
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_id,
             "title": "Investigate the flaky test",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "manual",
         }),
     )
     .await;
 
     assert_eq!(
-        mission["task_description"], "Investigate the flaky test",
+        session["task_description"], "Investigate the flaky test",
         "an omitted task must fall back to the (required) title"
     );
 }
 
 #[tokio::test]
-async fn mission_create_with_an_empty_title_is_rejected() {
+async fn session_create_with_an_empty_title_is_rejected() {
     let base = start_core().await;
     let dir = tempfile::tempdir().expect("tempdir");
     git2::Repository::init(dir.path()).expect("git init");
@@ -134,12 +134,12 @@ async fn mission_create_with_an_empty_title_is_rejected() {
 
     let body = rpc(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_id,
             "title": "   ",
             "task": "something",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "manual",
         }),
     )
@@ -151,10 +151,10 @@ async fn mission_create_with_an_empty_title_is_rejected() {
 }
 
 // Task 3 regression (RPC layer — the resolution-logic proof lives in
-// `model/mod.rs`'s `mission_model_override_tests`): the override fields
-// round-trip through `mission.create`/`mission.get`.
+// `model/mod.rs`'s `session_model_override_tests`): the override fields
+// round-trip through `session.create`/`session.get`.
 #[tokio::test]
-async fn mission_create_persists_and_returns_the_model_override() {
+async fn session_create_persists_and_returns_the_model_override() {
     let base = start_core().await;
     let dir = tempfile::tempdir().expect("tempdir");
     git2::Repository::init(dir.path()).expect("git init");
@@ -162,27 +162,27 @@ async fn mission_create_persists_and_returns_the_model_override() {
     let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
     let channel_id = channel["id"].as_str().expect("channel id").to_string();
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_id,
-            "title": "Pinned model mission",
+            "title": "Pinned model session",
             "task": "test",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "manual",
             "model_provider": "anthropic",
             "model_id": "claude-opus-5",
         }),
     )
     .await;
-    assert_eq!(mission["model_provider"], "anthropic");
-    assert_eq!(mission["model_id"], "claude-opus-5");
+    assert_eq!(session["model_provider"], "anthropic");
+    assert_eq!(session["model_id"], "claude-opus-5");
 
     let fetched = rpc_ok(
         &base,
-        "mission.get",
-        json!({ "id": mission["id"].as_str().unwrap() }),
+        "session.get",
+        json!({ "id": session["id"].as_str().unwrap() }),
     )
     .await;
     assert_eq!(fetched["model_provider"], "anthropic");
@@ -190,26 +190,26 @@ async fn mission_create_persists_and_returns_the_model_override() {
 }
 
 #[tokio::test]
-async fn co_pilot_mission_is_gated_until_a_plan_is_approved() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+async fn co_pilot_session_is_gated_until_a_plan_is_approved() {
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
 
-    // A Mission with no approved plan reports the Implementer as blocked.
+    // A Session with no approved plan reports the Implementer as blocked.
     let gate = rpc_ok(
         &base,
-        "mission.plan.get",
-        json!({ "mission_id": mission_id }),
+        "session.plan.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(
         gate["implementer_blocked_reason"].is_string(),
-        "a Mission without an approved plan must block the Implementer: {gate}"
+        "a Session without an approved plan must block the Implementer: {gate}"
     );
 
     // Sending a message returns blocked rather than silently starting work.
     let sent = rpc_ok(
         &base,
-        "mission.send_message",
-        json!({ "mission_id": mission_id, "content": "go ahead" }),
+        "session.send_message",
+        json!({ "session_id": session_id, "content": "go ahead" }),
     )
     .await;
     assert_eq!(
@@ -220,14 +220,14 @@ async fn co_pilot_mission_is_gated_until_a_plan_is_approved() {
     // Write a plan by hand, then approve it.
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Requirements\n- greet\n## Approach\nedit README\n## Steps\n1. Edit README.md" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Requirements\n- greet\n## Approach\nedit README\n## Steps\n1. Edit README.md" }),
     )
     .await;
     let approved = rpc_ok(
         &base,
-        "mission.plan.approve",
-        json!({ "mission_id": mission_id, "approved_by": "tester" }),
+        "session.plan.approve",
+        json!({ "session_id": session_id, "approved_by": "tester" }),
     )
     .await;
     assert_eq!(approved["status"], "approved");
@@ -236,8 +236,8 @@ async fn co_pilot_mission_is_gated_until_a_plan_is_approved() {
     // The gate is now open.
     let gate = rpc_ok(
         &base,
-        "mission.plan.get",
-        json!({ "mission_id": mission_id }),
+        "session.plan.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(
@@ -248,25 +248,25 @@ async fn co_pilot_mission_is_gated_until_a_plan_is_approved() {
 
 #[tokio::test]
 async fn editing_an_approved_plan_revokes_the_approval() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
 
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. original" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. original" }),
     )
     .await;
     rpc_ok(
         &base,
-        "mission.plan.approve",
-        json!({ "mission_id": mission_id }),
+        "session.plan.approve",
+        json!({ "session_id": session_id }),
     )
     .await;
 
     let edited = rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. something entirely different" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. something entirely different" }),
     )
     .await;
     assert_eq!(
@@ -278,11 +278,11 @@ async fn editing_an_approved_plan_revokes_the_approval() {
 
 #[tokio::test]
 async fn manual_autonomy_has_no_plan_gate() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
     let gate = rpc_ok(
         &base,
-        "mission.plan.get",
-        json!({ "mission_id": mission_id }),
+        "session.plan.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(
@@ -293,26 +293,26 @@ async fn manual_autonomy_has_no_plan_gate() {
 
 #[tokio::test]
 async fn rejecting_a_plan_keeps_the_gate_closed() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
 
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. do a thing" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. do a thing" }),
     )
     .await;
     let rejected = rpc_ok(
         &base,
-        "mission.plan.reject",
-        json!({ "mission_id": mission_id, "reason": "too broad" }),
+        "session.plan.reject",
+        json!({ "session_id": session_id, "reason": "too broad" }),
     )
     .await;
     assert_eq!(rejected["status"], "rejected");
 
     let gate = rpc_ok(
         &base,
-        "mission.plan.get",
-        json!({ "mission_id": mission_id }),
+        "session.plan.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(gate["implementer_blocked_reason"].is_string());
@@ -320,12 +320,12 @@ async fn rejecting_a_plan_keeps_the_gate_closed() {
 
 #[tokio::test]
 async fn an_empty_plan_cannot_be_written_or_approved() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
 
     let body = rpc(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "   " }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "   " }),
     )
     .await;
     assert!(
@@ -335,8 +335,8 @@ async fn an_empty_plan_cannot_be_written_or_approved() {
 
     let body = rpc(
         &base,
-        "mission.plan.approve",
-        json!({ "mission_id": "no-such-mission" }),
+        "session.plan.approve",
+        json!({ "session_id": "no-such-session" }),
     )
     .await;
     assert!(
@@ -347,12 +347,12 @@ async fn an_empty_plan_cannot_be_written_or_approved() {
 
 #[tokio::test]
 async fn review_of_a_clean_worktree_reports_no_findings() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
 
     let review = rpc_ok(
         &base,
-        "mission.review.run",
-        json!({ "mission_id": mission_id, "diff": "" }),
+        "session.review.run",
+        json!({ "session_id": session_id, "diff": "" }),
     )
     .await;
     assert_eq!(review["verdict"], "clean");
@@ -360,8 +360,8 @@ async fn review_of_a_clean_worktree_reports_no_findings() {
 
     let latest = rpc_ok(
         &base,
-        "mission.review.get",
-        json!({ "mission_id": mission_id }),
+        "session.review.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert_eq!(latest["id"], review["id"], "the review must be persisted");
@@ -369,26 +369,26 @@ async fn review_of_a_clean_worktree_reports_no_findings() {
 
 #[tokio::test]
 async fn reviews_accumulate_and_list_newest_first() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
 
     rpc_ok(
         &base,
-        "mission.review.run",
-        json!({ "mission_id": mission_id, "diff": "" }),
+        "session.review.run",
+        json!({ "session_id": session_id, "diff": "" }),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     rpc_ok(
         &base,
-        "mission.review.run",
-        json!({ "mission_id": mission_id, "diff": "" }),
+        "session.review.run",
+        json!({ "session_id": session_id, "diff": "" }),
     )
     .await;
 
     let all = rpc_ok(
         &base,
-        "mission.review.list",
-        json!({ "mission_id": mission_id }),
+        "session.review.list",
+        json!({ "session_id": session_id }),
     )
     .await;
     let reviews = all.as_array().expect("array");
@@ -587,7 +587,7 @@ async fn only_an_admin_can_change_governance_policy() {
 }
 
 #[tokio::test]
-async fn creating_an_autonomous_mission_is_refused_by_default_policy() {
+async fn creating_an_autonomous_session_is_refused_by_default_policy() {
     let base = start_core().await;
     let token = owner_session(&base).await;
 
@@ -602,12 +602,12 @@ async fn creating_an_autonomous_mission_is_refused_by_default_policy() {
 
     let body = rpc(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel["id"],
             "title": "Autonomous run",
             "task": "do it all",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "autonomous",
             "session_token": token,
         }),
@@ -625,7 +625,7 @@ async fn creating_an_autonomous_mission_is_refused_by_default_policy() {
 }
 
 #[tokio::test]
-async fn an_autonomous_mission_is_allowed_once_policy_permits_the_repo() {
+async fn an_autonomous_session_is_allowed_once_policy_permits_the_repo() {
     let base = start_core().await;
     let token = owner_session(&base).await;
 
@@ -644,37 +644,37 @@ async fn an_autonomous_mission_is_allowed_once_policy_permits_the_repo() {
     )
     .await;
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel["id"],
             "title": "Autonomous run",
             "task": "do it all",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "autonomous",
             "session_token": token,
         }),
     )
     .await;
-    assert_eq!(mission["autonomy_level"], "autonomous");
+    assert_eq!(session["autonomy_level"], "autonomous");
 }
 
 #[tokio::test]
 async fn plan_approval_records_the_approving_user() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
     let token = owner_session(&base).await;
 
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. do the thing" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. do the thing" }),
     )
     .await;
     let approved = rpc_ok(
         &base,
-        "mission.plan.approve",
-        json!({ "mission_id": mission_id, "session_token": token }),
+        "session.plan.approve",
+        json!({ "session_id": session_id, "session_token": token }),
     )
     .await;
     assert_eq!(approved["status"], "approved");
@@ -686,7 +686,7 @@ async fn plan_approval_records_the_approving_user() {
 
 #[tokio::test]
 async fn a_viewer_cannot_approve_a_plan() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
     let owner = owner_session(&base).await;
     rpc_ok(
         &base,
@@ -706,14 +706,14 @@ async fn a_viewer_cannot_approve_a_plan() {
 
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. do the thing" }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. do the thing" }),
     )
     .await;
     let denied = rpc(
         &base,
-        "mission.plan.approve",
-        json!({ "mission_id": mission_id, "session_token": viewer["token"] }),
+        "session.plan.approve",
+        json!({ "session_id": session_id, "session_token": viewer["token"] }),
     )
     .await;
     assert!(
@@ -728,7 +728,7 @@ async fn spend_caps_are_enforced_before_the_spend() {
     let token = owner_session(&base).await;
 
     let mut policy = rpc_ok(&base, "governance.policy.get", json!({})).await;
-    policy["mission_spend_cap_usd"] = json!(5.0);
+    policy["session_spend_cap_usd"] = json!(5.0);
     rpc_ok(
         &base,
         "governance.policy.set",
@@ -739,14 +739,14 @@ async fn spend_caps_are_enforced_before_the_spend() {
     rpc_ok(
         &base,
         "governance.spend.record",
-        json!({ "mission_id": "m1", "usd": 4.0, "note": "planner" }),
+        json!({ "session_id": "m1", "usd": 4.0, "note": "planner" }),
     )
     .await;
 
     let ok = rpc_ok(
         &base,
         "governance.spend.check",
-        json!({ "mission_id": "m1", "usd": 0.5 }),
+        json!({ "session_id": "m1", "usd": 0.5 }),
     )
     .await;
     assert_eq!(ok["decision"], "allow");
@@ -754,7 +754,7 @@ async fn spend_caps_are_enforced_before_the_spend() {
     let denied = rpc_ok(
         &base,
         "governance.spend.check",
-        json!({ "mission_id": "m1", "usd": 3.0 }),
+        json!({ "session_id": "m1", "usd": 3.0 }),
     )
     .await;
     assert_eq!(denied["decision"], "deny");
@@ -763,10 +763,10 @@ async fn spend_caps_are_enforced_before_the_spend() {
     let summary = rpc_ok(
         &base,
         "governance.spend.summary",
-        json!({ "mission_id": "m1" }),
+        json!({ "session_id": "m1" }),
     )
     .await;
-    assert!((summary["mission_spend_usd"].as_f64().unwrap() - 4.0).abs() < 1e-9);
+    assert!((summary["session_spend_usd"].as_f64().unwrap() - 4.0).abs() < 1e-9);
 }
 
 #[tokio::test]
@@ -794,8 +794,8 @@ async fn decisions_list_reads_real_adrs_from_the_repo() {
 }
 
 #[tokio::test]
-async fn decisions_for_mission_finds_adrs_referenced_in_the_task() {
-    let (base, dir, mission_id) = mission_fixture("manual").await;
+async fn decisions_for_session_finds_adrs_referenced_in_the_task() {
+    let (base, dir, session_id) = session_fixture("manual").await;
     let adr_dir = dir.path().join("docs").join("adr");
     std::fs::create_dir_all(&adr_dir).unwrap();
     std::fs::write(
@@ -804,12 +804,12 @@ async fn decisions_for_mission_finds_adrs_referenced_in_the_task() {
     )
     .unwrap();
 
-    // mission_fixture's task description doesn't mention the ADR, so the
+    // session_fixture's task description doesn't mention the ADR, so the
     // real behavior (no match) is exercised first...
     let none = rpc_ok(
         &base,
-        "decisions.for_mission",
-        json!({ "mission_id": mission_id }),
+        "decisions.for_session",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert_eq!(none.as_array().map(|a| a.len()), Some(0));
@@ -817,14 +817,14 @@ async fn decisions_for_mission_finds_adrs_referenced_in_the_task() {
     // ...then approve a plan that does reference it, and confirm it surfaces.
     rpc_ok(
         &base,
-        "mission.plan.update",
-        json!({ "mission_id": mission_id, "content": "## Steps\n1. Follow ADR 0042 exactly." }),
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. Follow ADR 0042 exactly." }),
     )
     .await;
     let found = rpc_ok(
         &base,
-        "decisions.for_mission",
-        json!({ "mission_id": mission_id }),
+        "decisions.for_session",
+        json!({ "session_id": session_id }),
     )
     .await;
     let list = found.as_array().unwrap();
@@ -834,12 +834,12 @@ async fn decisions_for_mission_finds_adrs_referenced_in_the_task() {
 
 #[tokio::test]
 async fn deployment_record_and_webhook_are_tagged_with_their_real_source() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
 
     let manual = rpc_ok(
         &base,
         "deployment.record",
-        json!({ "mission_id": mission_id, "environment": "staging", "commit_or_tag": "abc123" }),
+        json!({ "session_id": session_id, "environment": "staging", "commit_or_tag": "abc123" }),
     )
     .await;
     assert_eq!(manual["source"], "manual");
@@ -847,7 +847,7 @@ async fn deployment_record_and_webhook_are_tagged_with_their_real_source() {
     let webhook = rpc_ok(
         &base,
         "deployment.webhook",
-        json!({ "mission_id": mission_id, "environment": "production", "commit_or_tag": "def456" }),
+        json!({ "session_id": session_id, "environment": "production", "commit_or_tag": "def456" }),
     )
     .await;
     assert_eq!(webhook["source"], "ci_webhook");
@@ -855,7 +855,7 @@ async fn deployment_record_and_webhook_are_tagged_with_their_real_source() {
     let all = rpc_ok(
         &base,
         "deployment.list",
-        json!({ "mission_id": mission_id }),
+        json!({ "session_id": session_id }),
     )
     .await;
     assert_eq!(all.as_array().map(|a| a.len()), Some(2));
@@ -866,11 +866,11 @@ async fn deployment_record_cannot_orchestrate_anything_it_can_only_log() {
     // There is deliberately no RPC method that deploys anything — this test
     // documents that boundary by asserting the only two entry points are the
     // ones tested above, both of which just persist a record.
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
     let body = rpc(
         &base,
         "deployment.record",
-        json!({ "mission_id": mission_id, "environment": "", "commit_or_tag": "" }),
+        json!({ "session_id": session_id, "environment": "", "commit_or_tag": "" }),
     )
     .await;
     assert!(
@@ -991,14 +991,14 @@ async fn test_impact_and_docs_are_empty_before_the_engine_is_enabled() {
 }
 
 #[tokio::test]
-async fn confidence_score_is_computed_and_logged_to_the_mission() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+async fn confidence_score_is_computed_and_logged_to_the_session() {
+    let (base, _dir, session_id) = session_fixture("manual").await;
 
     let card = rpc_ok(
         &base,
         "confidence.score",
         json!({
-            "mission_id": mission_id,
+            "session_id": session_id,
             "target_file": "src/new.rs",
             "new_content": "pub fn tidy_function(a: i32, b: i32) -> i32 { a + b }",
         }),
@@ -1011,12 +1011,12 @@ async fn confidence_score_is_computed_and_logged_to_the_mission() {
     let history = rpc_ok(
         &base,
         "confidence.history",
-        json!({ "mission_id": mission_id }),
+        json!({ "session_id": session_id }),
     )
     .await;
     assert_eq!(history.as_array().map(|a| a.len()), Some(1));
 
-    let messages = rpc_ok(&base, "message.list", json!({ "mission_id": mission_id })).await;
+    let messages = rpc_ok(&base, "message.list", json!({ "session_id": session_id })).await;
     let has_summary = messages.as_array().unwrap().iter().any(|m| {
         m["content"]
             .as_str()
@@ -1031,13 +1031,13 @@ async fn confidence_score_is_computed_and_logged_to_the_mission() {
 
 #[tokio::test]
 async fn confidence_score_reads_the_worktree_file_when_no_content_is_supplied() {
-    let (base, dir, mission_id) = mission_fixture("manual").await;
+    let (base, dir, session_id) = session_fixture("manual").await;
     std::fs::write(dir.path().join("existing.rs"), "pub fn already_here() {}").unwrap();
 
     let card = rpc_ok(
         &base,
         "confidence.score",
-        json!({ "mission_id": mission_id, "target_file": "existing.rs" }),
+        json!({ "session_id": session_id, "target_file": "existing.rs" }),
     )
     .await;
     assert_eq!(card["signals"].as_array().map(|a| a.len()), Some(9));
@@ -1045,18 +1045,18 @@ async fn confidence_score_reads_the_worktree_file_when_no_content_is_supplied() 
 
 #[tokio::test]
 async fn confidence_score_without_content_or_an_existing_file_fails_clearly() {
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
     let body = rpc(
         &base,
         "confidence.score",
-        json!({ "mission_id": mission_id, "target_file": "does_not_exist.rs" }),
+        json!({ "session_id": session_id, "target_file": "does_not_exist.rs" }),
     )
     .await;
     assert!(body.get("result").is_none());
 }
 
 #[tokio::test]
-async fn vibe_preset_mission_starts_with_an_already_approved_plan() {
+async fn vibe_preset_session_starts_with_an_already_approved_plan() {
     let base = start_core().await;
     let dir = tempfile::tempdir().unwrap();
     git2::Repository::init(dir.path()).unwrap();
@@ -1067,32 +1067,32 @@ async fn vibe_preset_mission_starts_with_an_already_approved_plan() {
     )
     .await;
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel["id"],
             "title": "Quick typo fix",
             "task": "Fix a typo in the README",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "co_pilot",
             "vibe": true,
         }),
     )
     .await;
-    let mission_id = mission["id"].as_str().unwrap().to_string();
+    let session_id = session["id"].as_str().unwrap().to_string();
 
-    // The plan is already approved by the time mission.create returns — no
-    // background wait, no mission.plan.changed race, unlike the normal path.
+    // The plan is already approved by the time session.create returns — no
+    // background wait, no session.plan.changed race, unlike the normal path.
     let gate = rpc_ok(
         &base,
-        "mission.plan.get",
-        json!({ "mission_id": mission_id }),
+        "session.plan.get",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(
         gate["implementer_blocked_reason"].is_null(),
-        "a vibe Mission's gate must already be open: {gate}"
+        "a vibe Session's gate must already be open: {gate}"
     );
     assert_eq!(gate["plan"]["status"], "approved");
     assert_eq!(gate["plan"]["approved_by"], "vibe-preset");
@@ -1101,10 +1101,10 @@ async fn vibe_preset_mission_starts_with_an_already_approved_plan() {
 #[tokio::test]
 async fn vibe_preset_does_not_bypass_tool_call_approval() {
     // The preset shortens planning, not review — Co-Pilot's per-tool-call
-    // approval must still apply to a vibe Mission exactly as it does to a
+    // approval must still apply to a vibe Session exactly as it does to a
     // normally-planned one. This is asserted indirectly: sending a message
-    // to a vibe Mission must NOT come back `blocked` (the gate is open), but
-    // the Mission's autonomy level itself is unchanged from what was
+    // to a vibe Session must NOT come back `blocked` (the gate is open), but
+    // the Session's autonomy level itself is unchanged from what was
     // requested (co_pilot), which is what drives per-tool approval in the
     // model loop.
     let base = start_core().await;
@@ -1117,27 +1117,27 @@ async fn vibe_preset_does_not_bypass_tool_call_approval() {
     )
     .await;
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel["id"],
             "title": "Quick fix",
             "task": "small change",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "co_pilot",
             "vibe": true,
         }),
     )
     .await;
     assert_eq!(
-        mission["autonomy_level"], "co_pilot",
+        session["autonomy_level"], "co_pilot",
         "vibe mode changes planning ceremony, not the requested autonomy level"
     );
 }
 
 #[tokio::test]
-async fn non_vibe_mission_still_uses_the_full_planner() {
+async fn non_vibe_session_still_uses_the_full_planner() {
     let base = start_core().await;
     let dir = tempfile::tempdir().unwrap();
     git2::Repository::init(dir.path()).unwrap();
@@ -1148,27 +1148,27 @@ async fn non_vibe_mission_still_uses_the_full_planner() {
     )
     .await;
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel["id"],
             "title": "Real feature",
             "task": "Build something substantial",
-            "session_mode": "shared",
+            "isolation_mode": "shared",
             "autonomy_level": "co_pilot",
         }),
     )
     .await;
-    let mission_id = mission["id"].as_str().unwrap().to_string();
+    let session_id = session["id"].as_str().unwrap().to_string();
 
     // Without vibe:true, the ordinary Planner path applies — the plan is not
     // pre-approved with the vibe-preset marker.
     for _ in 0..200 {
         let gate = rpc_ok(
             &base,
-            "mission.plan.get",
-            json!({ "mission_id": mission_id }),
+            "session.plan.get",
+            json!({ "session_id": session_id }),
         )
         .await;
         if !gate["plan"].is_null() {
@@ -1356,7 +1356,7 @@ async fn sandbox_test_rpc_reports_the_boundary_held() {
     let result = rpc_ok(&base, "sandbox.test", json!({ "worktree_path": worktree })).await;
     assert_eq!(
         result["passed"], true,
-        "an Autonomous Mission must not be able to write outside its worktree: {result}"
+        "an Autonomous Session must not be able to write outside its worktree: {result}"
     );
     assert!(result["reason"].as_str().unwrap_or_default().len() > 10);
 }
@@ -1467,17 +1467,17 @@ async fn acp_handoff_list_is_empty_before_any_handoff() {
 }
 
 #[tokio::test]
-async fn acp_handoff_rejects_unknown_mission() {
+async fn acp_handoff_rejects_unknown_session() {
     let base = start_core().await;
     let body = rpc(
         &base,
         "acp.handoff",
-        json!({ "mission_id": "no-such-mission", "editor_id": "zed" }),
+        json!({ "session_id": "no-such-session", "editor_id": "zed" }),
     )
     .await;
     assert!(
         body.get("result").is_none(),
-        "unknown mission must not hand off"
+        "unknown session must not hand off"
     );
 }
 
@@ -1525,7 +1525,7 @@ async fn skills_resolve_returns_a_layered_context_stack() {
 }
 
 #[tokio::test]
-async fn skills_resolve_puts_mission_context_last() {
+async fn skills_resolve_puts_session_context_last() {
     let base = start_core().await;
     let repo = tempfile::tempdir().expect("tempdir");
     let repo_path = repo.path().to_string_lossy().to_string();
@@ -1534,17 +1534,17 @@ async fn skills_resolve_puts_mission_context_last() {
     let result = rpc_ok(
         &base,
         "skills.resolve",
-        json!({ "repo_path": repo_path, "mission_context": "MISSION_LAYER" }),
+        json!({ "repo_path": repo_path, "session_context": "SESSION_LAYER" }),
     )
     .await;
     let resolved = result["resolved"].as_str().unwrap();
     let repo_at = resolved.find("REPO_LAYER").expect("repo layer present");
-    let mission_at = resolved
-        .find("MISSION_LAYER")
-        .expect("mission layer present");
+    let session_at = resolved
+        .find("SESSION_LAYER")
+        .expect("session layer present");
     assert!(
-        mission_at > repo_at,
-        "Mission context is the most specific layer and must come last"
+        session_at > repo_at,
+        "Session context is the most specific layer and must come last"
     );
 }
 
@@ -2082,13 +2082,13 @@ async fn git_hunk_apply_reject_file_still_discards_the_whole_file() {
 // ---- review_prompt.md §3.1: context compaction RPC surface ----
 
 #[tokio::test]
-async fn mission_context_usage_reports_real_numbers_for_a_fresh_mission() {
-    let (base, _dir, mission_id) = mission_fixture("co_pilot").await;
+async fn session_context_usage_reports_real_numbers_for_a_fresh_session() {
+    let (base, _dir, session_id) = session_fixture("co_pilot").await;
 
     let usage = rpc_ok(
         &base,
-        "mission.context.usage",
-        json!({ "mission_id": mission_id }),
+        "session.context.usage",
+        json!({ "session_id": session_id }),
     )
     .await;
 
@@ -2098,45 +2098,49 @@ async fn mission_context_usage_reports_real_numbers_for_a_fresh_mission() {
 }
 
 #[tokio::test]
-async fn mission_context_compact_is_a_real_manual_trigger() {
-    // Manual autonomy has no plan-approval gate (Part 5) — mission.send_message
+async fn session_context_compact_is_a_real_manual_trigger() {
+    // Manual autonomy has no plan-approval gate (Part 5) — session.send_message
     // still persists a user message synchronously either way, which is all
     // this test depends on; it does not wait on the backgrounded, simulated
     // assistant reply (no API key is configured in this test environment).
-    let (base, _dir, mission_id) = mission_fixture("manual").await;
+    let (base, _dir, session_id) = session_fixture("manual").await;
 
     // Not enough messages yet — nothing to fold away.
     let first = rpc_ok(
         &base,
-        "mission.context.compact",
-        json!({ "mission_id": mission_id }),
+        "session.context.compact",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(first["digest"].is_null());
 
-    // mission.send_message persists its user message synchronously before
+    // session.send_message persists its user message synchronously before
     // returning (the model call it triggers is backgrounded) — sending more
     // than KEEP_RECENT_MESSAGES of these alone is enough to have something
     // to fold away, without depending on any background task's timing.
     for i in 0..10 {
         rpc_ok(
             &base,
-            "mission.send_message",
-            json!({ "mission_id": mission_id, "content": format!("message {i}") }),
+            "session.send_message",
+            json!({ "session_id": session_id, "content": format!("message {i}") }),
         )
         .await;
     }
 
-    let before_count = rpc_ok(&base, "message.list", json!({ "mission_id": mission_id }))
-        .await
-        .as_array()
-        .unwrap()
-        .len();
+    let message_ids = |v: serde_json::Value| -> std::collections::HashSet<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before_ids =
+        message_ids(rpc_ok(&base, "message.list", json!({ "session_id": session_id })).await);
 
     let compacted = rpc_ok(
         &base,
-        "mission.context.compact",
-        json!({ "mission_id": mission_id }),
+        "session.context.compact",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert!(
@@ -2148,24 +2152,35 @@ async fn mission_context_compact_is_a_real_manual_trigger() {
         .unwrap()
         .contains("CID context digest"));
 
-    // The digest is additive — nothing already persisted is deleted. Checked
-    // as a before/after snapshot around just the compact call itself, so a
-    // still-running background model call from the send loop above can't
-    // race this assertion.
-    let after_count = rpc_ok(&base, "message.list", json!({ "mission_id": mission_id }))
-        .await
-        .as_array()
-        .unwrap()
-        .len();
-    assert_eq!(after_count, before_count + 1);
+    // The digest is additive — nothing already persisted is deleted, and the
+    // digest itself is a real persisted message rather than a side-channel.
+    //
+    // Asserted over message *ids* rather than a count: each `send_message`
+    // above spawns a background model turn that appends its own System notice
+    // (no API key here), and those land at arbitrary times — including between
+    // these two `message.list` calls. A `before + 1` count assertion therefore
+    // fails intermittently under full-suite load while passing in isolation,
+    // which is exactly what it did. Set containment tests the actual invariant
+    // and is indifferent to unrelated concurrent appends.
+    let after_ids =
+        message_ids(rpc_ok(&base, "message.list", json!({ "session_id": session_id })).await);
+    assert!(
+        before_ids.is_subset(&after_ids),
+        "compaction deleted messages that existed before it ran: {:?}",
+        before_ids.difference(&after_ids).collect::<Vec<_>>()
+    );
+    assert!(
+        after_ids.contains(compacted["digest"]["id"].as_str().unwrap()),
+        "the digest should be persisted into the Session's own history"
+    );
 }
 
-// ---- review_prompt.md §3.2: checkpoint/rewind on the Mission worktree ----
+// ---- review_prompt.md §3.2: checkpoint/rewind on the Session worktree ----
 
-/// A worktree-mode Mission (unlike `mission_fixture`, which always uses
-/// `session_mode: "shared"` — checkpointing is deliberately scoped to
-/// worktree Missions only, so these tests need a real one).
-async fn worktree_mission_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) {
+/// A worktree-mode Session (unlike `session_fixture`, which always uses
+/// `isolation_mode: "shared"` — checkpointing is deliberately scoped to
+/// worktree Sessions only, so these tests need a real one).
+async fn worktree_session_fixture(autonomy: &str) -> (String, tempfile::TempDir, String) {
     let base = start_core().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let repo = git2::Repository::init(dir.path()).expect("git init");
@@ -2188,45 +2203,45 @@ async fn worktree_mission_fixture(autonomy: &str) -> (String, tempfile::TempDir,
     let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
     let channel_id = channel["id"].as_str().expect("channel id").to_string();
 
-    let mission = rpc_ok(
+    let session = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_id,
-            "title": "Worktree fixture mission",
+            "title": "Worktree fixture session",
             "task": "test",
-            "session_mode": "worktree",
+            "isolation_mode": "worktree",
             "autonomy_level": autonomy,
         }),
     )
     .await;
-    let mission_id = mission["id"].as_str().expect("mission id").to_string();
-    (base, dir, mission_id)
+    let session_id = session["id"].as_str().expect("session id").to_string();
+    (base, dir, session_id)
 }
 
 #[tokio::test]
 async fn sending_a_message_auto_checkpoints_the_worktree() {
-    let (base, _dir, mission_id) = worktree_mission_fixture("manual").await;
+    let (base, _dir, session_id) = worktree_session_fixture("manual").await;
 
     let before = rpc_ok(
         &base,
-        "mission.checkpoint.list",
-        json!({ "mission_id": mission_id }),
+        "session.checkpoint.list",
+        json!({ "session_id": session_id }),
     )
     .await;
     assert_eq!(before.as_array().unwrap().len(), 0);
 
     rpc_ok(
         &base,
-        "mission.send_message",
-        json!({ "mission_id": mission_id, "content": "do something" }),
+        "session.send_message",
+        json!({ "session_id": session_id, "content": "do something" }),
     )
     .await;
 
     let after = rpc_ok(
         &base,
-        "mission.checkpoint.list",
-        json!({ "mission_id": mission_id }),
+        "session.checkpoint.list",
+        json!({ "session_id": session_id }),
     )
     .await;
     let checkpoints = after.as_array().unwrap();
@@ -2240,25 +2255,25 @@ async fn sending_a_message_auto_checkpoints_the_worktree() {
 
 #[tokio::test]
 async fn checkpoint_rewind_requires_explicit_confirmation() {
-    let (base, _dir, mission_id) = worktree_mission_fixture("manual").await;
+    let (base, _dir, session_id) = worktree_session_fixture("manual").await;
     rpc_ok(
         &base,
-        "mission.send_message",
-        json!({ "mission_id": mission_id, "content": "do something" }),
+        "session.send_message",
+        json!({ "session_id": session_id, "content": "do something" }),
     )
     .await;
     let checkpoints = rpc_ok(
         &base,
-        "mission.checkpoint.list",
-        json!({ "mission_id": mission_id }),
+        "session.checkpoint.list",
+        json!({ "session_id": session_id }),
     )
     .await;
     let checkpoint_id = checkpoints[0]["id"].as_str().unwrap();
 
     let body = rpc(
         &base,
-        "mission.checkpoint.rewind",
-        json!({ "mission_id": mission_id, "checkpoint_id": checkpoint_id }),
+        "session.checkpoint.rewind",
+        json!({ "session_id": session_id, "checkpoint_id": checkpoint_id }),
     )
     .await;
     assert!(
@@ -2267,30 +2282,67 @@ async fn checkpoint_rewind_requires_explicit_confirmation() {
     );
 }
 
+/// A terminal is where a human runs commands the agent never proposed, so
+/// *which tree it opens in* is a real decision. The default must stay the
+/// Session's own worktree — commands there are captured by its checkpoints and
+/// show up in its diff — while `repo` deliberately escapes that isolation to
+/// inspect the base branch. The resolved directory is returned rather than left
+/// for the client to reconstruct, so the UI can state it instead of guessing.
+#[tokio::test]
+async fn a_terminal_opens_in_the_sessions_worktree_unless_the_main_repo_is_asked_for() {
+    let (base, dir, session_id) = worktree_session_fixture("manual").await;
+    let repo_path = dir.path().to_string_lossy().to_string();
+
+    let session = rpc_ok(&base, "session.get", json!({ "id": session_id })).await;
+    let worktree_path = session["worktree_path"].as_str().unwrap().to_string();
+
+    let default_pty = rpc_ok(&base, "pty.create", json!({ "session_id": session_id })).await;
+    assert_eq!(
+        default_pty["cwd"].as_str().unwrap(),
+        worktree_path,
+        "omitting `workdir` must keep the shell inside the Session"
+    );
+    assert_eq!(default_pty["workdir"], "session");
+
+    let repo_pty = rpc_ok(
+        &base,
+        "pty.create",
+        json!({ "session_id": session_id, "workdir": "repo" }),
+    )
+    .await;
+    assert_eq!(repo_pty["workdir"], "repo");
+    let cwd = repo_pty["cwd"].as_str().unwrap();
+    assert!(
+        std::path::Path::new(cwd) == std::path::Path::new(&repo_path),
+        "asking for the main repo must not land in the worktree: {cwd}"
+    );
+    assert_ne!(cwd, worktree_path);
+}
+
 #[tokio::test]
 async fn checkpoint_rewind_actually_restores_the_worktree() {
-    let (base, dir, mission_id) = worktree_mission_fixture("manual").await;
+    let (base, dir, session_id) = worktree_session_fixture("manual").await;
 
     // First turn: checkpoints the clean worktree.
     rpc_ok(
         &base,
-        "mission.send_message",
-        json!({ "mission_id": mission_id, "content": "first turn" }),
+        "session.send_message",
+        json!({ "session_id": session_id, "content": "first turn" }),
     )
     .await;
     let checkpoints = rpc_ok(
         &base,
-        "mission.checkpoint.list",
-        json!({ "mission_id": mission_id }),
+        "session.checkpoint.list",
+        json!({ "session_id": session_id }),
     )
     .await;
     let first_checkpoint_id = checkpoints[0]["id"].as_str().unwrap().to_string();
 
-    // Find the actual worktree path CID created for this Mission.
-    let mission = rpc_ok(&base, "mission.get", json!({ "id": mission_id })).await;
-    let worktree_path = mission["worktree_path"]
+    // Find the actual worktree path CID created for this Session.
+    let session = rpc_ok(&base, "session.get", json!({ "id": session_id })).await;
+    let worktree_path = session["worktree_path"]
         .as_str()
-        .expect("a worktree-mode Mission must have a worktree_path")
+        .expect("a worktree-mode Session must have a worktree_path")
         .to_string();
 
     // Simulate the agent having made a change after the checkpoint.
@@ -2307,8 +2359,8 @@ async fn checkpoint_rewind_actually_restores_the_worktree() {
 
     let rewound = rpc_ok(
         &base,
-        "mission.checkpoint.rewind",
-        json!({ "mission_id": mission_id, "checkpoint_id": first_checkpoint_id, "confirm": true }),
+        "session.checkpoint.rewind",
+        json!({ "session_id": session_id, "checkpoint_id": first_checkpoint_id, "confirm": true }),
     )
     .await;
     assert_eq!(rewound["id"], first_checkpoint_id);
@@ -2324,18 +2376,18 @@ async fn checkpoint_rewind_actually_restores_the_worktree() {
 }
 
 #[tokio::test]
-async fn checkpoint_rewind_refuses_a_checkpoint_from_a_different_mission() {
-    let (base, _dir_a, mission_a) = worktree_mission_fixture("manual").await;
+async fn checkpoint_rewind_refuses_a_checkpoint_from_a_different_session() {
+    let (base, _dir_a, session_a) = worktree_session_fixture("manual").await;
     rpc_ok(
         &base,
-        "mission.send_message",
-        json!({ "mission_id": mission_a, "content": "turn" }),
+        "session.send_message",
+        json!({ "session_id": session_a, "content": "turn" }),
     )
     .await;
     let checkpoints_a = rpc_ok(
         &base,
-        "mission.checkpoint.list",
-        json!({ "mission_id": mission_a }),
+        "session.checkpoint.list",
+        json!({ "session_id": session_a }),
     )
     .await;
     let checkpoint_a_id = checkpoints_a[0]["id"].as_str().unwrap().to_string();
@@ -2364,29 +2416,29 @@ async fn checkpoint_rewind_refuses_a_checkpoint_from_a_different_mission() {
         json!({ "path": dir_b.path().to_string_lossy() }),
     )
     .await;
-    let mission_b = rpc_ok(
+    let session_b = rpc_ok(
         &base,
-        "mission.create",
+        "session.create",
         json!({
             "repo_channel_id": channel_b["id"],
-            "title": "Mission B",
+            "title": "Session B",
             "task": "test",
-            "session_mode": "worktree",
+            "isolation_mode": "worktree",
             "autonomy_level": "manual",
         }),
     )
     .await;
-    let mission_b_id = mission_b["id"].as_str().unwrap().to_string();
+    let session_b_id = session_b["id"].as_str().unwrap().to_string();
 
     let body = rpc(
         &base,
-        "mission.checkpoint.rewind",
-        json!({ "mission_id": mission_b_id, "checkpoint_id": checkpoint_a_id, "confirm": true }),
+        "session.checkpoint.rewind",
+        json!({ "session_id": session_b_id, "checkpoint_id": checkpoint_a_id, "confirm": true }),
     )
     .await;
     assert!(
         body.get("error").is_some(),
-        "rewinding Mission B to a checkpoint that belongs to Mission A must be refused"
+        "rewinding Session B to a checkpoint that belongs to Session A must be refused"
     );
 }
 
@@ -2419,6 +2471,46 @@ mod file_rpc_confinement {
             json!({ "path": format!("{repo_path}/README.md") }),
         )
         .await;
+        assert_eq!(result["content"], "# fixture\n");
+    }
+
+    /// `.coverage` is a SQLite database, and a repo has plenty of other
+    /// non-text files. `read_to_string` failed on them with a raw "stream did
+    /// not contain valid UTF-8", which the Editor displayed *as the file's
+    /// contents* — so pressing Save would then write that sentence over the
+    /// real bytes. Reported as a property instead, so the client can refuse.
+    #[tokio::test]
+    async fn reading_a_binary_file_reports_it_rather_than_erroring() {
+        let (base, dir, repo_path) = connect_repo().await;
+        // A NUL byte is what marks this as binary, the same way ripgrep decides.
+        std::fs::write(dir.path().join(".coverage"), b"SQLite format 3\0\x01\x02").unwrap();
+
+        let result = rpc_ok(
+            &base,
+            "file.read",
+            json!({ "path": format!("{repo_path}/.coverage") }),
+        )
+        .await;
+
+        assert_eq!(result["binary"], true, "expected binary flag: {result}");
+        assert_eq!(
+            result["content"], "",
+            "binary content must not be returned as text"
+        );
+        assert!(result["size"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn a_normal_text_file_is_not_flagged_binary() {
+        let (base, _dir, repo_path) = connect_repo().await;
+        let result = rpc_ok(
+            &base,
+            "file.read",
+            json!({ "path": format!("{repo_path}/README.md") }),
+        )
+        .await;
+        assert_eq!(result["binary"], false);
+        assert_eq!(result["too_large"], false);
         assert_eq!(result["content"], "# fixture\n");
     }
 

@@ -3,8 +3,8 @@
 ## Vision
 
 CID (Collaborative Intelligent Development) is a chat-native, multi-agent software
-engineering platform: Slack-shaped mission control for shipping code with AI agents.
-Workspaces, Repo Channels, and Mission Threads replace the usual IDE-plus-chat-window
+engineering platform: Slack-shaped session control for shipping code with AI agents.
+Workspaces, Repo Channels, and Session Threads replace the usual IDE-plus-chat-window
 split with one navigation model, so a unit of work — a plan, its diffs, its terminal
 output, its review — lives in one place instead of scattered across an editor tab, a
 chat app, and a terminal window.
@@ -12,7 +12,7 @@ chat app, and a terminal window.
 ## Goals
 
 - One coherent surface for human + AI collaboration on real code: chat, editor, terminal,
-  diff review, and MCP tool access in a single Mission thread, not five separate apps.
+  diff review, and MCP tool access in a single Session thread, not five separate apps.
 - Real, verified execution — every AI-authored change runs in an isolated git worktree,
   is reviewable per-hunk, and (as of Phase 4) carries a Confidence score with a
   plain-language explanation, not a bare "looks good."
@@ -31,7 +31,7 @@ chat app, and a terminal window.
 
 - Out-featuring JetBrains on static analysis/refactoring tooling.
 - Out-building Monaco/CodeMirror/Zed's GPUI on editor rendering — CID embeds proven
-  editors and is an ACP host so a Mission can pop out to a full external IDE
+  editors and is an ACP host so a Session can pop out to a full external IDE
   (`cid-core/src/acp/mod.rs`) rather than reinventing one. Revisit only with real profiling
   evidence, which does not yet exist (see 041-Roadmap.md).
 - Replacing Slack, Jira, Linear, or a project tracker — CID integrates with these
@@ -94,9 +94,9 @@ which phase and what remains conditional (Phase 5+).
 
 ## Acceptance Criteria
 
-- A user can connect a repo, start a Mission, get a Planner-authored plan, approve it,
+- A user can connect a repo, start a Session, get a Planner-authored plan, approve it,
   watch the Implementer execute with per-tool approval, review a per-hunk diff, see a
-  Confidence score, and merge — entirely within one Mission thread. This is Flow 1 from
+  Confidence score, and merge — entirely within one Session thread. This is Flow 1 from
   the founding brief, exercised end-to-end by `tests/e2e/flow1.spec.ts`.
 - Every claim in this document is backed by a real file path, RPC method, or test that
   exists in the repository at the time of writing — not aspirational architecture.

@@ -19,7 +19,7 @@ what had to be added.
 | Per-role provider/model selection (Planner / Implementer / Reviewer) | `resolve_for_role`, settings columns | unit tests + `ProvidersPanel` UI |
 | Local runtime detection (Ollama, LM Studio, `llama.cpp --server`) | `cid-core/src/local_models/mod.rs` | `local_runtime_list_returns_known_runtimes` |
 | Structural Context Engine (Tree-sitter), off by default per repo | `cid-core/src/context_engine/mod.rs` | `context_engine_is_off_by_default_and_toggles_per_repo` |
-| GitHub bridge (issue → Mission, PR create/status sync) | `cid-core/src/github/mod.rs` | module unit tests |
+| GitHub bridge (issue → Session, PR create/status sync) | `cid-core/src/github/mod.rs` | module unit tests |
 | Autonomous mode + command allow-lists | `cid-core/src/autonomy/mod.rs` | `autonomy_denies_*` integration tests |
 | Headless Core server mode | `cid-core/src/main.rs`, `Core::serve` | every integration test runs against it |
 | Multi-file `SKILL.md` bundle discovery and precedence resolution | `cid-core/src/skills/mod.rs` | `skills_resolve_*`, `skills_bundles_list_*` |
@@ -41,15 +41,15 @@ what had to be added.
 
    Added `cid-core/src/roles/mod.rs`:
    - **Planner** produces an editable Requirements/Approach/Steps plan, persisted in a new
-     `mission_plans` table, generated automatically on Mission creation.
-   - **Plan-approval gate**: outside Manual autonomy, `mission.send_message` refuses to start
+     `session_plans` table, generated automatically on Session creation.
+   - **Plan-approval gate**: outside Manual autonomy, `session.send_message` refuses to start
      the Implementer until a plan exists *and* a human has approved it. Editing an approved
      plan returns it to draft, since the approval applied to the previous text.
-   - **Reviewer** runs over the Mission's diff (read from the Mission's own worktree), parses
-     `severity | file | description` findings, and records a verdict in `mission_reviews`.
-     Runs automatically when a Mission is closed.
-   - RPC: `mission.plan.generate|get|update|approve|reject`, `mission.review.run|get|list`.
-   - UI: `PlanCard`, rendered inline in the Mission thread per Part 5.
+   - **Reviewer** runs over the Session's diff (read from the Session's own worktree), parses
+     `severity | file | description` findings, and records a verdict in `session_reviews`.
+     Runs automatically when a Session is closed.
+   - RPC: `session.plan.generate|get|update|approve|reject`, `session.review.run|get|list`.
+   - UI: `PlanCard`, rendered inline in the Session thread per Part 5.
 
 3. **`ModelManager` had no non-streaming completion path.** Planner and Reviewer produce a
    document rather than driving a tool loop. Added `complete_text`, which returns
@@ -91,7 +91,7 @@ curl -X POST http://127.0.0.1:5919/api/rpc -H "Content-Type: application/json" `
 
 # Plan gate: sending a message before approval returns blocked:true
 curl -X POST http://127.0.0.1:5919/api/rpc -H "Content-Type: application/json" `
-  -d '{"jsonrpc":"2.0","id":"2","method":"mission.send_message","params":{"mission_id":"<id>","content":"go"}}'
+  -d '{"jsonrpc":"2.0","id":"2","method":"session.send_message","params":{"session_id":"<id>","content":"go"}}'
 ```
 
 ---
@@ -112,7 +112,7 @@ curl -X POST http://127.0.0.1:5919/api/rpc -H "Content-Type: application/json" `
 
 - **The Reviewer's diff input is a serialized `GitDiff` struct, not a raw unified diff.**
   It is accurate but more verbose than a `git diff` would be, which costs review tokens.
-  Passing an explicit `diff` parameter to `mission.review.run` overrides it.
+  Passing an explicit `diff` parameter to `session.review.run` overrides it.
 - **Finding parsing is strict by design.** Reviewer output lines that do not match
   `severity | file | description` are dropped rather than guessed at. A model that ignores
   the format produces zero findings and a `clean` verdict, which understates risk. The raw

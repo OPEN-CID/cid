@@ -2,20 +2,20 @@
 
 ## Vision
 
-Isolated worktrees per Mission by default, so AI-authored edits never touch the main
+Isolated worktrees per Session by default, so AI-authored edits never touch the main
 branch until a human explicitly merges — the mechanic every agent-multiplexer tool in
 `001-Competitive-Analysis.md` validates, built on `git2-rs`.
 
 ## Goals
 
 - **Worktree lifecycle**: `git.worktree.{create,list,remove}` — `cid-core/src/git/mod.rs`.
-  Created on Mission start (`cid/<mission-slug>` branch), removable on close.
-- **Shared clone mode**: the alternative Session Mode for solo, sequential work — no
+  Created on Session start (`cid/<session-slug>` branch), removable on close.
+- **Shared clone mode**: the alternative Isolation for solo, sequential work — no
   worktree overhead for repos where it's impractical.
 - **Diff**: `git.diff`, structured per-file/per-hunk, backing per-hunk accept/reject
   (`012-Semantic-Editing.md`).
 - **Commit discipline**: atomic per-logical-change commits (`git.commit`), Aider's
-  pattern, not one giant end-of-Mission commit.
+  pattern, not one giant end-of-Session commit.
 - **Status polling**: file-watcher-triggered `git.diff.update` notifications, not
   continuous polling from the client.
 
@@ -41,7 +41,7 @@ RPC: `git.{status,diff,commit,log,hunk.apply}`, `git.worktree.{create,list,remov
 
 ## Storage Layout
 
-Worktrees live under `<repo>/.cid/worktrees/<mission-id>` by default (configurable via
+Worktrees live under `<repo>/.cid/worktrees/<session-id>` by default (configurable via
 `worktree_root` setting), auto-gitignored on `repo.connect`.
 
 ## Performance Targets
@@ -68,7 +68,7 @@ existing worktree's contents (`creating_the_same_worktree_twice_does_not_corrupt
 
 Worktree paths are always resolved relative to the managed root; the sandbox boundary
 (`cid-core/src/sandbox/mod.rs`, `031-Security.md`) additionally confines Autonomous-mode
-command execution to the Mission's own worktree.
+command execution to the Session's own worktree.
 
 ## Testing
 
@@ -84,7 +84,7 @@ itself evidence the design held up.
 
 ## Acceptance Criteria
 
-A Mission's worktree is created inside the managed root
+A Session's worktree is created inside the managed root
 (`worktrees_are_created_inside_the_managed_root`), and worktree churn never damages the
 parent repository (`the_parent_repo_survives_worktree_churn`).
 

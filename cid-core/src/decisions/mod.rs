@@ -2,11 +2,11 @@
  * Decisions view and deployment record (Phase 4, Part A).
  *
  * Two small, distinct pieces the Phase 4 brief scopes together because both
- * close real gaps in what a Mission surfaces about itself:
+ * close real gaps in what a Session surfaces about itself:
  *
  *   - **Decisions**: the ADR log (already required since Part 0 rule 1)
- *     surfaced *per-Mission* — which ADRs exist in the repo, and which ones
- *     a Mission actually touched or is relevant to, linked inline rather than
+ *     surfaced *per-Session* — which ADRs exist in the repo, and which ones
+ *     a Session actually touched or is relevant to, linked inline rather than
  *     only discoverable by browsing `docs/adr/`.
  *   - **Deployment record**: a log of what was deployed, when, and where.
  *     Explicitly not an orchestrator — CID gains the ability to *display*
@@ -72,13 +72,13 @@ pub fn list_adrs(repo_path: &str) -> Vec<AdrSummary> {
     summaries
 }
 
-/// Which ADRs a Mission is relevant to: those explicitly referenced by number
-/// or filename in the Mission's task description, plan, or messages — the
+/// Which ADRs a Session is relevant to: those explicitly referenced by number
+/// or filename in the Session's task description, plan, or messages — the
 /// same "nearest concrete reference wins" spirit as Part 12's context
 /// resolution, not a fuzzy content match that would produce noisy results.
-pub fn adrs_relevant_to_mission(repo_path: &str, mission_text: &[&str]) -> Vec<AdrSummary> {
+pub fn adrs_relevant_to_session(repo_path: &str, session_text: &[&str]) -> Vec<AdrSummary> {
     let all = list_adrs(repo_path);
-    let combined = mission_text.join("\n").to_lowercase();
+    let combined = session_text.join("\n").to_lowercase();
 
     all.into_iter()
         .filter(|adr| {
@@ -117,7 +117,7 @@ fn parse_adr_status(content: &str) -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentRecord {
     pub id: String,
-    pub mission_id: String,
+    pub session_id: String,
     pub environment: String,
     pub commit_or_tag: String,
     pub ci_run_url: Option<String>,
@@ -135,7 +135,7 @@ pub enum DeploymentSource {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeploymentRecordInput {
-    pub mission_id: String,
+    pub session_id: String,
     pub environment: String,
     pub commit_or_tag: String,
     pub ci_run_url: Option<String>,
@@ -164,11 +164,11 @@ impl DeploymentLog {
         if input.commit_or_tag.trim().is_empty() {
             bail!("commit_or_tag must not be empty");
         }
-        self.persistence.get_mission(&input.mission_id)?;
+        self.persistence.get_session(&input.session_id)?;
 
         let record = DeploymentRecord {
             id: uuid::Uuid::new_v4().to_string(),
-            mission_id: input.mission_id,
+            session_id: input.session_id,
             environment: input.environment,
             commit_or_tag: input.commit_or_tag,
             ci_run_url: input.ci_run_url,
@@ -180,8 +180,8 @@ impl DeploymentLog {
         Ok(record)
     }
 
-    pub fn for_mission(&self, mission_id: &str) -> Result<Vec<DeploymentRecord>> {
-        self.persistence.list_deployment_records(mission_id)
+    pub fn for_session(&self, session_id: &str) -> Result<Vec<DeploymentRecord>> {
+        self.persistence.list_deployment_records(session_id)
     }
 }
 
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn adrs_relevant_to_a_mission_are_found_by_explicit_reference() {
+    fn adrs_relevant_to_a_session_are_found_by_explicit_reference() {
         let dir = tempfile::tempdir().unwrap();
         write_adr(
             dir.path(),
@@ -248,7 +248,7 @@ mod tests {
             "# ADR 0012 — Access control\n",
         );
 
-        let relevant = adrs_relevant_to_mission(
+        let relevant = adrs_relevant_to_session(
             &dir.path().to_string_lossy(),
             &["Fix the bug described in ADR 0011 about the sandbox boundary"],
         );
@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_missions_surface_no_adrs() {
+    fn unrelated_sessions_surface_no_adrs() {
         let dir = tempfile::tempdir().unwrap();
         write_adr(
             dir.path(),
@@ -265,7 +265,7 @@ mod tests {
             "# ADR 0011 — Sandbox\n",
         );
 
-        let relevant = adrs_relevant_to_mission(
+        let relevant = adrs_relevant_to_session(
             &dir.path().to_string_lossy(),
             &["Add a new button to the UI"],
         );
@@ -281,29 +281,29 @@ mod tests {
         let channel = persistence
             .connect_repo(&repo.path().to_string_lossy(), Some(&ws[0].id))
             .unwrap();
-        let mission = persistence
-            .create_mission(
+        let session = persistence
+            .create_session(
                 &channel.id,
                 "t",
                 "task",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::Manual,
             )
             .unwrap();
         (
             DeploymentLog::new(persistence.clone()),
             persistence,
-            mission.id,
+            session.id,
         )
     }
 
     #[test]
     fn records_and_lists_a_manual_deployment() {
-        let (log, _p, mission_id) = deployment_log();
+        let (log, _p, session_id) = deployment_log();
         let record = log
             .record(
                 DeploymentRecordInput {
-                    mission_id: mission_id.clone(),
+                    session_id: session_id.clone(),
                     environment: "production".into(),
                     commit_or_tag: "v1.2.3".into(),
                     ci_run_url: Some("https://ci.example.com/run/1".into()),
@@ -314,18 +314,18 @@ mod tests {
             .unwrap();
         assert_eq!(record.source, DeploymentSource::Manual);
 
-        let all = log.for_mission(&mission_id).unwrap();
+        let all = log.for_session(&session_id).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].environment, "production");
     }
 
     #[test]
     fn a_ci_webhook_deployment_is_tagged_with_its_source() {
-        let (log, _p, mission_id) = deployment_log();
+        let (log, _p, session_id) = deployment_log();
         let record = log
             .record(
                 DeploymentRecordInput {
-                    mission_id,
+                    session_id,
                     environment: "staging".into(),
                     commit_or_tag: "abc123".into(),
                     ci_run_url: None,
@@ -339,9 +339,9 @@ mod tests {
 
     #[test]
     fn rejects_a_record_with_no_environment_or_commit() {
-        let (log, _p, mission_id) = deployment_log();
+        let (log, _p, session_id) = deployment_log();
         let base = DeploymentRecordInput {
-            mission_id: mission_id.clone(),
+            session_id: session_id.clone(),
             environment: "".into(),
             commit_or_tag: "v1".into(),
             ci_run_url: None,
@@ -350,7 +350,7 @@ mod tests {
         assert!(log.record(base, DeploymentSource::Manual).is_err());
 
         let base2 = DeploymentRecordInput {
-            mission_id,
+            session_id,
             environment: "prod".into(),
             commit_or_tag: "".into(),
             ci_run_url: None,
@@ -360,10 +360,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_deployment_for_a_mission_that_does_not_exist() {
-        let (log, _p, _mission_id) = deployment_log();
+    fn rejects_a_deployment_for_a_session_that_does_not_exist() {
+        let (log, _p, _session_id) = deployment_log();
         let input = DeploymentRecordInput {
-            mission_id: "no-such-mission".into(),
+            session_id: "no-such-session".into(),
             environment: "prod".into(),
             commit_or_tag: "v1".into(),
             ci_run_url: None,
@@ -373,26 +373,26 @@ mod tests {
     }
 
     #[test]
-    fn deployments_are_scoped_per_mission() {
-        let (log, persistence, mission_id) = deployment_log();
+    fn deployments_are_scoped_per_session() {
+        let (log, persistence, session_id) = deployment_log();
         let ws = persistence.list_workspaces().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let channel = persistence
             .connect_repo(&repo.path().to_string_lossy(), Some(&ws[0].id))
             .unwrap();
-        let other_mission = persistence
-            .create_mission(
+        let other_session = persistence
+            .create_session(
                 &channel.id,
                 "other",
                 "task",
-                crate::api::types::SessionMode::Shared,
+                crate::api::types::IsolationMode::Shared,
                 crate::api::types::AutonomyLevel::Manual,
             )
             .unwrap();
 
         log.record(
             DeploymentRecordInput {
-                mission_id: mission_id.clone(),
+                session_id: session_id.clone(),
                 environment: "prod".into(),
                 commit_or_tag: "v1".into(),
                 ci_run_url: None,
@@ -403,7 +403,7 @@ mod tests {
         .unwrap();
         log.record(
             DeploymentRecordInput {
-                mission_id: other_mission.id.clone(),
+                session_id: other_session.id.clone(),
                 environment: "prod".into(),
                 commit_or_tag: "v2".into(),
                 ci_run_url: None,
@@ -413,7 +413,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(log.for_mission(&mission_id).unwrap().len(), 1);
-        assert_eq!(log.for_mission(&other_mission.id).unwrap().len(), 1);
+        assert_eq!(log.for_session(&session_id).unwrap().len(), 1);
+        assert_eq!(log.for_session(&other_session.id).unwrap().len(), 1);
     }
 }

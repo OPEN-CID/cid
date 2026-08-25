@@ -6,7 +6,7 @@
  * Apache-licensed, JSON-RPC 2.0 over stdio, adopted by 25+ agents and 10+ editor surfaces.
  *
  * CID is the host: it spawns external ACP-compatible editors (Zed, JetBrains IDEs)
- * with a Mission's worktree path, tracks handoff lifecycle:
+ * with a Session's worktree path, tracks handoff lifecycle:
  * Idle -> HandedOff -> InExternalEditor -> Returned / Failed
  *
  * Also supports non-ACP editors (VSCode, Cursor) via simple folder open,
@@ -562,7 +562,7 @@ fn detect_editor(def: &EditorDef) -> AcpEditor {
 ///
 /// Responsible for:
 /// - Detecting installed editors (Zed, JetBrains, VSCode, Cursor)
-/// - Handing off a Mission's worktree to external editor (spawn process)
+/// - Handing off a Session's worktree to external editor (spawn process)
 /// - Tracking handoff lifecycle: HandedOff -> InExternalEditor -> Returned / Failed
 /// - Allowing take_back to return session to CID
 ///
@@ -620,10 +620,10 @@ impl AcpHostManager {
             .unwrap_or_default()
     }
 
-    /// Handoff a Mission's worktree to an external editor.
+    /// Handoff a Session's worktree to an external editor.
     ///
     /// Steps:
-    /// 1. Validate mission_id, editor_id, worktree_path non-empty
+    /// 1. Validate session_id, editor_id, worktree_path non-empty
     /// 2. Check worktree_path exists (warn if not, but allow? Here we require existence)
     /// 3. Find editor by id from detected list; ensure available
     /// 4. Spawn editor process with worktree path using tokio::process::Command (non-blocking)
@@ -634,12 +634,12 @@ impl AcpHostManager {
     /// If spawn fails, store handoff with Failed status and return error.
     pub async fn handoff(
         &self,
-        mission_id: &str,
+        session_id: &str,
         editor_id: &str,
         worktree_path: &str,
     ) -> anyhow::Result<AcpHandoff> {
-        if mission_id.trim().is_empty() {
-            anyhow::bail!("mission_id cannot be empty");
+        if session_id.trim().is_empty() {
+            anyhow::bail!("session_id cannot be empty");
         }
         if editor_id.trim().is_empty() {
             anyhow::bail!("editor_id cannot be empty");
@@ -680,7 +680,7 @@ impl AcpHostManager {
         // Build handoff in HandedOff state first
         let mut handoff = AcpHandoff {
             id: handoff_id.clone(),
-            mission_id: mission_id.to_string(),
+            session_id: session_id.to_string(),
             editor_id: editor_id.to_string(),
             status: AcpHandoffStatus::HandedOff,
             worktree_path: worktree_path.to_string(),
@@ -692,8 +692,8 @@ impl AcpHostManager {
         match spawn_editor_process(&editor, worktree_path).await {
             Ok(_) => {
                 info!(
-                    "Handoff {}: mission {} handed off to {} ({}) at {}",
-                    handoff.id, mission_id, editor.name, editor.id, worktree_path
+                    "Handoff {}: session {} handed off to {} ({}) at {}",
+                    handoff.id, session_id, editor.name, editor.id, worktree_path
                 );
                 handoff.status = AcpHandoffStatus::InExternalEditor;
                 // Store
@@ -754,8 +754,8 @@ impl AcpHostManager {
         handoff.returned_at = Some(Utc::now());
 
         info!(
-            "Handoff {}: mission {} returned from editor {}",
-            handoff.id, handoff.mission_id, handoff.editor_id
+            "Handoff {}: session {} returned from editor {}",
+            handoff.id, handoff.session_id, handoff.editor_id
         );
 
         Ok(handoff.clone())
@@ -780,17 +780,17 @@ impl AcpHostManager {
         guard.get(handoff_id).cloned()
     }
 
-    /// List handoffs for a specific mission
-    pub fn list_handoffs_for_mission(&self, mission_id: &str) -> Vec<AcpHandoff> {
+    /// List handoffs for a specific session
+    pub fn list_handoffs_for_session(&self, session_id: &str) -> Vec<AcpHandoff> {
         let guard = self.handoffs.read().unwrap();
         guard
             .values()
-            .filter(|h| h.mission_id == mission_id)
+            .filter(|h| h.session_id == session_id)
             .cloned()
             .collect()
     }
 
-    /// Remove a handoff from tracking (cleanup). Used after mission close.
+    /// Remove a handoff from tracking (cleanup). Used after session close.
     pub fn remove_handoff(&self, handoff_id: &str) -> anyhow::Result<()> {
         let mut guard = self.handoffs.write().unwrap();
         if guard.remove(handoff_id).is_some() {
@@ -943,13 +943,13 @@ mod tests {
     #[tokio::test]
     async fn test_handoff_validation() {
         let mgr = AcpHostManager::new();
-        // Empty mission_id should error
+        // Empty session_id should error
         let res = mgr.handoff("", "zed", "/tmp").await;
         assert!(res.is_err());
 
         // Non-existent editor should error
         let res2 = mgr
-            .handoff("mission-123", "nonexistent-editor", "/tmp")
+            .handoff("session-123", "nonexistent-editor", "/tmp")
             .await;
         assert!(res2.is_err());
     }
@@ -982,7 +982,7 @@ mod tests {
         // Manually insert a handoff to test lifecycle without spawning external process
         let handoff = AcpHandoff {
             id: "test-handoff-1".to_string(),
-            mission_id: "mission-1".to_string(),
+            session_id: "session-1".to_string(),
             editor_id: "zed".to_string(),
             status: AcpHandoffStatus::InExternalEditor,
             worktree_path: "/tmp/test-worktree".to_string(),
@@ -995,7 +995,7 @@ mod tests {
         }
 
         assert_eq!(mgr.list_handoffs().len(), 1);
-        assert_eq!(mgr.list_handoffs_for_mission("mission-1").len(), 1);
+        assert_eq!(mgr.list_handoffs_for_session("session-1").len(), 1);
 
         let returned = mgr.take_back("test-handoff-1").unwrap();
         assert_eq!(returned.status, AcpHandoffStatus::Returned);

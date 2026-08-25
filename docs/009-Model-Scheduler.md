@@ -12,7 +12,7 @@ cheap — without hand-building a bespoke integration per provider.
   proxies, vLLM, and most self-hosted setups through one interface.
   `cid-core/src/model/mod.rs`.
 - **Per-role selection**: Planner/Implementer/Reviewer can each use a different
-  provider/model, resolved fresh on every call so a mid-Mission provider swap takes effect
+  provider/model, resolved fresh on every call so a mid-Session provider swap takes effect
   immediately (`resolve_for_role`, `resolve_active_config`).
 - **Local runtime detection** (Phase 1): Ollama, LM Studio, `llama.cpp --server`
   (`cid-core/src/local_models/mod.rs`) — detection and listing only; hardware-gated

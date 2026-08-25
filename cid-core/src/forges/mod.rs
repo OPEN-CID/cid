@@ -2,7 +2,7 @@
  * GitLab and Bitbucket bridges (Phase 3, Part 16).
  *
  * Parity with the existing GitHub bridge: connect a Repo Channel to a remote,
- * turn an issue into a Mission, open a merge/pull request, and read its status
+ * turn an issue into a Session, open a merge/pull request, and read its status
  * back into the thread.
  *
  * GitLab and Bitbucket differ in URL shape, auth header, and field names but
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::api::types::{Mission, SessionMode};
+use crate::api::types::{IsolationMode, Session};
 use crate::persistence::Persistence;
 
 const USER_AGENT: &str = "cid-core";
@@ -347,14 +347,14 @@ impl ForgeManager {
         })
     }
 
-    /// Turn an issue into a Mission — the same issue→Mission trigger the GitHub
+    /// Turn an issue into a Session — the same issue→Session trigger the GitHub
     /// bridge provides, so all three forges behave identically in the UI.
-    pub async fn issue_to_mission(
+    pub async fn issue_to_session(
         &self,
         repo_path: &str,
         issue_number: u64,
-        session_mode: Option<SessionMode>,
-    ) -> Result<Mission> {
+        isolation_mode: Option<IsolationMode>,
+    ) -> Result<Session> {
         let config = self.config_for(repo_path)?;
         let issue = self.get_issue(repo_path, issue_number).await?;
         let channel = self.persistence.get_repo_channel_by_path(repo_path)?;
@@ -368,21 +368,21 @@ impl ForgeManager {
             issue.body.unwrap_or_default()
         );
 
-        let mission = self.persistence.create_mission(
+        let session = self.persistence.create_session(
             &channel.id,
             &format!("#{} {}", issue.number, issue.title),
             &task,
-            session_mode.unwrap_or(SessionMode::Worktree),
+            isolation_mode.unwrap_or(IsolationMode::Worktree),
             crate::api::types::AutonomyLevel::CoPilot,
         )?;
 
         info!(
-            "{} issue #{} became Mission {}",
+            "{} issue #{} became Session {}",
             config.kind.as_str(),
             issue.number,
-            mission.id
+            session.id
         );
-        Ok(mission)
+        Ok(session)
     }
 
     // ---- Merge / pull requests ----

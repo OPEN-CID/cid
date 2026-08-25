@@ -78,7 +78,15 @@ pub fn resolve_confined_path(root: &Path, requested: &str) -> Result<PathBuf> {
         );
     }
 
-    Ok(resolved)
+    // Every confinement comparison above ran on the `canonicalize` output, which
+    // on Windows is the extended-length `\\?\C:\...` form — that must stay, it
+    // is what makes the `starts_with` checks sound. Only the *returned* path is
+    // simplified, because callers surface it to the UI (`file.list` feeds the
+    // file tree, `search.text` feeds every hit) and `\\?\C:\Projects\cid\...`
+    // was showing up verbatim in editor tabs and result rows. `dunce` leaves the
+    // prefix in place when it is actually required (long paths, UNC shares), so
+    // this never breaks the IO the callers then perform.
+    Ok(dunce::simplified(&resolved).to_path_buf())
 }
 
 /// Try each candidate root in turn, returning the first that confines
@@ -108,7 +116,7 @@ pub fn resolve_confined_path_in_any(roots: &[PathBuf], requested: &str) -> Resul
 /// On Windows `std::fs::canonicalize` returns the extended-length form
 /// (`\\?\C:\Projects\cid`). That is a different string from the `C:\Projects\cid`
 /// a user types by hand, so the same directory connected two ways would take
-/// two rows on a `UNIQUE` column, each with its own missions and worktrees.
+/// two rows on a `UNIQUE` column, each with its own sessions and worktrees.
 /// `CLAUDE.md` documents a long-misdiagnosed FK-corruption incident on this
 /// exact column; `fs.list_dirs` (which feeds the folder picker straight from
 /// `canonicalize`) would have quietly reintroduced that class of bug.
@@ -146,12 +154,34 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// The simplified spelling is what callers get; `dunce::simplified` on the
+    /// expected side keeps this honest on Windows without weakening it on
+    /// platforms where canonicalize already returns a plain path.
+    fn expected_root(root: &TempDir) -> PathBuf {
+        dunce::simplified(&root.path().canonicalize().unwrap()).to_path_buf()
+    }
+
     #[test]
     fn a_relative_in_root_path_resolves() {
         let root = TempDir::new().unwrap();
         std::fs::write(root.path().join("a.txt"), "hi").unwrap();
         let resolved = resolve_confined_path(root.path(), "a.txt").unwrap();
-        assert_eq!(resolved, root.path().canonicalize().unwrap().join("a.txt"));
+        assert_eq!(resolved, expected_root(&root).join("a.txt"));
+    }
+
+    /// The confinement checks run on the extended-length `\\?\C:\...` form, but
+    /// returning it leaked into the UI — editor tabs and search results showed
+    /// `\\?\C:\Projects\cid\README.md` verbatim.
+    #[test]
+    fn the_returned_path_has_no_extended_length_prefix() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("a.txt"), "hi").unwrap();
+        let resolved = resolve_confined_path(root.path(), "a.txt").unwrap();
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "leaked an extended-length path to the caller: {}",
+            resolved.display()
+        );
     }
 
     #[test]
@@ -175,7 +205,7 @@ mod tests {
     fn a_new_file_under_a_missing_nested_directory_still_resolves_inside_root() {
         let root = TempDir::new().unwrap();
         let resolved = resolve_confined_path(root.path(), "new/nested/dir/file.txt").unwrap();
-        assert!(resolved.starts_with(root.path().canonicalize().unwrap()));
+        assert!(resolved.starts_with(expected_root(&root)));
     }
 
     #[test]
@@ -197,7 +227,7 @@ mod tests {
         std::fs::write(&target, "b").unwrap();
         let roots = vec![root_a.path().to_path_buf(), root_b.path().to_path_buf()];
         let resolved = resolve_confined_path_in_any(&roots, target.to_str().unwrap()).unwrap();
-        assert!(resolved.starts_with(root_b.path().canonicalize().unwrap()));
+        assert!(resolved.starts_with(expected_root(&root_b)));
     }
 
     #[test]

@@ -18,47 +18,47 @@ type ContextUsage = {
 };
 
 export function ChatThread() {
-  const { selectedMissionId, messages, addMessage, updateMessage, loadMessages } = useCid();
+  const { selectedSessionId, messages, addMessage, updateMessage, loadMessages } = useCid();
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const missionMessages = useMemo(
-    () => (selectedMissionId ? messages[selectedMissionId] || [] : []),
-    [selectedMissionId, messages]
+  const sessionMessages = useMemo(
+    () => (selectedSessionId ? messages[selectedSessionId] || [] : []),
+    [selectedSessionId, messages]
   );
 
-  const refreshContextUsage = async (missionId: string) => {
+  const refreshContextUsage = async (sessionId: string) => {
     try {
-      setContextUsage(await api.mission.contextUsage(missionId));
+      setContextUsage(await api.session.contextUsage(sessionId));
     } catch {
       // Not fatal — the indicator just stays hidden if this fails.
     }
   };
 
   useEffect(() => {
-    if (selectedMissionId) refreshContextUsage(selectedMissionId);
-  }, [selectedMissionId, missionMessages.length]);
+    if (selectedSessionId) refreshContextUsage(selectedSessionId);
+  }, [selectedSessionId, sessionMessages.length]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [missionMessages]);
+  }, [sessionMessages]);
 
   useEffect(() => {
     // Subscribe to notifications
     const unsub = api.onNotification((notif) => {
-      if (notif.method === "mission.message.delta" && notif.params.mission_id === selectedMissionId) {
+      if (notif.method === "session.message.delta" && notif.params.session_id === selectedSessionId) {
         const { message_id, delta } = notif.params;
-        const current = (messages[selectedMissionId || ""] || []).find((m) => m.id === message_id);
+        const current = (messages[selectedSessionId || ""] || []).find((m) => m.id === message_id);
         if (current) {
-          updateMessage(selectedMissionId!, message_id, { content: current.content + delta });
+          updateMessage(selectedSessionId!, message_id, { content: current.content + delta });
         } else {
           // Create streaming message if not exists
-          addMessage(selectedMissionId!, {
+          addMessage(selectedSessionId!, {
             id: message_id,
-            mission_id: selectedMissionId!,
+            session_id: selectedSessionId!,
             role: "assistant",
             content: delta,
             tool_calls: [],
@@ -66,44 +66,44 @@ export function ChatThread() {
             is_streaming: true,
           });
         }
-      } else if (notif.method === "mission.message.new" && notif.params.mission_id === selectedMissionId) {
-        addMessage(selectedMissionId!, {
+      } else if (notif.method === "session.message.new" && notif.params.session_id === selectedSessionId) {
+        addMessage(selectedSessionId!, {
           id: `msg-${Date.now()}`,
-          mission_id: selectedMissionId!,
+          session_id: selectedSessionId!,
           role: "assistant",
           content: notif.params.content,
           tool_calls: [],
           created_at: new Date().toISOString(),
         });
-      } else if (notif.method === "mission.tool_call.request" && notif.params.mission_id === selectedMissionId) {
+      } else if (notif.method === "session.tool_call.request" && notif.params.session_id === selectedSessionId) {
         setPendingApprovals((prev) => [...prev, notif.params]);
-      } else if (notif.method === "mission.message.complete" && notif.params.mission_id === selectedMissionId) {
+      } else if (notif.method === "session.message.complete" && notif.params.session_id === selectedSessionId) {
         const { message_id, content } = notif.params;
-        updateMessage(selectedMissionId!, message_id, { content, is_streaming: false });
+        updateMessage(selectedSessionId!, message_id, { content, is_streaming: false });
       }
     });
 
     return () => unsub();
-  }, [selectedMissionId, messages, addMessage, updateMessage]);
+  }, [selectedSessionId, messages, addMessage, updateMessage]);
 
-  const handleCompactCommand = async (missionId: string) => {
+  const handleCompactCommand = async (sessionId: string) => {
     setInput("");
     setIsSending(true);
     try {
-      const result = await api.mission.contextCompact(missionId);
+      const result = await api.session.contextCompact(sessionId);
       const summaryText = result.digest
-        ? `Context compacted — older messages summarized to keep this Mission within its context budget. Full history is still visible above; this summary is what future turns actually send to the model.`
-        : `Nothing to compact yet — this Mission's recent messages are already all that would be kept.`;
-      addMessage(missionId, {
+        ? `Context compacted — older messages summarized to keep this Session within its context budget. Full history is still visible above; this summary is what future turns actually send to the model.`
+        : `Nothing to compact yet — this Session's recent messages are already all that would be kept.`;
+      addMessage(sessionId, {
         id: `compact-${Date.now()}`,
-        mission_id: missionId,
+        session_id: sessionId,
         role: "system",
         content: summaryText,
         tool_calls: [],
         created_at: new Date().toISOString(),
       });
-      await loadMessages(missionId);
-      await refreshContextUsage(missionId);
+      await loadMessages(sessionId);
+      await refreshContextUsage(sessionId);
     } catch (e) {
       console.error(e);
     } finally {
@@ -112,13 +112,13 @@ export function ChatThread() {
   };
 
   const handleSend = async () => {
-    if (!input.trim() || !selectedMissionId) return;
+    if (!input.trim() || !selectedSessionId) return;
     const content = input.trim();
 
     // `/compact` — the manual trigger for context compaction (review_prompt.md
-    // §3.1); everything else still goes to the Mission as a normal message.
+    // §3.1); everything else still goes to the Session as a normal message.
     if (content === "/compact") {
-      await handleCompactCommand(selectedMissionId);
+      await handleCompactCommand(selectedSessionId);
       return;
     }
 
@@ -128,22 +128,22 @@ export function ChatThread() {
     try {
       const userMsg = {
         id: `tmp-${Date.now()}`,
-        mission_id: selectedMissionId,
+        session_id: selectedSessionId,
         role: "user" as const,
         content,
         tool_calls: [],
         created_at: new Date().toISOString(),
       };
-      addMessage(selectedMissionId, userMsg);
+      addMessage(selectedSessionId, userMsg);
 
-      await api.mission.sendMessage(selectedMissionId, content);
+      await api.session.sendMessage(selectedSessionId, content);
       // Reload after a bit
-      setTimeout(() => loadMessages(selectedMissionId), 500);
+      setTimeout(() => loadMessages(selectedSessionId), 500);
     } catch (e) {
       console.error(e);
-      addMessage(selectedMissionId!, {
+      addMessage(selectedSessionId!, {
         id: `err-${Date.now()}`,
-        mission_id: selectedMissionId!,
+        session_id: selectedSessionId!,
         role: "system",
         content: `Failed to send: ${e}`,
         tool_calls: [],
@@ -155,28 +155,28 @@ export function ChatThread() {
   };
 
   const handleApprove = async (toolCallId: string, approved: boolean) => {
-    if (!selectedMissionId) return;
+    if (!selectedSessionId) return;
     try {
-      await api.mission.approveTool(selectedMissionId, toolCallId, approved);
+      await api.session.approveTool(selectedSessionId, toolCallId, approved);
       setPendingApprovals((prev) => prev.filter((p) => p.tool_call_id !== toolCallId));
     } catch (e) {
       console.error(e);
     }
   };
 
-  if (!selectedMissionId) {
+  if (!selectedSessionId) {
     return (
       <div className="flex-1 flex items-center justify-center p-8 text-center">
         <div className="max-w-md">
-          <h2 className="text-lg font-semibold mb-2">No mission selected</h2>
+          <h2 className="text-lg font-semibold mb-2">No session selected</h2>
           <p className="text-sm text-muted-foreground mb-4">
-            Select a mission from the left rail or create a new one to start chatting with CID.
+            Select a session from the left rail or create a new one to start chatting with CID.
           </p>
           <div className="text-xs text-muted-foreground bg-card p-3 rounded border text-left">
-            <div className="font-mono">Flow 1 – First Mission (golden path):</div>
+            <div className="font-mono">Flow 1 – First Session (golden path):</div>
             <ol className="list-decimal ml-4 mt-2 space-y-1">
               <li>Connect a local git repo</li>
-              <li>Click &quot;New Mission&quot; → choose worktree/shared</li>
+              <li>Click &quot;New Session&quot; → choose worktree/shared</li>
               <li>Type a task – Planner responds with a plan</li>
               <li>Approve plan steps – Implementer executes with your approval per tool call</li>
               <li>Review diff in right panel – per-hunk accept/reject</li>
@@ -192,16 +192,16 @@ export function ChatThread() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        <PlanCard missionId={selectedMissionId} />
-        <AgentsMdReviewCard missionId={selectedMissionId} />
-        <ReviewCard missionId={selectedMissionId} />
-        <CheckpointCard missionId={selectedMissionId} refreshOn={missionMessages.length} />
+        <PlanCard sessionId={selectedSessionId} />
+        <AgentsMdReviewCard sessionId={selectedSessionId} />
+        <ReviewCard sessionId={selectedSessionId} />
+        <CheckpointCard sessionId={selectedSessionId} refreshOn={sessionMessages.length} />
 
         {/* 051 Wave 5.2: a screen reader had no way to know a streaming
             response was arriving — polite so mid-stream deltas don't
             interrupt whatever the user is doing. */}
         <div aria-live="polite" role="log" className="space-y-4">
-        {missionMessages.map((msg) => (
+        {sessionMessages.map((msg) => (
           <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             <div
               className={`max-w-[85%] rounded-lg px-4 py-2 text-sm ${

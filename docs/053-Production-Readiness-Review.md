@@ -15,9 +15,9 @@ not against a previous document's claims.**
 
 Driven by a product review of the actual UX, not a code audit:
 
-1. A Mission required a task description; it should be optional.
+1. A Session required a task description; it should be optional.
 2. There was no way to pick a repo folder — you had to type an absolute path.
-3. There was no model selection anywhere in the Mission flow.
+3. There was no model selection anywhere in the Session flow.
 4. The model catalog was stale (Claude 3.5-era ids that no longer resolve).
 5. Dummy/simulated implementations and placeholder data should be gone.
 
@@ -37,10 +37,10 @@ looking at what actually happened. All were fixed in this pass.
 | 1 | **Every existing install kept the retired model id.** The catalog refresh changed the schema `DEFAULT`, the seed `INSERT`, and an in-memory fallback — none of which touch an already-existing row. `settings.get` on the real machine still returned `claude-3-5-sonnet-20241022`, which 404s. | Every test builds a fresh database. The *upgrade* path had zero coverage. |
 | 2 | **`fs.list_dirs` + `repo.connect` created duplicate repo rows.** The new folder picker returns `canonicalize`'s `\\?\C:\Projects\cid`; the text box returns `C:\Projects\cid`. `connect_repo` stored both verbatim on a `UNIQUE` column. | Both components were individually correct and individually tested. The bug lived only in the seam — and only on Windows. |
 | 3 | **The model picker rendered every option disabled.** The RPC returns `available`; the frontend type and both new pickers read `enabled`. `!undefined` is `true`, so *no model could be selected* — the exact feature being added. | The test fixtures encoded the invented field name, so they agreed with the component instead of with the wire. TypeScript could not help: `call()` returns an asserted type, not a validated one. |
-| 4 | **`repo.disconnect` was broken for any repo that had ever been used.** A bare `DELETE FROM repo_channels` against a live `missions.repo_channel_id` foreign key — it failed with `FOREIGN KEY constraint failed` 100% of the time once a Mission existed. | Nothing tested disconnect with dependent rows. Found by trying to use it. |
+| 4 | **`repo.disconnect` was broken for any repo that had ever been used.** A bare `DELETE FROM repo_channels` against a live `sessions.repo_channel_id` foreign key — it failed with `FOREIGN KEY constraint failed` 100% of the time once a Session existed. | Nothing tested disconnect with dependent rows. Found by trying to use it. |
 | 5 | **E2E runs wrote into the developer's real database.** `playwright.config.ts` started Core with no `--db`, so it fell back to `%APPDATA%/cid/cid.db`. A real install had accumulated **15 dead `test-repo`/`e2e` channels** that — because of #4 — the UI could not remove. | The tests passed. They were simply pointed at the wrong database, and nothing asserted otherwise. |
-| 6 | **An unconfigured provider fabricated a completed turn.** With no API key, Core wrote an *Assistant* message reading *"here's a simulated response… I would have: 1. Analyzed the repo, 2. Checked AGENTS.md…"*, dumped the whole settings config into the chat, and set the Mission to **`Review`** — as if work had been done and was awaiting inspection. This was the first turn a new user without a key would ever take. | No test asserted on the no-key path's content or resulting status. |
-| 7 | **A worktree Mission on CID's own repo hard-reloaded the dev UI.** The worktree materializes a full repo copy under `.cid/worktrees/<id>/`, including a `tsconfig.json`; Vite detected a "changed tsconfig", forced a full reload, and wiped the in-memory store mid-Mission. | Dev-server behavior. Invisible to both unit and component tests. |
+| 6 | **An unconfigured provider fabricated a completed turn.** With no API key, Core wrote an *Assistant* message reading *"here's a simulated response… I would have: 1. Analyzed the repo, 2. Checked AGENTS.md…"*, dumped the whole settings config into the chat, and set the Session to **`Review`** — as if work had been done and was awaiting inspection. This was the first turn a new user without a key would ever take. | No test asserted on the no-key path's content or resulting status. |
+| 7 | **A worktree Session on CID's own repo hard-reloaded the dev UI.** The worktree materializes a full repo copy under `.cid/worktrees/<id>/`, including a `tsconfig.json`; Vite detected a "changed tsconfig", forced a full reload, and wiped the in-memory store mid-Session. | Dev-server behavior. Invisible to both unit and component tests. |
 
 ### What changed
 
@@ -59,8 +59,8 @@ looking at what actually happened. All were fixed in this pass.
 - **#3** — `ModelInfo.enabled` → `available` in the type and both pickers; fixtures
   rewritten to the real wire shape and a missing "the available one is *not* disabled"
   assertion added. Verified the updated test fails when the field name is wrong.
-- **#4** — `disconnect_repo` is now transactional, clearing all seven mission-scoped
-  tables, then missions, then the channel. Nothing on disk is touched: disconnecting
+- **#4** — `disconnect_repo` is now transactional, clearing all seven session-scoped
+  tables, then sessions, then the channel. Nothing on disk is touched: disconnecting
   forgets a repo, it does not delete the user's code.
 - **#5** — New `dev:core:e2e` script pointing at a disposable `.cid-e2e/` database, used
   by `playwright.config.ts` and the CI workflow; `.gitignore` updated.
@@ -81,13 +81,13 @@ actual UI in a real browser (Playwright, 11/11 checks, console-clean):
   `\\?\` paths.
 - Connecting the same directory as `\\?\C:\Projects\cid` and as `C:\Projects\cid`
   returns **the same repo channel id** — one row.
-- The center header shows the real repo name and mission title.
-- Task Description is labelled optional; **Create Mission is enabled with it empty**,
-  and the created Mission's `task_description` falls back to the title.
+- The center header shows the real repo name and session title.
+- Task Description is labelled optional; **Create Session is enabled with it empty**,
+  and the created Session's `task_description` falls back to the title.
 - The model dropdown lists 20 models with **9 genuinely selectable**; the one chosen in
-  the UI (`google/gemini-1.5-pro`) is what actually persisted on the Mission.
+  the UI (`google/gemini-1.5-pro`) is what actually persisted on the Session.
 - An empty title is refused server-side.
-- `mission.create` honors a per-mission model override, and it reaches the wire (proved
+- `session.create` honors a per-session model override, and it reaches the wire (proved
   by a mock server that captures the `model` field, not merely by the code compiling).
 
 The user's install was also cleaned: 15 dead test channels removed, leaving one real

@@ -29,16 +29,16 @@ Core's managers, and where each is documented:
 | `persistence::Persistence` | `021-Storage.md`, `035-Database.md` |
 
 **Terminal (PTY)**: `pty::PtyManager` wraps `portable-pty` for a real, native PTY per
-Mission (ConPTY on Windows, Unix PTY on macOS/Linux), streamed over WebSocket as
+Session (ConPTY on Windows, Unix PTY on macOS/Linux), streamed over WebSocket as
 `pty.output` notifications. Terminal output passes through `redact::redact_secrets`
 before being persisted or streamed (`031-Security.md`).
 
 **Forge bridges** (GitHub, GitLab, Bitbucket): `github::GitHubManager`
 (Phase 1) and `forges::ForgeManager` (Phase 3, GitLab/Bitbucket) share the same
-issue→Mission trigger and PR/MR status-sync workflow, normalized to `ForgeIssue`/
+issue→Session trigger and PR/MR status-sync workflow, normalized to `ForgeIssue`/
 `ForgeChangeRequest` shapes for the two newer providers.
 
-**Tracker linkage** (Jira, Linear): `trackers::TrackerManager` — Mission ↔ ticket linkage
+**Tracker linkage** (Jira, Linear): `trackers::TrackerManager` — Session ↔ ticket linkage
 only, deliberately not a tracker replacement (Part 1's non-goal).
 
 ## Non-Goals

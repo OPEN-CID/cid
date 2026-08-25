@@ -2,7 +2,7 @@ use std::path::Path;
 
 /// Detects `AGENTS.md`/`SKILL.md` files on disk. The actual system-prompt
 /// assembly (review_prompt.md §1.2: delimiting + sanitizing untrusted repo
-/// content, layering Workspace/Repo/Mission) lives in
+/// content, layering Workspace/Repo/Session) lives in
 /// `SkillsManager::build_system_context` (`skills/mod.rs`) — this struct
 /// used to duplicate a second, weaker version of that same job that nothing
 /// but its own test called; see git history if you need it, it added

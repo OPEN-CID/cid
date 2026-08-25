@@ -8,25 +8,25 @@ import { ShieldAlert, Loader2 } from "lucide-react";
  * does not control. `handle_repo_connect` detects it but never approves it —
  * this card is the one-time human review step. Until approved,
  * `ModelManager::process_message_with_role` excludes AGENTS.md from every
- * Mission's system prompt on this repo.
+ * Session's system prompt on this repo.
  *
  * Content is fetched on demand via `repo.agents_md` rather than read off the
  * `repos` store — `repo.list`/`repo.get` never populate `agents_md_content`
  * (only the one-shot `repo.connect` response does; `SkillsPanel` already
  * fetches it the same on-demand way for the same reason).
  */
-export function AgentsMdReviewCard({ missionId }: { missionId: string | null }) {
-  const { missions, repos, loadRepos } = useCid();
+export function AgentsMdReviewCard({ sessionId }: { sessionId: string | null }) {
+  const { sessions, repos, loadRepos } = useCid();
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
 
   const repo = useMemo(() => {
-    const mission = missions.find((m) => m.id === missionId);
-    if (!mission) return null;
-    return repos.find((r) => r.id === mission.repo_channel_id) ?? null;
-  }, [missions, repos, missionId]);
+    const session = sessions.find((m) => m.id === sessionId);
+    if (!session) return null;
+    return repos.find((r) => r.id === session.repo_channel_id) ?? null;
+  }, [sessions, repos, sessionId]);
 
   useEffect(() => {
     if (!repo || repo.agents_md_approved) {

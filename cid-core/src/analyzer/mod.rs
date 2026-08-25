@@ -190,17 +190,36 @@ impl CodeAnalyzer {
 
     pub fn analyze_directory(&self, dir_path: &str) -> Result<Vec<FileIndex>> {
         let mut files = Vec::new();
-        let dir = Path::new(dir_path);
-        if !dir.exists() {
-            return Ok(files);
+        self.analyze_directory_inner(Path::new(dir_path), &mut files)?;
+        Ok(files)
+    }
+
+    fn analyze_directory_inner(&self, dir: &Path, files: &mut Vec<FileIndex>) -> Result<()> {
+        if !dir.exists() || files.len() >= MAX_ANALYZED_FILES {
+            return Ok(());
         }
 
         for entry in std::fs::read_dir(dir)? {
+            if files.len() >= MAX_ANALYZED_FILES {
+                break;
+            }
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
+            // `file_type()` rather than `is_file()`/`is_dir()`: those follow
+            // symlinks, so a link pointing at an ancestor makes this recurse
+            // forever.
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_file() {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if matches!(ext, "rs" | "ts" | "js" | "py" | "go" | "json") {
+                        if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+                            > MAX_ANALYZED_FILE_BYTES
+                        {
+                            continue;
+                        }
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             let fp = path.to_string_lossy().to_string();
                             if let Ok(result) = self.analyze_file(&fp, &content) {
@@ -216,12 +235,59 @@ impl CodeAnalyzer {
                         }
                     }
                 }
-            } else if path.is_dir() {
-                files.extend(self.analyze_directory(path.to_string_lossy().as_ref())?);
+            } else if file_type.is_dir() && !is_ignored_dir(&path) {
+                self.analyze_directory_inner(&path, files)?;
             }
         }
-        Ok(files)
+        Ok(())
     }
+}
+
+/// Directories never worth parsing: dependency trees and build output dwarf
+/// the source they sit next to, and `.cid` holds CID's own Session worktrees —
+/// full copies of the repo, which produced duplicate hits for every symbol.
+///
+/// Deliberately mirrors `context_engine::IGNORED_DIRS`; kept as a separate
+/// const only because that module owns a different walk with its own filtering
+/// rules. If you add one here, add it there.
+const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    ".cid",
+    "build",
+    ".next",
+    "out",
+    "vendor",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".idea",
+    ".vscode",
+    "coverage",
+    "test-results",
+    "playwright-report",
+];
+
+/// Hard ceiling on a single walk. Without the ignore list above this function
+/// visited ~27k files on CID's own repo and took **218 seconds** to answer one
+/// `code.search_symbols` call; the cap is the backstop for whatever the list
+/// doesn't anticipate, so a pathological tree degrades to partial results
+/// rather than an apparent hang.
+const MAX_ANALYZED_FILES: usize = 20_000;
+
+/// Minified bundles and lockfiles are multi-megabyte single lines that cost
+/// far more to tree-sitter parse than any symbol they yield is worth.
+const MAX_ANALYZED_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn is_ignored_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| IGNORED_DIRS.contains(&name))
+        .unwrap_or(false)
 }
 
 fn position(p: tree_sitter::Point) -> (usize, usize) {
@@ -408,5 +474,80 @@ func NewServer(port int) *Server {
             .filter(|s| s.name == "MyStruct")
             .collect();
         assert_eq!(my_structs.len(), 1);
+    }
+
+    /// `analyze_directory` used to recurse into everything, so one
+    /// `code.search_symbols` on CID's own repo read and parsed ~27k files out
+    /// of `target/`, `node_modules/` and `.cid/worktrees/` and took 218
+    /// seconds — the UI just sat on "Searching…". The `.cid` case also
+    /// returned *duplicate* hits, since a Session worktree is a full copy of
+    /// the repo.
+    #[test]
+    fn dependency_and_build_directories_are_not_walked() {
+        let analyzer = CodeAnalyzer::new();
+        let tmp = TempDir::new().unwrap();
+
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        writeln!(
+            std::fs::File::create(src.join("real.rs")).unwrap(),
+            "fn only_real_source() {{}}"
+        )
+        .unwrap();
+
+        for ignored in [
+            "node_modules",
+            "target",
+            ".git",
+            "dist",
+            ".cid/worktrees/abc/src",
+        ] {
+            let dir = tmp.path().join(ignored);
+            std::fs::create_dir_all(&dir).unwrap();
+            writeln!(
+                std::fs::File::create(dir.join("noise.rs")).unwrap(),
+                "fn should_never_be_indexed() {{}}"
+            )
+            .unwrap();
+        }
+
+        let files = analyzer
+            .analyze_directory(tmp.path().to_str().unwrap())
+            .unwrap();
+
+        assert_eq!(
+            files.len(),
+            1,
+            "only src/real.rs should be analyzed, got: {:?}",
+            files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        let names: Vec<&str> = files
+            .iter()
+            .flat_map(|f| f.symbols.iter())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(names.contains(&"only_real_source"));
+        assert!(!names.contains(&"should_never_be_indexed"));
+    }
+
+    #[test]
+    fn oversized_files_are_skipped_rather_than_parsed() {
+        let analyzer = CodeAnalyzer::new();
+        let tmp = TempDir::new().unwrap();
+
+        // A minified bundle shape: one enormous line, no useful symbols.
+        let big = "x".repeat((MAX_ANALYZED_FILE_BYTES + 1) as usize);
+        std::fs::write(tmp.path().join("bundle.js"), big).unwrap();
+        writeln!(
+            std::fs::File::create(tmp.path().join("small.rs")).unwrap(),
+            "fn tiny() {{}}"
+        )
+        .unwrap();
+
+        let files = analyzer
+            .analyze_directory(tmp.path().to_str().unwrap())
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.ends_with("small.rs"));
     }
 }

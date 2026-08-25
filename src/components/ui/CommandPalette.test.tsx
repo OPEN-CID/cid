@@ -10,7 +10,7 @@ describe("CommandPalette", () => {
   const commands: Command[] = [
     { id: "a", label: "Go to Editor", action: vi.fn() },
     { id: "b", label: "Go to Terminal", action: vi.fn() },
-    { id: "c", label: "New Mission", action: vi.fn() },
+    { id: "c", label: "New Session", action: vi.fn() },
   ];
 
   it("is closed until Ctrl+K is pressed", () => {
@@ -36,7 +36,7 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
 
     const input = screen.getByPlaceholderText("Type a command…");
-    fireEvent.change(input, { target: { value: "New Mission" } });
+    fireEvent.change(input, { target: { value: "New Session" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(commands[2].action).toHaveBeenCalled();

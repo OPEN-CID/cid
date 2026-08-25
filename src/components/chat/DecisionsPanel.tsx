@@ -7,7 +7,7 @@ import { FileText, Rocket, ExternalLink } from "lucide-react";
 type AdrSummary = { number: string; title: string; path: string; status?: string | null };
 type DeploymentRecord = {
   id: string;
-  mission_id: string;
+  session_id: string;
   environment: string;
   commit_or_tag: string;
   ci_run_url?: string | null;
@@ -17,13 +17,13 @@ type DeploymentRecord = {
 };
 
 // 051-Editor-Excellence-Roadmap.md Wave 5.1c: decisions.* (ADRs relevant to
-// this Mission) and deployment.* (what/when/where — never an action CID
+// this Session) and deployment.* (what/when/where — never an action CID
 // performs, per the founding non-goal) had real backends and no surface —
-// a Mission-thread tab, since both are inherently per-mission.
+// a Session-thread tab, since both are inherently per-session.
 export function DecisionsPanel() {
-  const { missions, repos, selectedMissionId } = useCid();
-  const mission = missions.find((m) => m.id === selectedMissionId);
-  const repo = repos.find((r) => r.id === mission?.repo_channel_id);
+  const { sessions, repos, selectedSessionId } = useCid();
+  const session = sessions.find((m) => m.id === selectedSessionId);
+  const repo = repos.find((r) => r.id === session?.repo_channel_id);
 
   const [relevantAdrs, setRelevantAdrs] = useState<AdrSummary[]>([]);
   const [allAdrs, setAllAdrs] = useState<AdrSummary[] | null>(null);
@@ -33,12 +33,12 @@ export function DecisionsPanel() {
   const [form, setForm] = useState({ environment: "", commit_or_tag: "", ci_run_url: "", note: "" });
 
   const load = useCallback(async () => {
-    if (!selectedMissionId) return;
+    if (!selectedSessionId) return;
     setLoading(true);
     try {
       const [adrs, deploys] = await Promise.all([
-        api.decisions.forMission(selectedMissionId),
-        api.deployment.list(selectedMissionId),
+        api.decisions.forSession(selectedSessionId),
+        api.deployment.list(selectedSessionId),
       ]);
       setRelevantAdrs(adrs || []);
       setDeployments(deploys || []);
@@ -47,7 +47,7 @@ export function DecisionsPanel() {
     } finally {
       setLoading(false);
     }
-  }, [selectedMissionId]);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     load();
@@ -65,10 +65,10 @@ export function DecisionsPanel() {
   };
 
   const submitDeployment = async () => {
-    if (!selectedMissionId || !form.environment.trim() || !form.commit_or_tag.trim()) return;
+    if (!selectedSessionId || !form.environment.trim() || !form.commit_or_tag.trim()) return;
     try {
       await api.deployment.record({
-        mission_id: selectedMissionId,
+        session_id: selectedSessionId,
         environment: form.environment.trim(),
         commit_or_tag: form.commit_or_tag.trim(),
         ci_run_url: form.ci_run_url.trim() || undefined,
@@ -82,8 +82,8 @@ export function DecisionsPanel() {
     }
   };
 
-  if (!selectedMissionId) {
-    return <div className="p-4 text-xs text-muted-foreground">Select a mission to see its decisions and deployments.</div>;
+  if (!selectedSessionId) {
+    return <div className="p-4 text-xs text-muted-foreground">Select a session to see its decisions and deployments.</div>;
   }
 
   return (
@@ -94,7 +94,7 @@ export function DecisionsPanel() {
         </div>
         {loading && <div className="text-muted-foreground">Loading…</div>}
         {!loading && relevantAdrs.length === 0 && (
-          <div className="text-muted-foreground">No ADRs explicitly referenced by this Mission&apos;s task or plan.</div>
+          <div className="text-muted-foreground">No ADRs explicitly referenced by this Session&apos;s task or plan.</div>
         )}
         <div className="space-y-1">
           {relevantAdrs.map((a) => (
@@ -193,7 +193,7 @@ export function DecisionsPanel() {
               )}
             </div>
           ))}
-          {!loading && deployments.length === 0 && <div className="text-muted-foreground">No deployments recorded for this Mission.</div>}
+          {!loading && deployments.length === 0 && <div className="text-muted-foreground">No deployments recorded for this Session.</div>}
         </div>
       </div>
     </div>

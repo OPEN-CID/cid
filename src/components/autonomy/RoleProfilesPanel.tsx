@@ -137,7 +137,7 @@ export function RoleProfilesPanel() {
         </button>
       </div>
       <div className="text-[10px] text-muted-foreground">
-        A profile is a scoped prompt + tool-permission set a Mission&apos;s Planner can spawn as a subagent (e.g. a
+        A profile is a scoped prompt + tool-permission set a Session&apos;s Planner can spawn as a subagent (e.g. a
         &quot;Security Reviewer&quot; limited to read_file). Workspace-scoped profiles are visible to every repo;
         repo-scoped ones only to this repo.
       </div>

@@ -13,7 +13,7 @@ export type Command = {
 
 // 051-Editor-Excellence-Roadmap.md Wave 5.2: a keyboard-first entry point to
 // every surface — Ctrl+K opens a filterable list of every command the parent
-// registers (tab switches, mission creation, theme toggle, etc.), navigable
+// registers (tab switches, session creation, theme toggle, etc.), navigable
 // entirely without a mouse.
 export function CommandPalette({ commands }: { commands: Command[] }) {
   const [open, setOpen] = useState(false);
