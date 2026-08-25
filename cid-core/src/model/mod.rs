@@ -565,7 +565,15 @@ fn fallback_model_ids(resolved: &ResolvedModelConfig) -> Vec<String> {
             if ids.len() >= 3 {
                 break;
             }
-            if m.id.contains("preview") || ids.iter().any(|i| i.as_str() == m.id) {
+            // `*-latest` is an alias for the newest concrete id — which is the
+            // model that just failed — so it burns a fallback slot on the same
+            // busy endpoint. Observed live: `gemini-3.7-flash` 503'd, then
+            // `gemini-flash-latest` 503'd identically before a genuinely
+            // different model finally answered.
+            if m.id.contains("preview")
+                || m.id.ends_with("-latest")
+                || ids.iter().any(|i| i.as_str() == m.id)
+            {
                 continue;
             }
             ids.push(m.id.to_string());
@@ -4511,6 +4519,12 @@ mod spend_tracking_tests {
         assert!(
             ids.iter().skip(1).all(|i| !i.contains("preview")),
             "fallbacks must be generally available: {ids:?}"
+        );
+        // An alias points at the newest concrete id — the one that just failed —
+        // so retrying it is a wasted round trip against the same endpoint.
+        assert!(
+            ids.iter().all(|i| !i.ends_with("-latest")),
+            "an alias is not a different model: {ids:?}"
         );
     }
 
