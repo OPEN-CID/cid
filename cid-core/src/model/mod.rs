@@ -2045,72 +2045,103 @@ impl ModelManager {
         }
 
         // Dispatch to provider-specific implementation
-        let result = match resolved.provider {
-            ModelProvider::Anthropic => {
-                self.call_anthropic_with_tools(
-                    session_id,
-                    system_prompt,
-                    history,
-                    user_content,
-                    resolved.api_key.as_deref().unwrap_or(""),
-                    resolved.model_id.clone(),
-                    "https://api.anthropic.com/v1/messages".to_string(),
-                    app_state.clone(),
-                    untrusted_content_active,
-                )
-                .await
+        // Same capacity fallback the Planner path gets (`complete_text`): the
+        // default model is the newest catalogued one and therefore the most
+        // contended, so a 503 here used to fail the whole turn even though a
+        // sibling model would have answered immediately. `system_prompt` and
+        // `history` are consumed per call, hence the clones — a turn that has
+        // to retry is rare, and correctness beats saving one allocation on it.
+        let candidates = fallback_model_ids(&resolved);
+        let attempts = candidates.len();
+        let mut result: Result<TokenUsage> =
+            Err(anyhow::anyhow!("no candidate model was available"));
+
+        for (attempt, model_id) in candidates.into_iter().enumerate() {
+            result = match resolved.provider {
+                ModelProvider::Anthropic => {
+                    self.call_anthropic_with_tools(
+                        session_id,
+                        system_prompt.clone(),
+                        history.clone(),
+                        user_content,
+                        resolved.api_key.as_deref().unwrap_or(""),
+                        model_id.clone(),
+                        "https://api.anthropic.com/v1/messages".to_string(),
+                        app_state.clone(),
+                        untrusted_content_active,
+                    )
+                    .await
+                }
+                ModelProvider::OpenAI => {
+                    self.call_openai_with_tools(
+                        session_id,
+                        system_prompt.clone(),
+                        history.clone(),
+                        user_content,
+                        resolved.api_key.as_deref().unwrap_or(""),
+                        model_id.clone(),
+                        "https://api.openai.com/v1/chat/completions".to_string(),
+                        app_state.clone(),
+                        untrusted_content_active,
+                    )
+                    .await
+                }
+                ModelProvider::Google => {
+                    self.call_google_with_tools(
+                        session_id,
+                        system_prompt.clone(),
+                        history.clone(),
+                        user_content,
+                        resolved.api_key.as_deref().unwrap_or(""),
+                        model_id.clone(),
+                        "https://generativelanguage.googleapis.com".to_string(),
+                        app_state.clone(),
+                        untrusted_content_active,
+                    )
+                    .await
+                }
+                ModelProvider::OpenAICompatible
+                | ModelProvider::Ollama
+                | ModelProvider::LmStudio
+                | ModelProvider::LlamaCpp => {
+                    let endpoint = resolved
+                        .endpoint
+                        .clone()
+                        .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
+                    let chat_url = resolve_chat_url(&endpoint);
+                    self.call_openai_compatible_with_tools(
+                        session_id,
+                        system_prompt.clone(),
+                        history.clone(),
+                        user_content,
+                        resolved.api_key.clone(),
+                        model_id.clone(),
+                        chat_url,
+                        app_state.clone(),
+                        untrusted_content_active,
+                    )
+                    .await
+                }
+            };
+
+            match &result {
+                Err(e) if is_retryable_provider_error(e) && attempt + 1 < attempts => {
+                    warn!(
+                        "model {} unavailable ({}), trying the next one",
+                        model_id, e
+                    );
+                }
+                _ => {
+                    if attempt > 0 && result.is_ok() {
+                        warn!(
+                            "completed with fallback model {} after the preferred model was unavailable",
+                            model_id
+                        );
+                    }
+                    break;
+                }
             }
-            ModelProvider::OpenAI => {
-                self.call_openai_with_tools(
-                    session_id,
-                    system_prompt,
-                    history,
-                    user_content,
-                    resolved.api_key.as_deref().unwrap_or(""),
-                    resolved.model_id.clone(),
-                    "https://api.openai.com/v1/chat/completions".to_string(),
-                    app_state.clone(),
-                    untrusted_content_active,
-                )
-                .await
-            }
-            ModelProvider::Google => {
-                self.call_google_with_tools(
-                    session_id,
-                    system_prompt,
-                    history,
-                    user_content,
-                    resolved.api_key.as_deref().unwrap_or(""),
-                    resolved.model_id.clone(),
-                    "https://generativelanguage.googleapis.com".to_string(),
-                    app_state.clone(),
-                    untrusted_content_active,
-                )
-                .await
-            }
-            ModelProvider::OpenAICompatible
-            | ModelProvider::Ollama
-            | ModelProvider::LmStudio
-            | ModelProvider::LlamaCpp => {
-                let endpoint = resolved
-                    .endpoint
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-                let chat_url = resolve_chat_url(&endpoint);
-                self.call_openai_compatible_with_tools(
-                    session_id,
-                    system_prompt,
-                    history,
-                    user_content,
-                    resolved.api_key.clone(),
-                    resolved.model_id.clone(),
-                    chat_url,
-                    app_state.clone(),
-                    untrusted_content_active,
-                )
-                .await
-            }
-        };
+        }
 
         match result {
             Ok(usage) => {
@@ -4526,6 +4557,33 @@ mod spend_tracking_tests {
             ids.iter().all(|i| !i.ends_with("-latest")),
             "an alias is not a different model: {ids:?}"
         );
+    }
+
+    /// A custom endpoint (OpenRouter, vLLM, Ollama, LM Studio) serves whatever
+    /// the operator loaded into it. Substituting a catalogued id they never
+    /// configured would send a request for a model that endpoint has never
+    /// heard of, turning a transient upstream blip into a confusing 404 — so
+    /// these providers get exactly one candidate: the configured one.
+    #[test]
+    fn a_custom_endpoint_is_never_retried_with_a_model_it_was_not_configured_for() {
+        for provider in [
+            ModelProvider::OpenAICompatible,
+            ModelProvider::Ollama,
+            ModelProvider::LmStudio,
+            ModelProvider::LlamaCpp,
+        ] {
+            let resolved = ResolvedModelConfig {
+                provider: provider.clone(),
+                model_id: "some-locally-loaded-model".to_string(),
+                api_key: None,
+                endpoint: Some("http://localhost:11434/v1".to_string()),
+            };
+            assert_eq!(
+                fallback_model_ids(&resolved),
+                vec!["some-locally-loaded-model".to_string()],
+                "{provider:?} must not be retried with a substituted model id"
+            );
+        }
     }
 
     /// Retrying a bad key against every sibling model would turn one clear
