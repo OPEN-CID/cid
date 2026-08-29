@@ -88,8 +88,8 @@ pub const OPENAI_MODELS: &[CatalogModel] = &[
         id: "gpt-5.6",
         name: "GPT-5.6",
         context: 1050000,
-        input_per_million: 5.0,
-        output_per_million: 30.0,
+        input_per_million: 4.0,
+        output_per_million: 20.0,
     },
     CatalogModel {
         id: "gpt-5.6-luna",
@@ -102,8 +102,8 @@ pub const OPENAI_MODELS: &[CatalogModel] = &[
         id: "gpt-5.6-sol",
         name: "GPT-5.6 Sol",
         context: 1050000,
-        input_per_million: 5.0,
-        output_per_million: 30.0,
+        input_per_million: 4.0,
+        output_per_million: 20.0,
     },
     CatalogModel {
         id: "gpt-5.6-terra",
