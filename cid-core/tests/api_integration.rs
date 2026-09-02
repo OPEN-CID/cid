@@ -2331,11 +2331,23 @@ async fn a_terminal_opens_in_the_sessions_worktree_unless_the_main_repo_is_asked
     .await;
     assert_eq!(repo_pty["workdir"], "repo");
     let cwd = repo_pty["cwd"].as_str().unwrap();
-    assert!(
-        std::path::Path::new(cwd) == std::path::Path::new(&repo_path),
-        "asking for the main repo must not land in the worktree: {cwd}"
+    // `repo_path` is the raw `TempDir` path (`/var/folders/...` on macOS,
+    // `C:\Users\...\Temp\...` on Windows). `repo.path` inside Core is stored
+    // via `normalize_stored_path`, which canonicalizes (`/var` -> `/private/var`
+    // on macOS, `\\?\C:\...` -> `C:\...` on Windows) before storing — so `cwd`
+    // (which is `repo.path.clone()`) and `dir.path()` can be spellings of the
+    // same directory that are not string-equal. Compare canonicalized forms.
+    let normalize = |p: &str| {
+        dunce::canonicalize(p)
+            .map(|c| dunce::simplified(&c).to_path_buf())
+            .unwrap_or_else(|_| std::path::PathBuf::from(p))
+    };
+    assert_eq!(
+        normalize(cwd),
+        normalize(&repo_path),
+        "asking for the main repo must not land in the worktree: {cwd} vs {repo_path}"
     );
-    assert_ne!(cwd, worktree_path);
+    assert_ne!(normalize(cwd), normalize(&worktree_path));
 }
 
 #[tokio::test]
