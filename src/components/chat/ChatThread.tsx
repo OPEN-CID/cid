@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useCid, type PendingApproval } from "@/hooks/useCid";
 import { api } from "@/lib/api";
 import { PlanCard } from "./PlanCard";
+import { SessionModelBar } from "./SessionModelBar";
 import { ReviewCard } from "./ReviewCard";
 import { CheckpointCard } from "./CheckpointCard";
 import { AgentsMdReviewCard } from "./AgentsMdReviewCard";
@@ -190,6 +191,7 @@ export function ChatThread() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      <SessionModelBar sessionId={selectedSessionId} />
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <PlanCard sessionId={selectedSessionId} />

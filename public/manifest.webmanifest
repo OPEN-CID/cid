@@ -1,0 +1,19 @@
+{
+  "name": "CID — Collaborative Intelligent Development",
+  "short_name": "CID",
+  "description": "Chat-native, multi-agent software engineering: approve and monitor Sessions from anywhere.",
+  "start_url": "/?mobile=1",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0e13",
+  "theme_color": "#0a0e13",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

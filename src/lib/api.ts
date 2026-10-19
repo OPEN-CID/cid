@@ -362,6 +362,10 @@ class CidApiClient {
     sendMessage: (session_id: string, content: string) => this.call("session.send_message", { session_id, content }),
     approveTool: (session_id: string, tool_call_id: string, approved: boolean) =>
       this.call("session.approve_tool", { session_id, tool_call_id, approved }),
+    setModel: (session_id: string, model_provider: string | null, model_id: string | null) =>
+      this.call("session.model.set", { session_id, model_provider, model_id }),
+    pendingTools: (session_id: string) =>
+      this.call("session.tool_calls.pending", { session_id }),
     contextUsage: (session_id: string) => this.call("session.context.usage", { session_id }),
     contextCompact: (session_id: string) => this.call("session.context.compact", { session_id }),
     checkpointList: (session_id: string) => this.call("session.checkpoint.list", { session_id }),
@@ -638,6 +642,26 @@ class CidApiClient {
     record: (params: { session_id: string; environment: string; commit_or_tag: string; ci_run_url?: string; note?: string }) =>
       this.call("deployment.record", params),
     list: (session_id: string) => this.call("deployment.list", { session_id }),
+  };
+
+  workflow = {
+    create: (params: { repo_channel_id: string; name: string; description?: string; steps: unknown[] }) =>
+      this.call("workflow.create", params),
+    get: (workflow_id: string) => this.call("workflow.get", { workflow_id }),
+    list: (repo_channel_id?: string) =>
+      this.call("workflow.list", repo_channel_id ? { repo_channel_id } : {}),
+    update: (params: { workflow_id: string; name?: string; description?: string; steps?: unknown[] }) =>
+      this.call("workflow.update", params),
+    delete: (workflow_id: string) => this.call("workflow.delete", { workflow_id }),
+    runStart: (workflow_id: string, session_id: string) =>
+      this.call("workflow.run.start", { workflow_id, session_id }),
+    runGet: (run_id: string) => this.call("workflow.run.get", { run_id }),
+    runList: (workflow_id?: string) =>
+      this.call("workflow.run.list", workflow_id ? { workflow_id } : {}),
+    runCancel: (run_id: string) => this.call("workflow.run.cancel", { run_id }),
+    runApprove: (run_id: string, note?: string) =>
+      this.call("workflow.run.approve_step", { run_id, note }),
+    runRetry: (run_id: string) => this.call("workflow.run.retry", { run_id }),
   };
 
   governance = {

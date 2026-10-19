@@ -11,6 +11,7 @@ import { ConnectionBanner, HealthDashboard, AccessControlPanel } from "./compone
 import { RepoHealthPanel } from "./components/health/RepoHealthPanel";
 import { AutonomyPanel } from "./components/autonomy/AutonomyPanel";
 import { DecisionsPanel } from "./components/chat/DecisionsPanel";
+import { WorkflowPanel } from "./components/chat/WorkflowPanel";
 import { useCid } from "./hooks/useCid";
 import { useModelReadiness } from "./hooks/useModelReadiness";
 import { useTheme } from "./theme/useTheme";
@@ -68,6 +69,7 @@ type RightTab =
   | "diff"
   | "history"
   | "decisions"
+  | "workflows"
   | "mcp"
   | "skills"
   | "acp"
@@ -82,6 +84,7 @@ const ALL_TABS: RightTab[] = [
   "diff",
   "history",
   "decisions",
+  "workflows",
   "mcp",
   "skills",
   "acp",
@@ -99,6 +102,7 @@ const TAB_LABELS: Record<RightTab, string> = {
   diff: "Diff",
   history: "History",
   decisions: "Decision log",
+  workflows: "Workflows",
   mcp: "Tools",
   skills: "Skills",
   acp: "External agents",
@@ -700,6 +704,7 @@ export default function App() {
               {rightTab === "diff" && <DiffViewer />}
               {rightTab === "history" && <HistoryPanel />}
               {rightTab === "decisions" && <DecisionsPanel />}
+              {rightTab === "workflows" && <WorkflowPanel />}
               {rightTab === "mcp" && <McpPanel />}
               {rightTab === "skills" && <SkillsPanel />}
               {rightTab === "acp" && <AcpPanel />}

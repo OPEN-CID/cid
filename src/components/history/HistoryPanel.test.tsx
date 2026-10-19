@@ -93,6 +93,24 @@ describe("HistoryPanel", () => {
     expect(screen.queryByText("success")).not.toBeInTheDocument();
   });
 
+  it("renders MCP calls with server and tool identity, not an empty target", async () => {
+    vi.mocked(api.message.list).mockResolvedValueOnce([
+      {
+        role: "assistant",
+        created_at: "2026-08-01T00:00:00Z",
+        tool_calls: [
+          { id: "tc-mcp", name: "mcp_call", arguments: { server_id: "jira", tool_name: "get_issue" }, status: "completed", result: {} },
+        ],
+      },
+    ]);
+
+    render(<HistoryPanel />);
+    await flushAsyncWork();
+
+    expect(screen.getByText("mcp_call")).toBeInTheDocument();
+    expect(screen.getByText(/jira · get_issue/)).toBeInTheDocument();
+  });
+
   it("labels a live tool-call notification's status honestly instead of hardcoding success", async () => {
     render(<HistoryPanel />);
     await flushAsyncWork();

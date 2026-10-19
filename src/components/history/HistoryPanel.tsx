@@ -26,9 +26,17 @@ function capitalize(s: string): string {
   return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }
 
-function describeTarget(args: unknown): string {
+function describeTarget(action: string, args: unknown): string {
   if (args && typeof args === "object") {
     const a = args as Record<string, unknown>;
+    // MCP calls carry server/tool identity, not a path — without this every
+    // MCP row renders with an empty target and the mcp filter looks broken.
+    if (action === "mcp_call") {
+      const server = typeof a.server_id === "string" ? a.server_id : "";
+      const tool = typeof a.tool_name === "string" ? a.tool_name : "";
+      const which = [server, tool].filter(Boolean).join(" · ");
+      if (which) return which;
+    }
     const candidate = a.path ?? a.file_path ?? a.repo_path ?? a.dir_path ?? a.command ?? a.query ?? a.symbol;
     if (typeof candidate === "string") return candidate;
   }
@@ -44,7 +52,7 @@ function eventsFromMessages(messages: RpcMessage[]): HistoryEvent[] {
         timestamp: msg.created_at,
         actor: capitalize(msg.role),
         action: tc.name,
-        target: describeTarget(tc.arguments),
+        target: describeTarget(tc.name, tc.arguments),
         status: (tc.status as HistoryStatus) ?? "unknown",
         details: { arguments: tc.arguments, result: tc.result },
       });
@@ -127,7 +135,7 @@ export function HistoryPanel() {
         // terminal/git/mcp filters meaningful); otherwise the raw method
         // name is the most specific honest label available.
         action: toolName ?? notif.method,
-        target: describeTarget(notif.params?.arguments) || notif.params?.pty_id || "",
+        target: describeTarget(toolName ?? "", notif.params?.arguments) || notif.params?.pty_id || "",
         status: statusForNotification(notif.method),
         details: notif.params,
       };
