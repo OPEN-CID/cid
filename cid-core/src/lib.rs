@@ -34,6 +34,7 @@ pub mod slack_bridge;
 pub mod subagent;
 pub mod teams_bridge;
 pub mod trackers;
+pub mod workflow;
 
 use crate::{
     access::AccessPolicy,
@@ -66,6 +67,7 @@ use crate::{
     subagent::SubagentOrchestrator,
     teams_bridge::TeamsBridge,
     trackers::TrackerManager,
+    workflow::WorkflowRunner,
 };
 use anyhow::Result;
 use std::{net::SocketAddr, sync::Arc};
@@ -94,6 +96,7 @@ pub struct Core {
     pub autonomy_manager: Arc<AutonomyManager>,
     pub background_model_router: Arc<BackgroundModelRouter>,
     pub subagent_orchestrator: Arc<SubagentOrchestrator>,
+    pub workflow_runner: Arc<WorkflowRunner>,
     pub slack_bridge: Arc<SlackBridge>,
     pub teams_bridge: Arc<TeamsBridge>,
     pub mcp_tasks_manager: Arc<McpTasksManager>,
@@ -147,6 +150,7 @@ impl Core {
 
         let background_model_router = Arc::new(BackgroundModelRouter::new(event_tx.clone()));
         let subagent_orchestrator = Arc::new(SubagentOrchestrator::new(event_tx.clone()));
+        let workflow_runner = Arc::new(WorkflowRunner::new(event_tx.clone()));
         let slack_bridge = Arc::new(SlackBridge::new(event_tx.clone()));
         let teams_bridge = Arc::new(TeamsBridge::new(event_tx.clone()));
         let mcp_tasks_manager =
@@ -197,6 +201,7 @@ impl Core {
             autonomy_manager,
             background_model_router,
             subagent_orchestrator,
+            workflow_runner,
             slack_bridge,
             teams_bridge,
             mcp_tasks_manager,
@@ -242,6 +247,7 @@ impl Core {
 
         let background_model_router = Arc::new(BackgroundModelRouter::new(event_tx.clone()));
         let subagent_orchestrator = Arc::new(SubagentOrchestrator::new(event_tx.clone()));
+        let workflow_runner = Arc::new(WorkflowRunner::new(event_tx.clone()));
         let slack_bridge = Arc::new(SlackBridge::new(event_tx.clone()));
         let teams_bridge = Arc::new(TeamsBridge::new(event_tx.clone()));
         let mcp_tasks_manager =
@@ -279,6 +285,7 @@ impl Core {
             autonomy_manager,
             background_model_router,
             subagent_orchestrator,
+            workflow_runner,
             slack_bridge,
             teams_bridge,
             mcp_tasks_manager,
@@ -319,6 +326,7 @@ impl Core {
             autonomy_manager: self.autonomy_manager.clone(),
             background_model_router: self.background_model_router.clone(),
             subagent_orchestrator: self.subagent_orchestrator.clone(),
+            workflow_runner: self.workflow_runner.clone(),
             slack_bridge: self.slack_bridge.clone(),
             teams_bridge: self.teams_bridge.clone(),
             mcp_tasks_manager: self.mcp_tasks_manager.clone(),

@@ -4,12 +4,40 @@
 // Snapshot of the models.dev registry, used as the offline fallback for
 // `model::catalog`'s live fetch. See the generator for why this is generated
 // rather than hand-maintained.
-// Registry snapshot taken: 2026-08-13
+// Registry snapshot taken: 2026-10-13
 
 use super::catalog::CatalogModel;
 
 /// models.dev provider `anthropic` — 10 tool-calling text models.
 pub const ANTHROPIC_MODELS: &[CatalogModel] = &[
+    CatalogModel {
+        id: "claude-haiku-5-5",
+        name: "Claude Haiku 5.5",
+        context: 1000000,
+        input_per_million: 0.1,
+        output_per_million: 0.5,
+    },
+    CatalogModel {
+        id: "claude-sonnet-5-5",
+        name: "Claude Sonnet 5.5",
+        context: 1000000,
+        input_per_million: 2.0,
+        output_per_million: 10.0,
+    },
+    CatalogModel {
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
+        context: 1000000,
+        input_per_million: 4.0,
+        output_per_million: 20.0,
+    },
+    CatalogModel {
+        id: "claude-fable-5-1",
+        name: "Claude Fable 5.1",
+        context: 1000000,
+        input_per_million: 10.0,
+        output_per_million: 50.0,
+    },
     CatalogModel {
         id: "claude-opus-5",
         name: "Claude Opus 5",
@@ -52,38 +80,52 @@ pub const ANTHROPIC_MODELS: &[CatalogModel] = &[
         input_per_million: 3.0,
         output_per_million: 15.0,
     },
-    CatalogModel {
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6",
-        context: 1000000,
-        input_per_million: 5.0,
-        output_per_million: 25.0,
-    },
-    CatalogModel {
-        id: "claude-opus-4-5",
-        name: "Claude Opus 4.5 (latest)",
-        context: 200000,
-        input_per_million: 5.0,
-        output_per_million: 25.0,
-    },
-    CatalogModel {
-        id: "claude-haiku-4-5",
-        name: "Claude Haiku 4.5 (latest)",
-        context: 200000,
-        input_per_million: 1.0,
-        output_per_million: 5.0,
-    },
-    CatalogModel {
-        id: "claude-sonnet-4-5",
-        name: "Claude Sonnet 4.5 (latest)",
-        context: 1000000,
-        input_per_million: 3.0,
-        output_per_million: 15.0,
-    },
 ];
 
 /// models.dev provider `openai` — 10 tool-calling text models.
 pub const OPENAI_MODELS: &[CatalogModel] = &[
+    CatalogModel {
+        id: "gpt-6.1-sol",
+        name: "GPT-6.1 Sol",
+        context: 1050000,
+        input_per_million: 2.0,
+        output_per_million: 10.0,
+    },
+    CatalogModel {
+        id: "gpt-6-luna",
+        name: "GPT-6 Luna",
+        context: 1050000,
+        input_per_million: 0.1,
+        output_per_million: 0.5,
+    },
+    CatalogModel {
+        id: "gpt-6-sol",
+        name: "GPT-6 Sol",
+        context: 1050000,
+        input_per_million: 2.0,
+        output_per_million: 10.0,
+    },
+    CatalogModel {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        context: 1050000,
+        input_per_million: 10.0,
+        output_per_million: 50.0,
+    },
+    CatalogModel {
+        id: "gpt-daybreak-blue-latest",
+        name: "Daybreak Blue",
+        context: 1050000,
+        input_per_million: 4.0,
+        output_per_million: 20.0,
+    },
+    CatalogModel {
+        id: "gpt-daybreak-red-latest",
+        name: "Daybreak Red",
+        context: 400000,
+        input_per_million: 12.5,
+        output_per_million: 75.0,
+    },
     CatalogModel {
         id: "gpt-5.6",
         name: "GPT-5.6",
@@ -112,52 +154,24 @@ pub const OPENAI_MODELS: &[CatalogModel] = &[
         input_per_million: 2.0,
         output_per_million: 12.0,
     },
-    CatalogModel {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        context: 1050000,
-        input_per_million: 5.0,
-        output_per_million: 30.0,
-    },
-    CatalogModel {
-        id: "gpt-5.5-pro",
-        name: "GPT-5.5 Pro",
-        context: 1050000,
-        input_per_million: 30.0,
-        output_per_million: 180.0,
-    },
-    CatalogModel {
-        id: "gpt-5.4-mini",
-        name: "GPT-5.4 mini",
-        context: 400000,
-        input_per_million: 0.75,
-        output_per_million: 4.5,
-    },
-    CatalogModel {
-        id: "gpt-5.4-nano",
-        name: "GPT-5.4 nano",
-        context: 400000,
-        input_per_million: 0.2,
-        output_per_million: 1.25,
-    },
-    CatalogModel {
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        context: 1050000,
-        input_per_million: 2.5,
-        output_per_million: 15.0,
-    },
-    CatalogModel {
-        id: "gpt-5.4-pro",
-        name: "GPT-5.4 Pro",
-        context: 1050000,
-        input_per_million: 30.0,
-        output_per_million: 180.0,
-    },
 ];
 
 /// models.dev provider `google` — 10 tool-calling text models.
 pub const GOOGLE_MODELS: &[CatalogModel] = &[
+    CatalogModel {
+        id: "gemini-4-argon",
+        name: "Gemini 4 Argon",
+        context: 1048576,
+        input_per_million: 2.0,
+        output_per_million: 10.0,
+    },
+    CatalogModel {
+        id: "gemini-3.8-flash",
+        name: "Gemini 3.8 Flash",
+        context: 1048576,
+        input_per_million: 0.75,
+        output_per_million: 3.75,
+    },
     CatalogModel {
         id: "gemini-3.7-flash",
         name: "Gemini 3.7 Flash",
@@ -208,24 +222,10 @@ pub const GOOGLE_MODELS: &[CatalogModel] = &[
         output_per_million: 1.5,
     },
     CatalogModel {
-        id: "gemini-robotics-er-1.6-preview",
-        name: "Gemini Robotics-ER 1.6 Preview",
-        context: 131072,
-        input_per_million: 1.0,
-        output_per_million: 5.0,
-    },
-    CatalogModel {
         id: "gemini-3.1-flash-lite-preview",
         name: "Gemini 3.1 Flash Lite Preview",
         context: 1048576,
         input_per_million: 0.25,
         output_per_million: 1.5,
-    },
-    CatalogModel {
-        id: "gemini-3.1-pro-preview",
-        name: "Gemini 3.1 Pro Preview",
-        context: 1048576,
-        input_per_million: 2.0,
-        output_per_million: 12.0,
     },
 ];

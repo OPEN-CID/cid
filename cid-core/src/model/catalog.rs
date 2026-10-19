@@ -195,6 +195,17 @@ fn with_catalog<T>(f: impl FnOnce(&HashMap<String, Vec<OwnedCatalogModel>>) -> T
     f(map)
 }
 
+/// Test-only reset to the baked-in snapshot. Catalog-content tests must not
+/// depend on whatever cache file the machine happens to carry: a stale disk
+/// cache masked the 2026-10 retirements on the dev machine (green there)
+/// while a fresh checkout (bundled snapshot only) failed the same assertions.
+/// No test writes `CATALOG` except through here, and every write carries
+/// identical content, so this is deterministic under parallel execution.
+#[cfg(test)]
+pub fn reset_to_bundled_for_tests() {
+    *CATALOG.write().unwrap() = Some(bundled_map());
+}
+
 /// Every catalogued model for a provider, newest first.
 pub fn models_for(provider_key: &str) -> Vec<OwnedCatalogModel> {
     with_catalog(|m| m.get(provider_key).cloned().unwrap_or_default())

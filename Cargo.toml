@@ -3,11 +3,19 @@ members = ["cid-core", "cid-tui", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]
-tokio = { version = "1.40", features = ["full"] }
+# Not `full`: the tree uses fs, io, macros (main/test/select/join), net,
+# process, rt, sync, and time — nothing from `signal`, `parking_lot`, or
+# `test-util`. Trimming only sheds build time (fewer crates compiled), never
+# runtime behavior; the check below fails loudly if a new use outgrows this.
+tokio = { version = "1.40", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-futures = "0.3"
+# futures-util directly, not the `futures` facade: the tree only uses
+# StreamExt/SinkExt/join_all, all of which live in futures-util. The facade
+# dragged in futures-executor, futures-channel, futures-io, and futures-task,
+# none of which anything references (blocking uses tokio_test).
+futures-util = "0.3"

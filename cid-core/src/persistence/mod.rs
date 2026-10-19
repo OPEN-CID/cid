@@ -105,6 +105,73 @@ const MIGRATIONS: &[&str] = &[
      WHERE reviewer_model LIKE 'claude-3-%' \
         OR reviewer_model LIKE 'claude-2%' \
         OR reviewer_model LIKE 'claude-instant%'",
+    // The 2026-10 catalog refresh retired the very ids the 2026-08 refresh
+    // moved installs *onto*: `claude-haiku-4-5`, `claude-opus-4-5`,
+    // `claude-opus-4-6`, `claude-sonnet-4-5`, the `gpt-5.4*`/`gpt-5.5*`
+    // family, and Google's `gemini-3.1-pro-preview` /
+    // `gemini-robotics-er-1.6-preview`. Same justification as above — these
+    // ids no longer resolve, so the alternative to rewriting is a hard 404.
+    // The 2026-08 statements are left frozen: a database upgrading from
+    // before 2026-08 runs them first (`claude-3-x` → `claude-haiku-4-5`) and
+    // then these (`claude-haiku-4-5` → `claude-haiku-5-5`), so the chain
+    // composes instead of stranding the intermediate id. Still-current 4.x
+    // ids (`claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-4-6`) are
+    // deliberately not matched.
+    "UPDATE settings SET anthropic_model = CASE \
+        WHEN anthropic_model LIKE '%opus%' THEN 'claude-opus-5-5' \
+        WHEN anthropic_model LIKE '%haiku%' THEN 'claude-haiku-5-5' \
+        ELSE 'claude-sonnet-5-5' END \
+     WHERE anthropic_model IN \
+        ('claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-5')",
+    "UPDATE settings SET planner_model = CASE \
+        WHEN planner_model LIKE '%opus%' THEN 'claude-opus-5-5' \
+        WHEN planner_model LIKE '%haiku%' THEN 'claude-haiku-5-5' \
+        ELSE 'claude-sonnet-5-5' END \
+     WHERE planner_model IN \
+        ('claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-5')",
+    "UPDATE settings SET implementer_model = CASE \
+        WHEN implementer_model LIKE '%opus%' THEN 'claude-opus-5-5' \
+        WHEN implementer_model LIKE '%haiku%' THEN 'claude-haiku-5-5' \
+        ELSE 'claude-sonnet-5-5' END \
+     WHERE implementer_model IN \
+        ('claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-5')",
+    "UPDATE settings SET reviewer_model = CASE \
+        WHEN reviewer_model LIKE '%opus%' THEN 'claude-opus-5-5' \
+        WHEN reviewer_model LIKE '%haiku%' THEN 'claude-haiku-5-5' \
+        ELSE 'claude-sonnet-5-5' END \
+     WHERE reviewer_model IN \
+        ('claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-5')",
+    // `gpt-5.4-mini` was the shipped OpenAI fallback as well as a pickable
+    // id, so stored rows can hold any of this family. Mini/nano tiers map to
+    // the current mini (`gpt-5.6-luna`); everything else to the flagship.
+    "UPDATE settings SET openai_model = CASE \
+        WHEN openai_model LIKE '%mini%' OR openai_model LIKE '%nano%' THEN 'gpt-5.6-luna' \
+        ELSE 'gpt-5.6' END \
+     WHERE openai_model LIKE 'gpt-5.4%' OR openai_model LIKE 'gpt-5.5%'",
+    "UPDATE settings SET planner_model = CASE \
+        WHEN planner_model LIKE '%mini%' OR planner_model LIKE '%nano%' THEN 'gpt-5.6-luna' \
+        ELSE 'gpt-5.6' END \
+     WHERE planner_model LIKE 'gpt-5.4%' OR planner_model LIKE 'gpt-5.5%'",
+    "UPDATE settings SET implementer_model = CASE \
+        WHEN implementer_model LIKE '%mini%' OR implementer_model LIKE '%nano%' THEN 'gpt-5.6-luna' \
+        ELSE 'gpt-5.6' END \
+     WHERE implementer_model LIKE 'gpt-5.4%' OR implementer_model LIKE 'gpt-5.5%'",
+    "UPDATE settings SET reviewer_model = CASE \
+        WHEN reviewer_model LIKE '%mini%' OR reviewer_model LIKE '%nano%' THEN 'gpt-5.6-luna' \
+        ELSE 'gpt-5.6' END \
+     WHERE reviewer_model LIKE 'gpt-5.4%' OR reviewer_model LIKE 'gpt-5.5%'",
+    // `gemini-4-argon` is the only pro-priced entry in the current snapshot
+    // and the provider default (newest non-preview), so both retired Google
+    // ids — the pro preview and the robotics experiment — land on it rather
+    // than on a flash tier neither user chose.
+    "UPDATE settings SET google_model = 'gemini-4-argon' \
+     WHERE google_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
+    "UPDATE settings SET planner_model = 'gemini-4-argon' \
+     WHERE planner_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
+    "UPDATE settings SET implementer_model = 'gemini-4-argon' \
+     WHERE implementer_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
+    "UPDATE settings SET reviewer_model = 'gemini-4-argon' \
+     WHERE reviewer_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
 ];
 
 /// Rename the pre-2026-08-21 "Mission" schema to "Session", *before* the base
@@ -516,12 +583,216 @@ impl Persistence {
             CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo_channel_id);
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                repo_channel_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                steps TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (repo_channel_id) REFERENCES repo_channels(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflows_repo ON workflows(repo_channel_id);
+
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_index INTEGER NOT NULL DEFAULT 0,
+                steps TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+                FOREIGN KEY (session_id) REFERENCES sessions(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
+            CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs(session_id);
             "#,
         )?;
 
         run_migrations(&mut conn)?;
 
         Ok(())
+    }
+
+    // Workflows (Jenkins-style pipelines over Sessions — see workflow/mod.rs).
+    // Step definitions live on `workflows.steps` as JSON; per-run step state
+    // lives on `workflow_runs.steps` as JSON (same pattern as messages'
+    // `tool_calls` column). Runs are small — tens of steps — so a separate
+    // step-runs table would be ceremony without benefit.
+    pub fn create_workflow(
+        &self,
+        repo_channel_id: &str,
+        name: &str,
+        description: &str,
+        steps: &[crate::api::types::WorkflowStep],
+    ) -> Result<crate::api::types::Workflow> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let steps_json = serde_json::to_string(steps)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workflows (id, repo_channel_id, name, description, steps, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, repo_channel_id, name, description, steps_json, now, now],
+        )?;
+        drop(conn);
+        self.get_workflow(&id)
+    }
+
+    pub fn get_workflow(&self, id: &str) -> Result<crate::api::types::Workflow> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, repo_channel_id, name, description, steps, created_at, updated_at FROM workflows WHERE id = ?",
+        )?;
+        let workflow = stmt
+            .query_row(params![id], parse_workflow_row)
+            .with_context(|| format!("No workflow with id {id}"))?;
+        Ok(workflow)
+    }
+
+    pub fn list_workflows(
+        &self,
+        repo_channel_id: Option<&str>,
+    ) -> Result<Vec<crate::api::types::Workflow>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = if repo_channel_id.is_some() {
+            "SELECT id, repo_channel_id, name, description, steps, created_at, updated_at FROM workflows WHERE repo_channel_id = ? ORDER BY updated_at DESC"
+        } else {
+            "SELECT id, repo_channel_id, name, description, steps, created_at, updated_at FROM workflows ORDER BY updated_at DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<crate::api::types::Workflow> = match repo_channel_id {
+            Some(rc) => stmt
+                .query_map(params![rc], parse_workflow_row)?
+                .filter_map(|r| r.ok())
+                .collect(),
+            None => stmt
+                .query_map([], parse_workflow_row)?
+                .filter_map(|r| r.ok())
+                .collect(),
+        };
+        Ok(rows)
+    }
+
+    pub fn update_workflow(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        steps: Option<&[crate::api::types::WorkflowStep]>,
+    ) -> Result<crate::api::types::Workflow> {
+        let current = self.get_workflow(id)?;
+        let name = name.unwrap_or(&current.name);
+        let description = description.unwrap_or(&current.description);
+        let steps_json = match steps {
+            Some(s) => serde_json::to_string(s)?,
+            None => serde_json::to_string(&current.steps)?,
+        };
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE workflows SET name = ?1, description = ?2, steps = ?3, updated_at = ?4 WHERE id = ?5",
+            params![name, description, steps_json, now, id],
+        )?;
+        drop(conn);
+        self.get_workflow(id)
+    }
+
+    pub fn delete_workflow(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            params![id],
+        )?;
+        conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn create_workflow_run(
+        &self,
+        workflow_id: &str,
+        session_id: &str,
+        steps: &[crate::api::types::WorkflowStepRun],
+    ) -> Result<crate::api::types::WorkflowRun> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let steps_json = serde_json::to_string(steps)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, session_id, status, current_index, steps, created_at, updated_at) VALUES (?1, ?2, ?3, 'running', 0, ?4, ?5, ?6)",
+            params![id, workflow_id, session_id, steps_json, now, now],
+        )?;
+        drop(conn);
+        self.get_workflow_run(&id)
+    }
+
+    pub fn get_workflow_run(&self, id: &str) -> Result<crate::api::types::WorkflowRun> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, workflow_id, session_id, status, current_index, steps, created_at, updated_at FROM workflow_runs WHERE id = ?",
+        )?;
+        let run = stmt
+            .query_row(params![id], parse_workflow_run_row)
+            .with_context(|| format!("No workflow run with id {id}"))?;
+        Ok(run)
+    }
+
+    pub fn list_workflow_runs(
+        &self,
+        workflow_id: Option<&str>,
+    ) -> Result<Vec<crate::api::types::WorkflowRun>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = if workflow_id.is_some() {
+            "SELECT id, workflow_id, session_id, status, current_index, steps, created_at, updated_at FROM workflow_runs WHERE workflow_id = ? ORDER BY created_at DESC"
+        } else {
+            "SELECT id, workflow_id, session_id, status, current_index, steps, created_at, updated_at FROM workflow_runs ORDER BY created_at DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows: Vec<crate::api::types::WorkflowRun> = match workflow_id {
+            Some(wf) => stmt
+                .query_map(params![wf], parse_workflow_run_row)?
+                .filter_map(|r| r.ok())
+                .collect(),
+            None => stmt
+                .query_map([], parse_workflow_run_row)?
+                .filter_map(|r| r.ok())
+                .collect(),
+        };
+        Ok(rows)
+    }
+
+    /// Persist one step-state transition plus the run's aggregate status and
+    /// cursor. Every state change in the runner goes through here, so a crash
+    /// between steps resumes from persisted state rather than re-running a
+    /// command that already executed.
+    pub fn update_workflow_run_step(
+        &self,
+        run_id: &str,
+        current_index: usize,
+        status: &crate::api::types::WorkflowRunStatus,
+        steps: &[crate::api::types::WorkflowStepRun],
+    ) -> Result<crate::api::types::WorkflowRun> {
+        let status_str = serde_json::to_string(status)?.trim_matches('"').to_string();
+        let steps_json = serde_json::to_string(steps)?;
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE workflow_runs SET status = ?1, current_index = ?2, steps = ?3, updated_at = ?4 WHERE id = ?5",
+            params![
+                status_str,
+                current_index as i64,
+                steps_json,
+                now,
+                run_id
+            ],
+        )?;
+        drop(conn);
+        self.get_workflow_run(run_id)
     }
 
     // Workspace
@@ -693,6 +964,11 @@ impl Persistence {
             "session_checkpoints",
             "tracker_links",
             "deployment_records",
+            // Workflow runs reference sessions — without this, disconnecting
+            // a repo that ever ran a workflow fails with FOREIGN KEY
+            // constraint failed (found live: a probe run blocked disconnect
+            // of its own repo).
+            "workflow_runs",
         ];
         for table in SESSION_SCOPED_TABLES {
             tx.execute(
@@ -707,6 +983,11 @@ impl Persistence {
 
         tx.execute(
             "DELETE FROM sessions WHERE repo_channel_id = ?1",
+            params![id],
+        )?;
+        // Workflows are repo-scoped (FK to repo_channels), not session-scoped.
+        tx.execute(
+            "DELETE FROM workflows WHERE repo_channel_id = ?1",
             params![id],
         )?;
         tx.execute("DELETE FROM repo_channels WHERE id = ?1", params![id])?;
@@ -2019,6 +2300,47 @@ fn parse_session_row(row: &rusqlite::Row) -> rusqlite::Result<Option<Session>> {
     }))
 }
 
+fn parse_workflow_row(row: &rusqlite::Row) -> rusqlite::Result<crate::api::types::Workflow> {
+    let steps_json: String = row.get(4)?;
+    let steps: Vec<crate::api::types::WorkflowStep> =
+        serde_json::from_str(&steps_json).unwrap_or_default();
+    let created_at_str: String = row.get(5)?;
+    let updated_at_str: String = row.get(6)?;
+    Ok(crate::api::types::Workflow {
+        id: row.get(0)?,
+        repo_channel_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        steps,
+        created_at: created_at_str.parse().unwrap_or_else(|_| Utc::now()),
+        updated_at: updated_at_str.parse().unwrap_or_else(|_| Utc::now()),
+    })
+}
+
+fn parse_workflow_run_row(row: &rusqlite::Row) -> rusqlite::Result<crate::api::types::WorkflowRun> {
+    let status_str: String = row.get(3)?;
+    let status = serde_json::from_str::<crate::api::types::WorkflowRunStatus>(&format!(
+        "\"{}\"",
+        status_str
+    ))
+    .unwrap_or(crate::api::types::WorkflowRunStatus::Failed);
+    let steps_json: String = row.get(5)?;
+    let steps: Vec<crate::api::types::WorkflowStepRun> =
+        serde_json::from_str(&steps_json).unwrap_or_default();
+    let created_at_str: String = row.get(6)?;
+    let updated_at_str: String = row.get(7)?;
+    Ok(crate::api::types::WorkflowRun {
+        id: row.get(0)?,
+        workflow_id: row.get(1)?,
+        session_id: row.get(2)?,
+        status,
+        current_index: row.get::<_, i64>(4)? as usize,
+        steps,
+        created_at: created_at_str.parse().unwrap_or_else(|_| Utc::now()),
+        updated_at: updated_at_str.parse().unwrap_or_else(|_| Utc::now()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2195,11 +2517,19 @@ mod tests {
     /// run.
     fn db_with_settings(anthropic: &str, planner: Option<&str>) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
+        // openai_model/google_model are included because the 2026-10
+        // statements UPDATE them unconditionally: against a table missing
+        // the column that is a hard migration failure, not a no-op. Real
+        // databases always have them by then (added by earlier migrations
+        // that run first in the same transaction), so the fixture mirrors
+        // that rather than a shape no real upgrade ever presents.
         conn.execute_batch(
             r#"
             CREATE TABLE settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 anthropic_model TEXT,
+                openai_model TEXT,
+                google_model TEXT,
                 planner_model TEXT,
                 implementer_model TEXT,
                 reviewer_model TEXT
@@ -2248,9 +2578,13 @@ mod tests {
 
     #[test]
     fn retired_ids_migrate_to_their_own_tier_not_all_to_sonnet() {
+        // `claude-3-5-haiku` chains through both rewrites: the frozen 2026-08
+        // statement maps it to `claude-haiku-4-5`, then the 2026-10 statement
+        // maps that on to `claude-haiku-5-5`. Asserting the end of the chain
+        // is what proves an intermediate id can't strand an upgrade.
         for (retired, expected) in [
             ("claude-3-opus-20240229", "claude-opus-5"),
-            ("claude-3-5-haiku-20241022", "claude-haiku-4-5"),
+            ("claude-3-5-haiku-20241022", "claude-haiku-5-5"),
             ("claude-3-5-sonnet-latest", "claude-sonnet-5"),
             ("claude-3-7-sonnet-20250219", "claude-sonnet-5"),
             ("claude-2.1", "claude-sonnet-5"),
@@ -2268,9 +2602,16 @@ mod tests {
 
     #[test]
     fn a_still_current_model_id_is_left_untouched() {
-        // The migration must not churn a value that still resolves — including
-        // 4.x ids, which are deliberately out of its scope.
-        for keep in ["claude-opus-5", "claude-haiku-4-5", "claude-sonnet-4-6"] {
+        // The migration must not churn a value that still resolves. The
+        // retired 4.x subset (`claude-haiku-4-5`, …) is now in scope — the
+        // 2026-10 refresh dropped it from the registry — while the survivors
+        // (`claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-4-6`) stay out.
+        for keep in [
+            "claude-opus-5",
+            "claude-haiku-5-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+        ] {
             let mut conn = db_with_settings(keep, None);
             run_migrations(&mut conn).unwrap();
             assert_eq!(
@@ -2304,6 +2645,100 @@ mod tests {
         assert_eq!(
             settings_model(&conn, "planner_model").as_deref(),
             Some("gpt-4o")
+        );
+    }
+
+    /// Fixture for the 2026-10 provider migrations: the pre-existing helper
+    /// only builds the Anthropic-era columns, and an UPDATE against a missing
+    /// column is a hard migration failure, not a no-op — so the OpenAI/Google
+    /// columns must exist here like they do in a real upgraded database.
+    fn db_with_provider_models(
+        openai: Option<&str>,
+        google: Option<&str>,
+        planner: Option<&str>,
+    ) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                anthropic_model TEXT,
+                openai_model TEXT,
+                google_model TEXT,
+                planner_model TEXT,
+                implementer_model TEXT,
+                reviewer_model TEXT
+            );
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (id, anthropic_model, openai_model, google_model, planner_model) VALUES (1, 'claude-sonnet-5', ?1, ?2, ?3)",
+            params![openai, google, planner],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", version_before_model_id_migrations())
+            .unwrap();
+        conn
+    }
+
+    #[test]
+    fn retired_openai_ids_migrate_by_tier() {
+        for (retired, expected) in [
+            ("gpt-5.4-mini", "gpt-5.6-luna"),
+            ("gpt-5.4-nano", "gpt-5.6-luna"),
+            ("gpt-5.4", "gpt-5.6"),
+            ("gpt-5.5-pro", "gpt-5.6"),
+        ] {
+            let mut conn = db_with_provider_models(Some(retired), None, None);
+            run_migrations(&mut conn).unwrap();
+            assert_eq!(
+                settings_model(&conn, "openai_model").as_deref(),
+                Some(expected),
+                "{retired} should migrate to {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn retired_google_ids_migrate_to_the_current_default() {
+        for retired in ["gemini-3.1-pro-preview", "gemini-robotics-er-1.6-preview"] {
+            let mut conn = db_with_provider_models(None, Some(retired), None);
+            run_migrations(&mut conn).unwrap();
+            assert_eq!(
+                settings_model(&conn, "google_model").as_deref(),
+                Some("gemini-4-argon"),
+                "{retired} should migrate to gemini-4-argon"
+            );
+        }
+    }
+
+    #[test]
+    fn retired_openai_or_google_ids_in_a_role_override_migrate_too() {
+        let mut conn = db_with_provider_models(None, None, Some("gpt-5.4-mini"));
+        run_migrations(&mut conn).unwrap();
+        assert_eq!(
+            settings_model(&conn, "planner_model").as_deref(),
+            Some("gpt-5.6-luna"),
+        );
+
+        let mut conn = db_with_provider_models(None, None, Some("gemini-3.1-pro-preview"));
+        run_migrations(&mut conn).unwrap();
+        assert_eq!(
+            settings_model(&conn, "planner_model").as_deref(),
+            Some("gemini-4-argon"),
+        );
+    }
+
+    #[test]
+    fn a_stored_4x_id_from_the_previous_refresh_migrates_forward() {
+        // Directly stored, not chained: an install that picked up
+        // `claude-opus-4-6` when it was current holds a dead id today.
+        let mut conn = db_with_settings("claude-opus-4-6", None);
+        run_migrations(&mut conn).unwrap();
+        assert_eq!(
+            settings_model(&conn, "anthropic_model").as_deref(),
+            Some("claude-opus-5-5"),
         );
     }
 
@@ -2459,6 +2894,65 @@ mod tests {
             p.list_messages(&session.id).unwrap().is_empty(),
             "session-scoped rows must not be orphaned"
         );
+    }
+
+    #[test]
+    fn a_repo_with_workflow_runs_can_actually_be_disconnected() {
+        // Same failure shape as above, one layer out: `workflow_runs` has FKs
+        // to both sessions and workflows, so it blocked the session cleanup
+        // and the repo-channel delete alike. Reproduced live — a probe run
+        // left its own repo undisconnectable.
+        use crate::api::types::{WorkflowStep, WorkflowStepKind, WorkflowStepRun};
+
+        let p = Persistence::new_in_memory().unwrap();
+        let repo = p.connect_repo("/tmp/disconnect-workflows", None).unwrap();
+        let session = p
+            .create_session(
+                &repo.id,
+                "Ran a chain",
+                "task",
+                IsolationMode::Shared,
+                AutonomyLevel::CoPilot,
+            )
+            .unwrap();
+        let workflow = p
+            .create_workflow(
+                &repo.id,
+                "Chain",
+                "",
+                &[WorkflowStep {
+                    id: "s1".to_string(),
+                    name: "step".to_string(),
+                    kind: WorkflowStepKind::Command,
+                    prompt: None,
+                    command: Some("echo hi".to_string()),
+                    model_provider: None,
+                    model_id: None,
+                    on_failure: crate::api::types::WorkflowStepFailurePolicy::Stop,
+                }],
+            )
+            .unwrap();
+        p.create_workflow_run(
+            &workflow.id,
+            &session.id,
+            &[WorkflowStepRun {
+                step_id: "s1".to_string(),
+                status: crate::api::types::WorkflowStepRunStatus::Completed,
+                output: None,
+                error: None,
+                started_at: None,
+                completed_at: None,
+            }],
+        )
+        .unwrap();
+
+        p.disconnect_repo(&repo.id)
+            .expect("a repo with workflow history must disconnect cleanly");
+
+        assert!(p.list_repo_channels().unwrap().is_empty());
+        assert!(p.list_sessions(Some(&repo.id)).unwrap().is_empty());
+        assert!(p.list_workflows(Some(&repo.id)).unwrap().is_empty());
+        assert!(p.list_workflow_runs(Some(&workflow.id)).unwrap().is_empty());
     }
 
     #[test]

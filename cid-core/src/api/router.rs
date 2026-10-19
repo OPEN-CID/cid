@@ -8,7 +8,7 @@ use axum::{
     routing::get,
     Router,
 };
-use futures::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, error, info};
@@ -43,6 +43,7 @@ use crate::{
     slack_bridge::SlackBridge,
     subagent::SubagentOrchestrator,
     teams_bridge::TeamsBridge,
+    workflow::normalize_steps as normalize_workflow_steps,
 };
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ pub struct AppState {
     pub autonomy_manager: Arc<AutonomyManager>,
     pub background_model_router: Arc<BackgroundModelRouter>,
     pub subagent_orchestrator: Arc<SubagentOrchestrator>,
+    pub workflow_runner: Arc<crate::workflow::WorkflowRunner>,
     pub slack_bridge: Arc<SlackBridge>,
     pub teams_bridge: Arc<TeamsBridge>,
     pub mcp_tasks_manager: Arc<McpTasksManager>,
@@ -336,6 +338,8 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "session.close" => handle_session_close(params, state).await,
         "session.send_message" => handle_session_send_message(params, state).await,
         "session.approve_tool" => handle_session_approve_tool(params, state).await,
+        "session.tool_calls.pending" => handle_session_tool_calls_pending(params, state).await,
+        "session.model.set" => handle_session_model_set(params, state).await,
 
         // Messages
         "message.list" => handle_message_list(params, state).await,
@@ -438,6 +442,19 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "subagent.list" => handle_subagent_list(params, state).await,
         "subagent.get" => handle_subagent_get(params, state).await,
         "subagent.cancel" => handle_subagent_cancel(params, state).await,
+
+        // Workflows (pipelines over Sessions)
+        "workflow.create" => handle_workflow_create(params, state).await,
+        "workflow.get" => handle_workflow_get(params, state).await,
+        "workflow.list" => handle_workflow_list(params, state).await,
+        "workflow.update" => handle_workflow_update(params, state).await,
+        "workflow.delete" => handle_workflow_delete(params, state).await,
+        "workflow.run.start" => handle_workflow_run_start(params, state).await,
+        "workflow.run.get" => handle_workflow_run_get(params, state).await,
+        "workflow.run.list" => handle_workflow_run_list(params, state).await,
+        "workflow.run.cancel" => handle_workflow_run_cancel(params, state).await,
+        "workflow.run.approve_step" => handle_workflow_run_approve_step(params, state).await,
+        "workflow.run.retry" => handle_workflow_run_retry(params, state).await,
 
         // Slack Bridge (Phase 2)
         "slack.configure" => handle_slack_configure(params, state).await,
@@ -1083,6 +1100,48 @@ async fn handle_session_approve_tool(
         .approve_tool_call(&p.session_id, &p.tool_call_id, p.approved)
         .await?;
     Ok(serde_json::json!({ "ok": true }))
+}
+
+async fn handle_session_tool_calls_pending(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
+    Ok(serde_json::to_value(
+        state.model_manager.pending_tool_calls(&session_id).await,
+    )?)
+}
+
+/// Switch (or clear) a Session's per-turn model override mid-conversation.
+/// Reuses the same `model_provider`/`model_id` columns creation sets, so the
+/// agent loop's `apply_session_model_override` picks it up on the very next
+/// turn with no other plumbing. Either field may be null to clear just that
+/// half; a provider with no id falls back to that provider's default model.
+async fn handle_session_model_set(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
+    let provider: Option<String> = params
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model_id: Option<String> = params
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(p) = provider.as_deref() {
+        if crate::api::types::parse_provider_str(p).is_none() {
+            anyhow::bail!("unknown model provider '{p}'");
+        }
+    }
+    Ok(serde_json::to_value(
+        state
+            .persistence
+            .update_session_model(&session_id, provider, model_id)?,
+    )?)
 }
 
 async fn handle_message_list(
@@ -2718,6 +2777,160 @@ async fn handle_subagent_cancel(
     let p: SubagentCancelParams = serde_json::from_value(params)?;
     let result = state.subagent_orchestrator.cancel(p).await?;
     Ok(serde_json::to_value(result)?)
+}
+
+// ============ Workflows (pipelines over Sessions) ============
+
+async fn handle_workflow_create(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::WorkflowCreateParams = serde_json::from_value(params)?;
+    if p.name.trim().is_empty() {
+        anyhow::bail!("workflow needs a name");
+    }
+    let steps = normalize_workflow_steps(p.steps);
+    state.workflow_runner.validate_for_write(&steps)?;
+    // Fail loud on a repo that does not exist rather than tripping the FK.
+    state.persistence.get_repo_channel(&p.repo_channel_id)?;
+    let workflow = state.persistence.create_workflow(
+        &p.repo_channel_id,
+        p.name.trim(),
+        p.description.as_deref().unwrap_or(""),
+        &steps,
+    )?;
+    Ok(serde_json::to_value(workflow)?)
+}
+
+async fn handle_workflow_get(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let id: String =
+        serde_json::from_value(params.get("workflow_id").cloned().unwrap_or_default())?;
+    Ok(serde_json::to_value(state.persistence.get_workflow(&id)?)?)
+}
+
+async fn handle_workflow_list(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let repo_channel_id: Option<String> = params
+        .get("repo_channel_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Ok(serde_json::to_value(
+        state
+            .persistence
+            .list_workflows(repo_channel_id.as_deref())?,
+    )?)
+}
+
+async fn handle_workflow_update(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::WorkflowUpdateParams = serde_json::from_value(params)?;
+    let steps = match p.steps {
+        Some(s) => {
+            let s = normalize_workflow_steps(s);
+            state.workflow_runner.validate_for_write(&s)?;
+            Some(s)
+        }
+        None => None,
+    };
+    if let Some(name) = p.name.as_deref() {
+        if name.trim().is_empty() {
+            anyhow::bail!("workflow needs a name");
+        }
+    }
+    Ok(serde_json::to_value(state.persistence.update_workflow(
+        &p.workflow_id,
+        p.name.as_deref(),
+        p.description.as_deref(),
+        steps.as_deref(),
+    )?)?)
+}
+
+async fn handle_workflow_delete(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let id: String =
+        serde_json::from_value(params.get("workflow_id").cloned().unwrap_or_default())?;
+    state.persistence.delete_workflow(&id)?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+async fn handle_workflow_run_start(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::WorkflowRunStartParams = serde_json::from_value(params)?;
+    Ok(serde_json::to_value(
+        state
+            .workflow_runner
+            .start(&p.workflow_id, &p.session_id, state.clone())
+            .await?,
+    )?)
+}
+
+async fn handle_workflow_run_get(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let id: String = serde_json::from_value(params.get("run_id").cloned().unwrap_or_default())?;
+    Ok(serde_json::to_value(
+        state.persistence.get_workflow_run(&id)?,
+    )?)
+}
+
+async fn handle_workflow_run_list(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let workflow_id: Option<String> = params
+        .get("workflow_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Ok(serde_json::to_value(
+        state
+            .persistence
+            .list_workflow_runs(workflow_id.as_deref())?,
+    )?)
+}
+
+async fn handle_workflow_run_cancel(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let id: String = serde_json::from_value(params.get("run_id").cloned().unwrap_or_default())?;
+    Ok(serde_json::to_value(
+        state.workflow_runner.cancel(&id, state.clone()).await?,
+    )?)
+}
+
+async fn handle_workflow_run_approve_step(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::WorkflowRunApproveParams = serde_json::from_value(params)?;
+    Ok(serde_json::to_value(
+        state
+            .workflow_runner
+            .approve_step(&p.run_id, p.note, state.clone())
+            .await?,
+    )?)
+}
+
+async fn handle_workflow_run_retry(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let id: String = serde_json::from_value(params.get("run_id").cloned().unwrap_or_default())?;
+    Ok(serde_json::to_value(
+        state.workflow_runner.retry(&id, state.clone()).await?,
+    )?)
 }
 
 // ============ Phase 2: Slack Bridge Handlers ============

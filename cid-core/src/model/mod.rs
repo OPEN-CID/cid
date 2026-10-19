@@ -1,7 +1,7 @@
 use crate::redact::redact_secrets;
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 use chrono::Utc;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
@@ -9,8 +9,8 @@ use tracing::{info, warn};
 use crate::{
     api::router::AppState,
     api::types::{
-        AgentRole, ChatMessage, MessageRole, ModelInfo, ModelProvider, Settings, ToolCall,
-        ToolCallStatus,
+        parse_provider_str, AgentRole, ChatMessage, MessageRole, ModelInfo, ModelProvider,
+        Settings, ToolCall, ToolCallStatus,
     },
 };
 
@@ -30,7 +30,7 @@ fn catalog_key(provider: &ModelProvider) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingToolCall {
     pub id: String,
     pub session_id: String,
@@ -477,26 +477,9 @@ const OPENAI_COMPAT_MODELS: &[KnownModel] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// Helpers: provider parsing, keys, endpoints, availability
+// Helpers: provider keys, endpoints, availability (parsing lives beside the
+// enum in api::types so workflow validation can share it verbatim).
 // ---------------------------------------------------------------------------
-
-fn parse_provider_str(s: &str) -> Option<ModelProvider> {
-    match s.trim().to_lowercase().as_str() {
-        "anthropic" | "claude" => Some(ModelProvider::Anthropic),
-        "openai" | "gpt" | "chatgpt" => Some(ModelProvider::OpenAI),
-        "google" | "gemini" | "google_gemini" | "genai" => Some(ModelProvider::Google),
-        "openai_compatible" | "openai-compatible" | "openai compatible" | "compatible"
-        | "openrouter" | "groq" | "together" | "fireworks" | "vllm" => {
-            Some(ModelProvider::OpenAICompatible)
-        }
-        "ollama" => Some(ModelProvider::Ollama),
-        "lmstudio" | "lm_studio" | "lm-studio" | "lm studio" => Some(ModelProvider::LmStudio),
-        "llamacpp" | "llama_cpp" | "llama-cpp" | "llama.cpp" | "llama_cpp_server" => {
-            Some(ModelProvider::LlamaCpp)
-        }
-        _ => None,
-    }
-}
 
 fn provider_api_key(settings: &Settings, provider: &ModelProvider) -> Option<String> {
     match provider {
@@ -608,7 +591,13 @@ fn provider_default_model(settings: &Settings, provider: &ModelProvider) -> Stri
             }
         }
         ModelProvider::OpenAI => settings.openai_model.clone().unwrap_or_else(|| {
-            catalog_default_model(provider).unwrap_or_else(|| "gpt-5.4-mini".to_string())
+            // Last resort only: `catalog_default_model` draws on the live
+            // registry, disk cache, and bundled snapshot, so this string is
+            // reached solely when all three are empty. It still must name a
+            // live id — `gpt-5.4-mini` stood here after OpenAI retired it,
+            // the same hardcoded-rot failure `catalog_default_model` exists
+            // to prevent.
+            catalog_default_model(provider).unwrap_or_else(|| "gpt-5.6-luna".to_string())
         }),
         ModelProvider::Google => settings.google_model.clone().unwrap_or_else(|| {
             catalog_default_model(provider).unwrap_or_else(|| "gemini-3.6-flash".to_string())
@@ -950,6 +939,34 @@ fn anthropic_tools() -> serde_json::Value {
                 },
                 "required": ["repo_path", "message"]
             }
+        },
+        {
+            "name": "create_workflow",
+            "description": "Create a workflow (ordered agent/command/manual-gate steps) on this Session's repo so the human can review, edit, and run it from the Workflows panel. Step kinds: agent (needs prompt, optional model_provider/model_id override — a local runtime id makes it a local-model step), command (needs command, runs under the repo allow-list), manual_gate (pauses for human approval).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "kind": { "type": "string", "enum": ["agent", "command", "manual_gate"] },
+                                "prompt": { "type": "string" },
+                                "command": { "type": "string" },
+                                "model_provider": { "type": "string" },
+                                "model_id": { "type": "string" },
+                                "on_failure": { "type": "string", "enum": ["stop", "continue"] }
+                            },
+                            "required": ["name", "kind"]
+                        }
+                    }
+                },
+                "required": ["name", "steps"]
+            }
         }
     ])
 }
@@ -1072,6 +1089,37 @@ fn openai_tools() -> serde_json::Value {
                     "required": ["repo_path", "message"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_workflow",
+                "description": "Create a workflow (ordered agent/command/manual-gate steps) on this Session's repo so the human can review, edit, and run it from the Workflows panel. Step kinds: agent (needs prompt, optional model_provider/model_id override — a local runtime id makes it a local-model step), command (needs command, runs under the repo allow-list), manual_gate (pauses for human approval).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "kind": { "type": "string", "enum": ["agent", "command", "manual_gate"] },
+                                    "prompt": { "type": "string" },
+                                    "command": { "type": "string" },
+                                    "model_provider": { "type": "string" },
+                                    "model_id": { "type": "string" },
+                                    "on_failure": { "type": "string", "enum": ["stop", "continue"] }
+                                },
+                                "required": ["name", "kind"]
+                            }
+                        }
+                    },
+                    "required": ["name", "steps"]
+                }
+            }
         }
     ])
 }
@@ -1170,6 +1218,34 @@ fn google_tools() -> serde_json::Value {
                         "message": { "type": "string" }
                     },
                     "required": ["repo_path", "message"]
+                }
+            },
+            {
+                "name": "create_workflow",
+                "description": "Create a workflow (ordered agent/command/manual-gate steps) on this Session's repo so the human can review, edit, and run it from the Workflows panel. Step kinds: agent (needs prompt, optional model_provider/model_id override — a local runtime id makes it a local-model step), command (needs command, runs under the repo allow-list), manual_gate (pauses for human approval).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "kind": { "type": "string" },
+                                    "prompt": { "type": "string" },
+                                    "command": { "type": "string" },
+                                    "model_provider": { "type": "string" },
+                                    "model_id": { "type": "string" },
+                                    "on_failure": { "type": "string" }
+                                },
+                                "required": ["name", "kind"]
+                            }
+                        }
+                    },
+                    "required": ["name", "steps"]
                 }
             }
         ]
@@ -1521,8 +1597,21 @@ impl ModelManager {
     }
 
     // -----------------------------------------------------------------------
-    // Public: approve tool call
+    // Public: approve tool call / list pending approvals
     // -----------------------------------------------------------------------
+    /// Approvals currently waiting on a human for one Session. Backs
+    /// `session.tool_calls.pending` — without it, a workflow command step
+    /// parked on approval is invisible everywhere except the Chat thread
+    /// that happens to render the notification.
+    pub async fn pending_tool_calls(&self, session_id: &str) -> Vec<PendingToolCall> {
+        let pending = self.pending_tools.read().await;
+        pending
+            .values()
+            .filter(|call| call.session_id == session_id && call.approved.is_none())
+            .cloned()
+            .collect()
+    }
+
     pub async fn approve_tool_call(
         &self,
         _session_id: &str,
@@ -3921,6 +4010,42 @@ impl ModelManager {
                     .commit(&resolved.to_string_lossy(), message)?;
                 Ok(serde_json::json!({ "oid": oid }))
             }
+            "create_workflow" => {
+                // Chat-to-workflow: the agent drafts the pipeline, the human
+                // reviews, edits, and runs it from the Workflows panel. Scoped
+                // to this Session's own repo — there is no repo argument to
+                // escape with, so no confinement check applies; the steps
+                // themselves are validated by the same rule the RPCs use.
+                let name = args
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .context("Missing name")?;
+                if name.trim().is_empty() {
+                    anyhow::bail!("workflow needs a name");
+                }
+                let steps: Vec<crate::api::types::WorkflowStep> =
+                    serde_json::from_value(args.get("steps").cloned().unwrap_or_default())
+                        .context("steps must be an array of step objects")?;
+                let steps = crate::workflow::normalize_steps(steps);
+                crate::workflow::validate_steps(&steps)?;
+                let description = args
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
+                let session = app_state.persistence.get_session(&ctx.session_id)?;
+                let workflow = app_state.persistence.create_workflow(
+                    &session.repo_channel_id,
+                    name.trim(),
+                    description,
+                    &steps,
+                )?;
+                Ok(serde_json::json!({
+                    "id": workflow.id,
+                    "name": workflow.name,
+                    "step_count": workflow.steps.len(),
+                    "hint": "created — review and edit it in the Workflows panel before running",
+                }))
+            }
             _ => Ok(serde_json::json!({ "error": format!("Unknown tool: {}", tool_name) })),
         }
     }
@@ -4351,12 +4476,13 @@ mod spend_tracking_tests {
 
     #[test]
     fn estimate_cost_usd_prices_anthropic_from_the_real_catalog() {
+        catalog::reset_to_bundled_for_tests();
         let usage = ONE_MILLION_EACH;
         for id in [
             "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-opus-5",
-            "claude-haiku-4-5",
+            "claude-haiku-5-5",
         ] {
             assert_eq!(
                 estimate_cost_usd(&ModelProvider::Anthropic, id, usage),
@@ -4379,41 +4505,49 @@ mod spend_tracking_tests {
 
         assert!(
             estimate_cost_usd(&ModelProvider::Anthropic, "claude-opus-5", usage)
-                > estimate_cost_usd(&ModelProvider::Anthropic, "claude-haiku-4-5", usage),
+                > estimate_cost_usd(&ModelProvider::Anthropic, "claude-haiku-5-5", usage),
             "opus should cost more than haiku"
         );
     }
 
     #[test]
     fn estimate_cost_usd_prices_openai_by_model_tier() {
+        catalog::reset_to_bundled_for_tests();
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
         };
         // Catalogued, current models — the previous assertions used gpt-4o and
-        // gpt-4o-mini, which the shipped list had already outlived.
+        // gpt-4o-mini, which the shipped list had already outlived, and then
+        // gpt-5.4-mini, which the 2026-10 refresh retired (caught because the
+        // lookup helper panics on an uncatalogued id — a test that silently
+        // fell back to $0 would have stayed green while pricing nothing).
         assert_eq!(
             estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6", usage),
             expected_cost(&ModelProvider::OpenAI, "gpt-5.6")
         );
         assert_eq!(
-            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.4-mini", usage),
-            expected_cost(&ModelProvider::OpenAI, "gpt-5.4-mini")
+            estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6-luna", usage),
+            expected_cost(&ModelProvider::OpenAI, "gpt-5.6-luna")
         );
         assert!(
             estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6", usage)
-                > estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.4-mini", usage),
+                > estimate_cost_usd(&ModelProvider::OpenAI, "gpt-5.6-luna", usage),
             "the flagship should cost more than the mini tier"
         );
     }
 
     #[test]
     fn estimate_cost_usd_prices_google_by_model_tier() {
+        catalog::reset_to_bundled_for_tests();
         let usage = ONE_MILLION_EACH;
         // gemini-1.5-* used to be asserted here. Those models no longer exist,
         // which is exactly how a stale hardcoded table stays "passing" while
-        // the product offers users ids that 404.
-        for id in ["gemini-3.6-flash", "gemini-3.1-pro-preview"] {
+        // the product offers users ids that 404 — and gemini-3.1-pro-preview
+        // went the same way in the 2026-10 refresh. The top-10 snapshot
+        // currently carries no Pro model, so the tier assertion is argon
+        // (the only $2/$10 entry) against flash, not pro against flash.
+        for id in ["gemini-3.6-flash", "gemini-4-argon"] {
             assert_eq!(
                 estimate_cost_usd(&ModelProvider::Google, id, usage),
                 expected_cost(&ModelProvider::Google, id),
@@ -4421,9 +4555,9 @@ mod spend_tracking_tests {
             );
         }
         assert!(
-            estimate_cost_usd(&ModelProvider::Google, "gemini-3.1-pro-preview", usage)
+            estimate_cost_usd(&ModelProvider::Google, "gemini-4-argon", usage)
                 > estimate_cost_usd(&ModelProvider::Google, "gemini-3.6-flash", usage),
-            "pro should cost more than flash"
+            "argon should cost more than flash"
         );
     }
 
@@ -4437,6 +4571,7 @@ mod spend_tracking_tests {
     /// exactly that for every first-party provider.
     #[test]
     fn each_providers_default_model_actually_exists_in_the_catalog() {
+        catalog::reset_to_bundled_for_tests();
         let settings = Settings {
             anthropic_api_key: None,
             anthropic_model: String::new(),
@@ -5537,6 +5672,85 @@ mod tool_execution_tests {
             "different paths must not serialize against each other"
         );
     }
+
+    /// Chat-to-workflow: the `create_workflow` tool must persist a runnable
+    /// workflow scoped to the calling Session's own repo — the agent drafts,
+    /// the human reviews/edits/runs from the panel.
+    #[tokio::test]
+    async fn create_workflow_tool_persists_a_workflow_on_the_sessions_repo() {
+        let (manager, app_state) = manager_and_state();
+        let (_dir, session) = tool_call_fixture(&manager);
+        let ctx = manager.execution_context(&session.id).unwrap();
+
+        let result = manager
+            .execute_tool_direct_in(
+                "create_workflow",
+                serde_json::json!({
+                    "name": "Nightly checks",
+                    "description": "from chat",
+                    "steps": [
+                        { "name": "tests", "kind": "agent", "prompt": "run the tests",
+                          "model_provider": "openai_compatible", "model_id": "local-model" },
+                        { "name": "gate", "kind": "manual_gate" },
+                    ],
+                }),
+                app_state.clone(),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let id = result["id"].as_str().expect("tool returns the workflow id");
+        let stored = app_state.persistence.get_workflow(id).unwrap();
+        assert_eq!(stored.name, "Nightly checks");
+        assert_eq!(stored.repo_channel_id, session.repo_channel_id);
+        assert_eq!(stored.steps.len(), 2);
+        assert!(
+            !stored.steps[0].id.is_empty(),
+            "steps get server-minted ids"
+        );
+        assert_eq!(
+            stored.steps[0].model_id.as_deref(),
+            Some("local-model"),
+            "per-step model overrides survive the round trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_workflow_tool_refuses_an_unrunnable_definition() {
+        let (manager, app_state) = manager_and_state();
+        let (_dir, session) = tool_call_fixture(&manager);
+        let ctx = manager.execution_context(&session.id).unwrap();
+
+        let result = manager
+            .execute_tool_direct_in(
+                "create_workflow",
+                serde_json::json!({
+                    "name": "Broken",
+                    "steps": [{ "name": "oops", "kind": "command" }],
+                }),
+                app_state,
+                &ctx,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a command step with no command must be refused, not stored"
+        );
+    }
+
+    /// The tool must be offered by every provider shape — a model that is
+    /// never told the tool exists can never draft a workflow from chat.
+    #[test]
+    fn every_provider_tool_shape_offers_create_workflow() {
+        for tools in [anthropic_tools(), openai_tools(), google_tools()] {
+            let text = tools.to_string();
+            assert!(
+                text.contains("create_workflow"),
+                "provider tool list must offer create_workflow: {text:?}"
+            );
+        }
+    }
 }
 
 /// An unconfigured provider used to produce a fabricated Assistant turn
@@ -5830,6 +6044,7 @@ mod context_compaction_tests {
 
     #[test]
     fn context_window_tokens_gives_a_real_figure_per_provider() {
+        catalog::reset_to_bundled_for_tests();
         // From the catalog, per model. This previously asserted a flat 200_000
         // for every Anthropic model — so on a 1M-window model, compaction fired
         // at 140k and summarized away context the model could still hold.
@@ -5837,10 +6052,14 @@ mod context_compaction_tests {
             context_window_tokens(&ModelProvider::Anthropic, "claude-sonnet-5"),
             1_000_000
         );
+        // Every Anthropic model in the current catalog carries a 1M window —
+        // haiku included — which is itself the per-model assertion: under the
+        // old flat 200_000 constant this read 200k for every id. (The retired
+        // `claude-haiku-4-5` used to pin the 200k case here; uncatalogued ids
+        // still fall back to the per-provider constant, pinned below.)
         assert_eq!(
-            context_window_tokens(&ModelProvider::Anthropic, "claude-haiku-4-5"),
-            200_000,
-            "and a genuinely 200k model must still read as 200k"
+            context_window_tokens(&ModelProvider::Anthropic, "claude-haiku-5-5"),
+            1_000_000
         );
         assert_eq!(
             context_window_tokens(&ModelProvider::Google, "gemini-3.6-flash"),

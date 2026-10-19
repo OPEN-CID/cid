@@ -2919,7 +2919,7 @@ mod websocket_bearer_auth {
         );
 
         // Prove the socket carries real RPC, not just that it opened.
-        use futures::{SinkExt, StreamExt};
+        use futures_util::{SinkExt, StreamExt};
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
                 json!({"jsonrpc": "2.0", "id": "1", "method": "repo.list", "params": {}})
@@ -3087,7 +3087,7 @@ mod token_rotation {
 
     #[tokio::test]
     async fn rotating_closes_a_live_websocket_session() {
-        use futures::StreamExt;
+        use futures_util::StreamExt;
 
         let addr = start_core_with_token().await;
         let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
@@ -3144,7 +3144,7 @@ mod token_rotation {
     /// lose the credential it just minted and be locked out of its own Core.
     #[tokio::test]
     async fn rotating_over_a_websocket_still_returns_the_new_token_before_closing() {
-        use futures::{SinkExt, StreamExt};
+        use futures_util::{SinkExt, StreamExt};
 
         let addr = start_core_with_token().await;
         let mut request = format!("ws://{addr}/ws").into_client_request().unwrap();
@@ -3222,4 +3222,368 @@ mod token_rotation {
             "a refused rotation must not clear the token in force"
         );
     }
+}
+
+// ---- Workflows (pipelines over Sessions) ----
+
+/// An autonomous session on a repo whose governance policy permits it and
+/// whose allow-list covers `echo` — the only shape in which a command step
+/// can run without a human approver attached.
+async fn autonomous_echo_fixture() -> (String, tempfile::TempDir, String, String) {
+    let base = start_core().await;
+    let token = owner_session(&base).await;
+    let dir = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir.path()).unwrap();
+    let repo_path = dir.path().to_string_lossy().to_string();
+    let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+    let channel_id = channel["id"].as_str().unwrap().to_string();
+
+    let mut policy = rpc_ok(&base, "governance.policy.get", json!({})).await;
+    policy["autonomous_enabled"] = json!(true);
+    policy["autonomous_repos"] = json!([repo_path]);
+    rpc_ok(
+        &base,
+        "governance.policy.set",
+        json!({ "session_token": token, "policy": policy }),
+    )
+    .await;
+
+    rpc_ok(
+        &base,
+        "autonomy.allowlist.default",
+        json!({ "scope_id": repo_path }),
+    )
+    .await;
+
+    let session = rpc_ok(
+        &base,
+        "session.create",
+        json!({
+            "repo_channel_id": channel_id,
+            "title": "Workflow fixture",
+            "task": "run the chain",
+            "isolation_mode": "shared",
+            "autonomy_level": "autonomous",
+            "session_token": token,
+        }),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+    (base, dir, channel_id, session_id)
+}
+
+fn command_step(id: &str, name: &str, command: &str) -> Value {
+    json!({
+        "id": id, "name": name, "kind": "command",
+        "command": command, "on_failure": "stop",
+    })
+}
+
+/// Poll `workflow.run.get` until the run leaves Running, then return it.
+async fn await_run(base: &str, run_id: &str) -> Value {
+    for _ in 0..120 {
+        let run = rpc_ok(base, "workflow.run.get", json!({ "run_id": run_id })).await;
+        match run["status"].as_str().unwrap_or("") {
+            "running" => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            _ => return run,
+        }
+    }
+    panic!("workflow run {run_id} did not finish in 60s");
+}
+
+#[tokio::test]
+async fn workflow_create_rejects_an_unrunnable_definition() {
+    let (base, _dir, channel_id, _session) = autonomous_echo_fixture().await;
+
+    let body = rpc(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "empty", "steps": [] }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "a workflow with no steps must be refused: {body}"
+    );
+
+    let body = rpc(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "bad agent",
+            "steps": [{ "id": "s1", "name": "plan", "kind": "agent", "on_failure": "stop" }] }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "an agent step with no prompt must be refused: {body}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_command_chain_runs_to_completion() {
+    let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
+
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "echo chain",
+            "steps": [command_step("s1", "first", "echo step-one"),
+                      command_step("s2", "second", "echo step-two")] }),
+    )
+    .await;
+
+    let run = rpc_ok(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session_id }),
+    )
+    .await;
+    let run = await_run(&base, run["id"].as_str().unwrap()).await;
+
+    assert_eq!(
+        run["status"], "completed",
+        "both echo steps should succeed: {run}"
+    );
+    assert_eq!(run["steps"][0]["status"], "completed");
+    assert_eq!(run["steps"][1]["status"], "completed");
+    assert!(
+        run["steps"][0]["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("step-one"),
+        "output should carry the real stdout: {run}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_failing_command_halts_by_default() {
+    let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
+
+    // `rm` is not on the default allow-list, so the gate denies it — the
+    // step fails through the refusal path, and the chain must stop rather
+    // than run whatever comes next.
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "halt chain",
+            "steps": [command_step("s1", "ok", "echo before"),
+                      command_step("s2", "denied", "rm -rf /tmp/never")] }),
+    )
+    .await;
+
+    let run = rpc_ok(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session_id }),
+    )
+    .await;
+    let run = await_run(&base, run["id"].as_str().unwrap()).await;
+
+    assert_eq!(
+        run["status"], "failed",
+        "a denied command must fail the run: {run}"
+    );
+    assert_eq!(run["steps"][0]["status"], "completed");
+    assert_eq!(run["steps"][1]["status"], "failed");
+}
+
+#[tokio::test]
+async fn workflow_manual_gate_parks_until_approved() {
+    let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
+
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "gated",
+            "steps": [command_step("s1", "ok", "echo before"),
+                      { "id": "s2", "name": "human checkpoint", "kind": "manual_gate", "on_failure": "stop" }] }),
+    )
+    .await;
+
+    let run = rpc_ok(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session_id }),
+    )
+    .await;
+    let run_id = run["id"].as_str().unwrap().to_string();
+    let run = await_run(&base, &run_id).await;
+    assert_eq!(
+        run["status"], "waiting_approval",
+        "the gate must park the run: {run}"
+    );
+
+    // Approval resumes the chain (Running) — completion lands via the
+    // resumed drive a moment later, so poll rather than assert synchronously.
+    let run = rpc_ok(
+        &base,
+        "workflow.run.approve_step",
+        json!({ "run_id": run_id, "note": "looks good" }),
+    )
+    .await;
+    assert_eq!(
+        run["status"], "running",
+        "approval must resume the drive: {run}"
+    );
+    let run = await_run(&base, &run_id).await;
+    assert_eq!(
+        run["status"], "completed",
+        "approving the only gate finishes the chain: {run}"
+    );
+    assert_eq!(run["steps"][1]["output"], "looks good");
+}
+
+#[tokio::test]
+async fn workflow_run_refuses_a_session_from_another_repo() {
+    let (base, _dir, channel_id, _session_id) = autonomous_echo_fixture().await;
+
+    let dir2 = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir2.path()).unwrap();
+    let channel2 = rpc_ok(
+        &base,
+        "repo.connect",
+        json!({ "path": dir2.path().to_string_lossy() }),
+    )
+    .await;
+    let session2 = rpc_ok(
+        &base,
+        "session.create",
+        json!({ "repo_channel_id": channel2["id"], "title": "Other",
+            "task": "x", "isolation_mode": "shared", "autonomy_level": "manual" }),
+    )
+    .await;
+
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "bound",
+            "steps": [command_step("s1", "ok", "echo hi")] }),
+    )
+    .await;
+
+    let body = rpc(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session2["id"] }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "a chain must not run on another repo's session: {body}"
+    );
+}
+
+#[tokio::test]
+async fn session_model_set_switches_and_clears_a_sessions_model_override() {
+    let (base, _dir, session_id) = session_fixture("manual").await;
+
+    let session = rpc_ok(
+        &base,
+        "session.model.set",
+        json!({ "session_id": session_id, "model_provider": "openai_compatible", "model_id": "local-model" }),
+    )
+    .await;
+    assert_eq!(session["model_provider"], "openai_compatible");
+    assert_eq!(session["model_id"], "local-model");
+
+    // Either half clears independently; clearing both restores default resolution.
+    let session = rpc_ok(
+        &base,
+        "session.model.set",
+        json!({ "session_id": session_id, "model_provider": null, "model_id": null }),
+    )
+    .await;
+    assert!(session["model_provider"].is_null());
+    assert!(session["model_id"].is_null());
+
+    let body = rpc(
+        &base,
+        "session.model.set",
+        json!({ "session_id": session_id, "model_provider": "not-a-provider" }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "an unknown provider must be refused, not stored: {body}"
+    );
+}
+
+#[tokio::test]
+async fn session_tool_calls_pending_lists_a_sessions_waiting_approvals() {
+    // Shape + wiring test: a fresh session has nothing waiting. The live
+    // approval flow itself is exercised by the chat-thread approval tests;
+    // this pins that the WorkflowPanel's polling endpoint exists and is
+    // session-scoped.
+    let (base, _dir, session_id) = session_fixture("manual").await;
+    let pending = rpc_ok(
+        &base,
+        "session.tool_calls.pending",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert!(pending.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn workflow_run_start_refuses_a_plan_gated_session_with_guidance() {
+    // A Co-Pilot session with no approved plan blocks the Implementer — an
+    // agent-step chain started on it would park step after step with no
+    // visible reason. Fail fast with the actual remedy instead.
+    let base = start_core().await;
+    let dir = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir.path()).unwrap();
+    let repo_path = dir.path().to_string_lossy().to_string();
+    let channel = rpc_ok(&base, "repo.connect", json!({ "path": repo_path })).await;
+    let session = rpc_ok(
+        &base,
+        "session.create",
+        json!({ "repo_channel_id": channel["id"], "title": "Gated",
+            "task": "x", "isolation_mode": "shared", "autonomy_level": "co_pilot" }),
+    )
+    .await;
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel["id"], "name": "gated",
+            "steps": [{ "id": "s1", "name": "do", "kind": "agent",
+                "prompt": "do it", "on_failure": "stop" }] }),
+    )
+    .await;
+
+    let body = rpc(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session["id"] }),
+    )
+    .await;
+    let err = body.get("error").expect("plan-gated start must be refused");
+    assert!(
+        err.to_string().contains("not approved"),
+        "the refusal must name the remedy, not just fail: {body}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_cancel_stops_a_waiting_run() {
+    let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
+
+    let workflow = rpc_ok(
+        &base,
+        "workflow.create",
+        json!({ "repo_channel_id": channel_id, "name": "cancellable",
+            "steps": [{ "id": "s1", "name": "gate", "kind": "manual_gate", "on_failure": "stop" }] }),
+    )
+    .await;
+    let run = rpc_ok(
+        &base,
+        "workflow.run.start",
+        json!({ "workflow_id": workflow["id"], "session_id": session_id }),
+    )
+    .await;
+    let run_id = run["id"].as_str().unwrap().to_string();
+    let parked = await_run(&base, &run_id).await;
+    assert_eq!(parked["status"], "waiting_approval");
+
+    let run = rpc_ok(&base, "workflow.run.cancel", json!({ "run_id": run_id })).await;
+    assert_eq!(run["status"], "cancelled");
 }

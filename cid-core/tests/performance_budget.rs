@@ -191,7 +191,7 @@ fn one_hundred_concurrent_rpc_calls_all_complete() {
             }));
         }
 
-        let results = futures::future::join_all(handles).await;
+        let results = futures_util::future::join_all(handles).await;
         let elapsed = start.elapsed();
         let succeeded = results.iter().filter(|r| matches!(r, Ok(true))).count();
 

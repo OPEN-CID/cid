@@ -22,12 +22,14 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-futures = { workspace = true }
+futures-util = { workspace = true }
 
-# Web / transport
+# Web / transport. tower-http 0.6 (not 0.5) so cid-core shares the exact
+# build reqwest 0.12 already pulls in, instead of carrying both stacks;
+# CorsLayer's API is unchanged across that bump. The bare `tower` crate was
+# listed here but never referenced (`tower::` appears nowhere in src).
 axum = { version = "0.7", features = ["ws"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Git. 0.21 is the floor: it clears RUSTSEC-2026-0008/-0183/-0184 (unsound
 # `Buf` deref, `Remote::list()`, and `BlameHunk` signature), which 0.19 carried.
@@ -48,13 +50,17 @@ tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
-uuid7 = { version = "0.2", features = ["serde"] }
+# NOTE: `uuid7` was listed here but referenced nowhere in the tree (every id
+# is `uuid::Uuid::new_v4`) — removed rather than carried.
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 regex = "1.10"
 sysinfo = "0.30"
-dirs = "5.0"
+# 6.x, matching what tauri 2.x already pulls in — our use is just
+# `home_dir`/`data_dir`, both unchanged. Carrying 5.x alongside meant a
+# second dirs + dirs-sys for no reason.
+dirs = "6.0"
 # Canonicalization that yields `C:\x` rather than `\\?\C:\x` on Windows —
 # see `path_confine::normalize_stored_path` for why the difference matters
 # on the UNIQUE `repo_channels.path` column.
@@ -70,9 +76,12 @@ ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
-glob = "0.3"
+# NOTE: `glob` was listed here but referenced nowhere (`glob::` appears in
+# no Rust file — globset, via `ignore`, covers the matching this tree does).
 globset = "0.4"
-notify = "6.1"
+# 8.x: our use is just RecommendedWatcher + Config + EventKind, all stable
+# across the bump. 6.x is only still resolved because we pinned it.
+notify = "8"
 which = "7.0"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
@@ -86,7 +95,11 @@ argon2 = "0.5"
 candle-core = { version = "0.11.0", default-features = false }
 candle-nn = { version = "0.11.0", default-features = false }
 candle-transformers = { version = "0.11.0", default-features = false }
-tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+# 0.22, not 0.23: candle 0.11 pins tokenizers 0.22, and our own use is three
+# stable calls (`from_file`, `encode`, `truncate`) identical in both. A
+# separate 0.23 build existed only because we asked for newer, not because
+# we use anything newer.
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
 [dev-dependencies]
 # Integration tests build real git repos as fixtures; features must match the

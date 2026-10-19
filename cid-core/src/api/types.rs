@@ -406,6 +406,31 @@ pub enum ModelProvider {
     LlamaCpp,
 }
 
+/// Lenient provider parsing: every spelling a human or a model might write
+/// for a provider id — including the `openai_compatible` form that serde's
+/// `snake_case` rename would otherwise render as `open_a_i_compatible`
+/// (a real 404-shaped trap: strict enum deserialization rejects the natural
+/// spelling). Single definition shared by role resolution, session overrides,
+/// and workflow step validation, so the three can never disagree on what a
+/// provider is called.
+pub(crate) fn parse_provider_str(s: &str) -> Option<ModelProvider> {
+    match s.trim().to_lowercase().as_str() {
+        "anthropic" | "claude" => Some(ModelProvider::Anthropic),
+        "openai" | "gpt" | "chatgpt" => Some(ModelProvider::OpenAI),
+        "google" | "gemini" | "google_gemini" | "genai" => Some(ModelProvider::Google),
+        "openai_compatible" | "openai-compatible" | "openai compatible" | "compatible"
+        | "openrouter" | "groq" | "together" | "fireworks" | "vllm" => {
+            Some(ModelProvider::OpenAICompatible)
+        }
+        "ollama" => Some(ModelProvider::Ollama),
+        "lmstudio" | "lm_studio" | "lm-studio" | "lm studio" => Some(ModelProvider::LmStudio),
+        "llamacpp" | "llama_cpp" | "llama-cpp" | "llama.cpp" | "llama_cpp_server" => {
+            Some(ModelProvider::LlamaCpp)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
@@ -1257,6 +1282,152 @@ pub struct SandboxTestResult {
     pub reason: String,
     pub attempted_path: String,
     pub blocked: bool,
+}
+
+// ============ Workflows (Jenkins-style pipelines over Sessions) ============
+//
+// A Workflow is an ordered, repo-scoped list of steps run against one Session.
+// Linear chains only in v1 — no fan-out/fan-in; that needs artifact passing
+// between branches, which is designed separately (see workflow/mod.rs).
+// Every step kind reuses an already-wired execution path rather than
+// inventing a parallel one.
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepKind {
+    /// A real agent turn in the Session (`process_message_with_role`), with an
+    /// optional per-step model override (cloud or local runtime alike — a
+    /// "local model step" is just a step whose override points at Ollama /
+    /// LM Studio / llama.cpp, not a separate kind).
+    Agent,
+    /// A shell command run through the Session's autonomy gate
+    /// (`execute_tool_with_approval` on `run_terminal`) — allow-list,
+    /// sandbox, and human-approval wait all apply unchanged.
+    Command,
+    /// Pause the run until a human continues it (`workflow.run.approve_step`)
+    /// — the pipeline equivalent of a Jenkins input step.
+    ManualGate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepFailurePolicy {
+    /// Stop the run at this step (default).
+    Stop,
+    /// Record the failure and continue with the next step.
+    Continue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    /// Empty when drafted (by a human form or by the agent tool) — the
+    /// server mints one in `normalize_steps`, so callers never invent ids.
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    pub kind: WorkflowStepKind,
+    /// Agent steps: the prompt sent as the turn's user message.
+    pub prompt: Option<String>,
+    /// Command steps: the shell command.
+    pub command: Option<String>,
+    /// Per-step model override (provider + id), free text parsed by
+    /// `parse_provider_str` — the same shape as the Session's own override
+    /// (`CreateSessionParams.model_provider`), so a step can name
+    /// `openai_compatible` rather than serde's `open_a_i_compatible`
+    /// artifact. `None` inherits the Session's own resolution, exactly like
+    /// a step that names no model.
+    pub model_provider: Option<String>,
+    pub model_id: Option<String>,
+    #[serde(default = "default_stop_policy")]
+    pub on_failure: WorkflowStepFailurePolicy,
+}
+
+fn default_stop_policy() -> WorkflowStepFailurePolicy {
+    WorkflowStepFailurePolicy::Stop
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workflow {
+    pub id: String,
+    pub repo_channel_id: String,
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<WorkflowStep>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRunStatus {
+    Running,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepRunStatus {
+    Pending,
+    Running,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowStepRun {
+    pub step_id: String,
+    pub status: WorkflowStepRunStatus,
+    /// Agent steps: the assistant message id produced; command steps: the
+    /// tool result JSON; manual gates: the approver's note, if any.
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    pub id: String,
+    pub workflow_id: String,
+    pub session_id: String,
+    pub status: WorkflowRunStatus,
+    pub current_index: usize,
+    pub steps: Vec<WorkflowStepRun>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCreateParams {
+    pub repo_channel_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub steps: Vec<WorkflowStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowUpdateParams {
+    pub workflow_id: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub steps: Option<Vec<WorkflowStep>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunStartParams {
+    pub workflow_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowRunApproveParams {
+    pub run_id: String,
+    pub note: Option<String>,
 }
 
 // Helpers
