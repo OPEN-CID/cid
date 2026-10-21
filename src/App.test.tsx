@@ -25,6 +25,8 @@ vi.mock("./components/WebShell", () => ({
 vi.mock("./components/health/RepoHealthPanel", () => ({ RepoHealthPanel: () => <div>RepoHealthPanelStub</div> }));
 vi.mock("./components/autonomy/AutonomyPanel", () => ({ AutonomyPanel: () => <div>AutonomyPanelStub</div> }));
 vi.mock("./components/chat/DecisionsPanel", () => ({ DecisionsPanel: () => <div>DecisionsPanelStub</div> }));
+vi.mock("./components/chat/ReviewsPanel", () => ({ ReviewsPanel: () => <div>ReviewsPanelStub</div> }));
+vi.mock("./components/chat/AgentsPanel", () => ({ AgentsPanel: () => <div>AgentsPanelStub</div> }));
 vi.mock("./components/chat/WorkflowPanel", () => ({ WorkflowPanel: () => <div>WorkflowPanelStub</div> }));
 vi.mock("./components/editor/EditorPane", () => ({ EditorPane: () => <div>EditorPaneStub</div> }));
 vi.mock("./components/terminal/TerminalPane", () => ({ TerminalPane: () => <div>TerminalPaneStub</div> }));

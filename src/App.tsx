@@ -11,6 +11,8 @@ import { ConnectionBanner, HealthDashboard, AccessControlPanel } from "./compone
 import { RepoHealthPanel } from "./components/health/RepoHealthPanel";
 import { AutonomyPanel } from "./components/autonomy/AutonomyPanel";
 import { DecisionsPanel } from "./components/chat/DecisionsPanel";
+import { ReviewsPanel } from "./components/chat/ReviewsPanel";
+import { AgentsPanel } from "./components/chat/AgentsPanel";
 import { WorkflowPanel } from "./components/chat/WorkflowPanel";
 import { useCid } from "./hooks/useCid";
 import { useModelReadiness } from "./hooks/useModelReadiness";
@@ -70,6 +72,8 @@ type RightTab =
   | "history"
   | "decisions"
   | "workflows"
+  | "reviews"
+  | "agents"
   | "mcp"
   | "skills"
   | "acp"
@@ -85,6 +89,8 @@ const ALL_TABS: RightTab[] = [
   "history",
   "decisions",
   "workflows",
+  "reviews",
+  "agents",
   "mcp",
   "skills",
   "acp",
@@ -103,6 +109,8 @@ const TAB_LABELS: Record<RightTab, string> = {
   history: "History",
   decisions: "Decision log",
   workflows: "Workflows",
+  reviews: "Reviews",
+  agents: "Agents",
   mcp: "Tools",
   skills: "Skills",
   acp: "External agents",
@@ -705,6 +713,8 @@ export default function App() {
               {rightTab === "history" && <HistoryPanel />}
               {rightTab === "decisions" && <DecisionsPanel />}
               {rightTab === "workflows" && <WorkflowPanel />}
+              {rightTab === "reviews" && <ReviewsPanel />}
+              {rightTab === "agents" && <AgentsPanel />}
               {rightTab === "mcp" && <McpPanel />}
               {rightTab === "skills" && <SkillsPanel />}
               {rightTab === "acp" && <AcpPanel />}

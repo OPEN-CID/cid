@@ -3,6 +3,7 @@ import { api, type ModelInfo, type RpcValue } from "../../lib/api";
 import { RefreshCw, Save } from "lucide-react";
 import { TeamIntegrationsPanel } from "./TeamIntegrationsPanel";
 import { LocalModelsPanel } from "./LocalModelsPanel";
+import { RoutingPanel } from "./RoutingPanel";
 
 // Every value here is treated as string-ish with no narrowing throughout this
 // file (rendered straight into <input value>) — genuinely the RpcValue case,
@@ -250,28 +251,40 @@ function CloudProvidersPanel() {
 /// Cloud providers and local models are different jobs — one is API keys and
 /// per-role routing, the other is hardware, downloads and a server process.
 /// They were one scrolling page, which buried both.
+const TABS = [
+  { id: "cloud", label: "Cloud providers" },
+  { id: "local", label: "Local models" },
+  { id: "auto", label: "Auto routing" },
+] as const;
+
 export function ProvidersPanel() {
-  const [tab, setTab] = useState<"cloud" | "local">("cloud");
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("cloud");
 
   return (
     <div className="h-full flex flex-col">
       <div className="h-9 border-b flex items-center gap-1 px-2 shrink-0" role="tablist">
-        {(["cloud", "local"] as const).map((t) => (
+        {TABS.map((t) => (
           <button
-            key={t}
+            key={t.id}
             role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
             className={`text-xs px-2.5 py-1 rounded ${
-              tab === t ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              tab === t.id ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
             }`}
           >
-            {t === "cloud" ? "Cloud providers" : "Local models"}
+            {t.label}
           </button>
         ))}
       </div>
       <div className="flex-1 min-h-0">
-        {tab === "cloud" ? <CloudProvidersPanel /> : <LocalModelsPanel />}
+        {tab === "cloud" ? (
+          <CloudProvidersPanel />
+        ) : tab === "local" ? (
+          <LocalModelsPanel />
+        ) : (
+          <RoutingPanel />
+        )}
       </div>
     </div>
   );

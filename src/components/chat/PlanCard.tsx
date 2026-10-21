@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
-import { Check, X, Pencil, RefreshCw, Loader2 } from "lucide-react";
+import { toast } from "../../lib/dialog";
+import { Check, X, Pencil, RefreshCw, Loader2, ListOrdered } from "lucide-react";
 
 type PlanStatus = "draft" | "approved" | "rejected";
 
@@ -73,6 +74,25 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
       await api.call("session.plan.update", { session_id: sessionId, content: draft });
       setEditing(false);
     });
+
+  // Plan → long-running work: turns the approved plan's numbered steps into
+  // agent steps and starts the workflow run. Creation and starting stay one
+  // deliberate click — the run itself is the thing being asked for.
+  const [runningWorkflow, setRunningWorkflow] = useState(false);
+  const runAsWorkflow = async () => {
+    setRunningWorkflow(true);
+    setError(null);
+    try {
+      const workflow = (await api.workflow.fromPlan(sessionId)) as { id?: string };
+      if (!workflow?.id) throw new Error("workflow creation returned no id");
+      await api.workflow.runStart(workflow.id, sessionId);
+      toast.success("Workflow started from the approved plan — track it in the Workflows tab");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRunningWorkflow(false);
+    }
+  };
 
   if (!plan) {
     return (
@@ -153,6 +173,22 @@ export function PlanCard({ sessionId }: { sessionId: string }) {
         <pre className="whitespace-pre-wrap text-xs font-mono bg-background/40 rounded p-2 max-h-80 overflow-y-auto">
           {plan.content}
         </pre>
+      )}
+
+      {!editing && plan.status === "approved" && (
+        <div className="flex gap-2 mt-2">
+          <button
+            onClick={runAsWorkflow}
+            disabled={busy || runningWorkflow}
+            className="flex items-center gap-1 bg-primary text-primary-foreground text-xs px-3 py-1 rounded disabled:opacity-50"
+          >
+            {runningWorkflow ? <Loader2 className="w-3 h-3 animate-spin" /> : <ListOrdered className="w-3 h-3" />}
+            Run plan as workflow
+          </button>
+          <span className="text-[11px] text-muted-foreground self-center">
+            Each numbered step becomes an agent turn you can track and rewind.
+          </span>
+        </div>
       )}
 
       {!editing && plan.status !== "approved" && (

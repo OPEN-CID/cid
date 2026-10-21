@@ -21,12 +21,18 @@ vi.mock("@/lib/api", () => ({
   api: {
     call: vi.fn(),
     onNotification: () => () => {},
+    workflow: {
+      fromPlan: vi.fn(),
+      runStart: vi.fn(),
+    },
   },
 }));
 
 describe("PlanCard", () => {
   beforeEach(() => {
     vi.mocked(api.call).mockReset();
+    vi.mocked(api.workflow.fromPlan).mockReset();
+    vi.mocked(api.workflow.runStart).mockReset();
   });
 
   it("shows no plan state when no plan exists", async () => {
@@ -138,5 +144,27 @@ describe("PlanCard", () => {
     expect(vi.mocked(api.call)).toHaveBeenCalledWith("session.plan.approve", {
       session_id: "session-1",
     });
+  });
+
+  it("running an approved plan as a workflow creates and starts it", async () => {
+    vi.mocked(api.call).mockResolvedValueOnce({
+      plan: {
+        id: "plan-1",
+        session_id: "session-1",
+        content: "# Test Plan",
+        status: "approved",
+        approved_by: "me",
+        updated_at: "2024-01-01T00:01:00Z",
+      },
+    });
+    vi.mocked(api.workflow.fromPlan).mockResolvedValueOnce({ id: "wf-1" });
+    vi.mocked(api.workflow.runStart).mockResolvedValueOnce({ id: "run-1" });
+
+    render(<PlanCard sessionId="session-1" />);
+    fireEvent.click(await screen.findByText(/Run plan as workflow/));
+    await flushAsyncWork();
+
+    expect(api.workflow.fromPlan).toHaveBeenCalledWith("session-1");
+    expect(api.workflow.runStart).toHaveBeenCalledWith("wf-1", "session-1");
   });
 });

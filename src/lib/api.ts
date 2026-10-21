@@ -468,6 +468,10 @@ class CidApiClient {
   model = {
     list: (): Promise<ModelInfo[]> => this.call("model.list"),
     chat: (params: unknown) => this.call("model.chat", params),
+    routingGet: () => this.call("model.routing.get", {}),
+    routingSet: (mode: string) => this.call("model.routing.set", { mode }),
+    routeRecommend: (params: { task?: string; session_id?: string }) =>
+      this.call("model.route.recommend", params),
   };
 
   // ---- Phase 1 ----
@@ -562,8 +566,12 @@ class CidApiClient {
   subagent = {
     spawn: (params: unknown) => this.call("subagent.spawn", params),
     list: (session_id: string) => this.call("subagent.list", { session_id }),
-    get: (id: string) => this.call("subagent.get", { id }),
-    cancel: (id: string) => this.call("subagent.cancel", { id }),
+    // The server reads `subagent_id` (get) and the full cancel params —
+    // `{id}` never deserialized, so these two calls always failed. No UI
+    // ever reached them, which is exactly how it stayed broken.
+    get: (id: string) => this.call("subagent.get", { subagent_id: id }),
+    cancel: (id: string, reason?: string) =>
+      this.call("subagent.cancel", { subagent_id: id, reason }),
   };
 
   semanticEngine = {
@@ -662,6 +670,8 @@ class CidApiClient {
     runApprove: (run_id: string, note?: string) =>
       this.call("workflow.run.approve_step", { run_id, note }),
     runRetry: (run_id: string) => this.call("workflow.run.retry", { run_id }),
+    fromPlan: (session_id: string, name?: string) =>
+      this.call("workflow.from_plan", { session_id, name }),
   };
 
   governance = {

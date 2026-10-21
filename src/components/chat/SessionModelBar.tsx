@@ -14,6 +14,7 @@ export function SessionModelBar({ sessionId }: { sessionId: string }) {
     id: null,
   });
   const [saving, setSaving] = useState(false);
+  const [auto, setAuto] = useState<{ label: string; reason: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -22,10 +23,31 @@ export function SessionModelBar({ sessionId }: { sessionId: string }) {
         api.session.get(sessionId),
       ]);
       if (Array.isArray(list)) setModels(list);
-      setOverride({
+      const ov = {
         provider: (session?.model_provider as string | null) ?? null,
         id: (session?.model_id as string | null) ?? null,
-      });
+      };
+      setOverride(ov);
+      // No explicit override: show what auto-routing currently recommends,
+      // so an automatic choice is visible before the turn runs. Best-effort:
+      // a manual install simply shows the resolved default instead.
+      if (!ov.provider && !ov.id) {
+        try {
+          const rec = await api.model.routeRecommend({ session_id: sessionId });
+          if (rec && rec.mode && rec.mode !== "manual") {
+            setAuto({
+              label: `Auto (${rec.mode.replace("auto_", "")}): ${rec.provider} ${rec.model_id}`,
+              reason: rec.reason ?? "",
+            });
+          } else {
+            setAuto(null);
+          }
+        } catch {
+          setAuto(null);
+        }
+      } else {
+        setAuto(null);
+      }
     } catch (e) {
       toast.error(`Failed to load models: ${e}`);
     }
@@ -39,7 +61,9 @@ export function SessionModelBar({ sessionId }: { sessionId: string }) {
   const current =
     override.provider || override.id
       ? `${override.provider ?? "?"} ${override.id ?? "(provider default)"} · session override`
-      : (available.find((m) => m.default) ? `${available.find((m) => m.default)!.provider} ${available.find((m) => m.default)!.id}` : "none configured");
+      : auto
+        ? `${auto.label}`
+        : (available.find((m) => m.default) ? `${available.find((m) => m.default)!.provider} ${available.find((m) => m.default)!.id}` : "none configured");
 
   const change = async (value: string) => {
     setSaving(true);
@@ -61,7 +85,7 @@ export function SessionModelBar({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border text-[11px] text-muted-foreground">
-      <span className="shrink-0">
+      <span className="shrink-0" title={auto?.reason || undefined}>
         Model: <span data-testid="current-model" className="text-foreground font-medium">{current}</span>
       </span>
       <select

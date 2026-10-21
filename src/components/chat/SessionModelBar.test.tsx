@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   api: {
-    model: { list: vi.fn() },
+    model: { list: vi.fn(), routeRecommend: vi.fn() },
     session: { get: vi.fn(), setModel: vi.fn() },
   },
 }));
@@ -23,6 +23,7 @@ describe("SessionModelBar", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.mocked(api.model.list).mockReset().mockResolvedValue(models as any);
+    vi.mocked(api.model.routeRecommend).mockReset().mockResolvedValue({ mode: "manual" } as any);
     vi.mocked(api.session.get).mockReset().mockResolvedValue({ id: "s1", model_provider: null, model_id: null } as any);
     vi.mocked(api.session.setModel).mockReset().mockResolvedValue({ id: "s1" } as any);
   });
@@ -60,6 +61,19 @@ describe("SessionModelBar", () => {
 
     fireEvent.change(screen.getByLabelText("Switch session model"), { target: { value: "" } });
     await waitFor(() => expect(api.session.setModel).toHaveBeenCalledWith("s1", null, null));
+  });
+
+  it("shows the auto-routing recommendation when no override is set", async () => {
+    vi.mocked(api.model.routeRecommend).mockResolvedValueOnce({
+      mode: "auto_balanced",
+      provider: "google",
+      model_id: "gemini-4-argon",
+      reason: "balanced · standard task",
+    } as any);
+    render(<SessionModelBar sessionId="s1" />);
+    expect(await screen.findByTestId("current-model")).toHaveTextContent(
+      "Auto (balanced): google gemini-4-argon"
+    );
   });
 
   it("hides unavailable models from the switcher", async () => {
