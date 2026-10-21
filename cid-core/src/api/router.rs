@@ -385,6 +385,9 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         // Model
         "model.list" => handle_model_list(state).await,
         "model.chat" => handle_model_chat(params, state).await,
+        "model.routing.get" => handle_model_routing_get(state).await,
+        "model.routing.set" => handle_model_routing_set(params, state).await,
+        "model.route.recommend" => handle_model_route_recommend(params, state).await,
 
         // Local runtimes (Phase 1)
         "local.system.capabilities" => handle_local_system_capabilities(params).await,
@@ -455,6 +458,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "workflow.run.cancel" => handle_workflow_run_cancel(params, state).await,
         "workflow.run.approve_step" => handle_workflow_run_approve_step(params, state).await,
         "workflow.run.retry" => handle_workflow_run_retry(params, state).await,
+        "workflow.from_plan" => handle_workflow_from_plan(params, state).await,
 
         // Slack Bridge (Phase 2)
         "slack.configure" => handle_slack_configure(params, state).await,
@@ -1956,6 +1960,61 @@ async fn handle_model_chat(
     Ok(serde_json::json!({ "ok": true }))
 }
 
+/// The install-wide routing policy id (`manual` default). The UI mode
+/// selector reads and writes exactly this.
+async fn handle_model_routing_get(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    let settings = state.persistence.get_settings()?;
+    Ok(serde_json::json!({ "mode": settings.routing_mode }))
+}
+
+async fn handle_model_routing_set(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let mode: String = serde_json::from_value(params.get("mode").cloned().unwrap_or_default())?;
+    let mut settings = state.persistence.get_settings()?;
+    settings.routing_mode = crate::api::types::RoutingMode::parse(&mode)
+        .as_str()
+        .to_string();
+    state.persistence.update_settings(&settings)?;
+    Ok(serde_json::json!({ "mode": settings.routing_mode }))
+}
+
+/// Dry-run routing explain: what the router would pick for this task right
+/// now, and why. Powers the UI routing badge without running a turn — the
+/// same `route_task` the turn path calls in auto modes (and the static
+/// resolution in manual mode), so the explanation can never drift from the
+/// decision.
+async fn handle_model_route_recommend(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let settings = state.persistence.get_settings()?;
+    let task = if let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) {
+        let session = state.persistence.get_session(session_id)?;
+        format!(
+            "{}\n{}",
+            session.task_description,
+            params.get("task").and_then(|v| v.as_str()).unwrap_or("")
+        )
+    } else {
+        params
+            .get("task")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    if !crate::api::types::RoutingMode::parse(&settings.routing_mode).is_auto() {
+        let resolved = state
+            .model_manager
+            .resolve_active_model(Some(crate::api::types::AgentRole::Implementer))?;
+        let decision = crate::model::routing::manual_decision(&resolved, &task);
+        return Ok(serde_json::to_value(decision)?);
+    }
+    let (_config, decision) = crate::model::routing::route_task(&settings, &task, state).await?;
+    Ok(serde_json::to_value(decision)?)
+}
+
 // ---------------------------------------------------------------------------
 // Local Runtime Detection (Phase 1)
 // ---------------------------------------------------------------------------
@@ -2922,7 +2981,6 @@ async fn handle_workflow_run_approve_step(
             .await?,
     )?)
 }
-
 async fn handle_workflow_run_retry(
     params: serde_json::Value,
     state: &AppState,
@@ -2931,6 +2989,51 @@ async fn handle_workflow_run_retry(
     Ok(serde_json::to_value(
         state.workflow_runner.retry(&id, state.clone()).await?,
     )?)
+}
+
+/// Turn an approved session plan into a runnable workflow — the plan→work
+/// bridge for long-running jobs. Each numbered step under `## Steps` becomes
+/// an agent step; the caller then starts the run explicitly via
+/// `workflow.run.start`, so creating the chain never *begins* unattended
+/// work by itself. Draft plans are refused: the implementer gate would block
+/// every agent step anyway, and failing here names the remedy up front
+/// instead of parking a run mid-chain.
+async fn handle_workflow_from_plan(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    use crate::api::types::SessionPlanStatus;
+
+    let session_id: String =
+        serde_json::from_value(params.get("session_id").cloned().unwrap_or_default())?;
+    let session = state.persistence.get_session(&session_id)?;
+    let plan = state
+        .persistence
+        .get_session_plan(&session_id)?
+        .ok_or_else(|| anyhow::anyhow!("this session has no plan yet — generate one first"))?;
+    if plan.status != SessionPlanStatus::Approved {
+        anyhow::bail!(
+            "the plan is {:?}, not approved — approve it before turning it into a workflow",
+            plan.status
+        );
+    }
+    let steps = crate::workflow::plan_steps_to_agent_steps(&plan.content)?;
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Plan run");
+    let description = format!(
+        "Generated from the approved plan of session {} ({} step(s))",
+        session.title,
+        steps.len()
+    );
+    let workflow =
+        state
+            .persistence
+            .create_workflow(&session.repo_channel_id, name, &description, &steps)?;
+    Ok(serde_json::to_value(workflow)?)
 }
 
 // ============ Phase 2: Slack Bridge Handlers ============

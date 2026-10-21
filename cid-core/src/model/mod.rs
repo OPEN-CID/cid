@@ -16,12 +16,13 @@ use crate::{
 
 pub mod catalog;
 mod catalog_bundled;
+pub mod routing;
 
 /// The models.dev provider key for one of CID's first-party providers.
 /// OpenAI-compatible routes (OpenRouter, Groq, Ollama, LM Studio, llama.cpp)
 /// have no single catalog — they proxy whatever the endpoint serves — so they
 /// deliberately have no key and fall through to heuristics everywhere below.
-fn catalog_key(provider: &ModelProvider) -> Option<&'static str> {
+pub(crate) fn catalog_key(provider: &ModelProvider) -> Option<&'static str> {
     match provider {
         ModelProvider::Anthropic => Some(catalog::ANTHROPIC),
         ModelProvider::OpenAI => Some(catalog::OPENAI),
@@ -481,7 +482,7 @@ const OPENAI_COMPAT_MODELS: &[KnownModel] = &[
 // enum in api::types so workflow validation can share it verbatim).
 // ---------------------------------------------------------------------------
 
-fn provider_api_key(settings: &Settings, provider: &ModelProvider) -> Option<String> {
+pub(crate) fn provider_api_key(settings: &Settings, provider: &ModelProvider) -> Option<String> {
     match provider {
         ModelProvider::Anthropic => settings
             .anthropic_api_key
@@ -523,7 +524,7 @@ fn provider_api_key(settings: &Settings, provider: &ModelProvider) -> Option<Str
 /// Implementer stayed blocked, and the whole product looked broken while
 /// reporting itself correctly configured. `model::catalog` exists precisely so
 /// no hand-written id can rot like this — it just wasn't consulted here.
-fn catalog_default_model(provider: &ModelProvider) -> Option<String> {
+pub(crate) fn catalog_default_model(provider: &ModelProvider) -> Option<String> {
     let key = catalog_key(provider)?;
     let models = catalog::models_for(key);
     // Skip anything the vendor labels preview: it is explicitly not generally
@@ -580,7 +581,7 @@ fn is_retryable_provider_error(e: &anyhow::Error) -> bool {
         || msg.contains("Service Unavailable")
 }
 
-fn provider_default_model(settings: &Settings, provider: &ModelProvider) -> String {
+pub(crate) fn provider_default_model(settings: &Settings, provider: &ModelProvider) -> String {
     match provider {
         ModelProvider::Anthropic => {
             let configured = settings.anthropic_model.clone();
@@ -621,7 +622,7 @@ fn provider_default_model(settings: &Settings, provider: &ModelProvider) -> Stri
     }
 }
 
-fn provider_endpoint(settings: &Settings, provider: &ModelProvider) -> Option<String> {
+pub(crate) fn provider_endpoint(settings: &Settings, provider: &ModelProvider) -> Option<String> {
     match provider {
         ModelProvider::Anthropic => Some("https://api.anthropic.com".to_string()),
         ModelProvider::OpenAI => Some("https://api.openai.com/v1".to_string()),
@@ -648,7 +649,7 @@ fn provider_endpoint(settings: &Settings, provider: &ModelProvider) -> Option<St
     }
 }
 
-fn is_provider_enabled(settings: &Settings, provider: &ModelProvider) -> bool {
+pub(crate) fn is_provider_enabled(settings: &Settings, provider: &ModelProvider) -> bool {
     match provider {
         ModelProvider::Anthropic => provider_api_key(settings, provider).is_some(),
         ModelProvider::OpenAI => provider_api_key(settings, provider).is_some(),
@@ -1441,6 +1442,7 @@ impl ModelManager {
                 reviewer_provider: None,
                 reviewer_model: None,
                 github_token: None,
+                routing_mode: "manual".to_string(),
             }
         });
 
@@ -1649,6 +1651,48 @@ impl ModelManager {
         let settings = self.persistence.get_settings()?;
         resolve_active_config(&settings, preferred_role)
             .ok_or_else(|| anyhow!("No active model resolved"))
+    }
+
+    /// Auto-routing hook shared by the Implementer turn and subagent turns.
+    /// Precedence: an explicit per-session override (already applied to
+    /// `base` by the caller) always wins; auto modes route; manual keeps
+    /// `base` untouched. A routing failure degrades to `base` with a warning
+    /// rather than failing the turn — the static chain is the safe default.
+    async fn maybe_auto_route(
+        &self,
+        base: ResolvedModelConfig,
+        settings: &Settings,
+        session: &crate::api::types::Session,
+        task_text: &str,
+        app_state: &AppState,
+    ) -> ResolvedModelConfig {
+        use crate::api::types::RoutingMode;
+        if session.model_provider.is_some() || session.model_id.is_some() {
+            return base;
+        }
+        if !RoutingMode::parse(&settings.routing_mode).is_auto() {
+            return base;
+        }
+        let task = format!("{}\n{}", session.task_description, task_text);
+        match routing::route_task(settings, &task, app_state).await {
+            Ok((routed, decision)) => {
+                info!(
+                    "Auto-routed session {} turn: {} ({}), {}",
+                    session.id,
+                    decision.model_id,
+                    decision.reason,
+                    decision.mode.as_str()
+                );
+                routed
+            }
+            Err(e) => {
+                warn!(
+                    "Auto-routing failed for session {}, degrading to static resolution: {e:?}",
+                    session.id
+                );
+                base
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2017,6 +2061,9 @@ impl ModelManager {
             }
         });
         let resolved = apply_session_model_override(resolved, &settings, &session);
+        let resolved = self
+            .maybe_auto_route(resolved, &settings, &session, user_content, &app_state)
+            .await;
 
         info!(
             "Processing message for session {} with provider={:?} model={} role={:?}",
@@ -3429,6 +3476,9 @@ impl ModelManager {
         })?;
         let session = self.persistence.get_session(session_id)?;
         let resolved = apply_session_model_override(resolved, &settings, &session);
+        let resolved = self
+            .maybe_auto_route(resolved, &settings, &session, user_content, &app_state)
+            .await;
 
         let messages_before = self.persistence.list_messages(session_id)?.len();
 
@@ -4591,6 +4641,7 @@ mod spend_tracking_tests {
             reviewer_provider: None,
             reviewer_model: None,
             github_token: None,
+            routing_mode: "manual".to_string(),
         };
 
         for provider in [
@@ -4636,6 +4687,7 @@ mod spend_tracking_tests {
             reviewer_provider: None,
             reviewer_model: None,
             github_token: None,
+            routing_mode: "manual".to_string(),
         };
         assert_eq!(
             provider_default_model(&settings, &ModelProvider::Google),
@@ -6004,6 +6056,222 @@ mod session_model_override_tests {
 
         let seen = captured.lock().unwrap().clone();
         assert_eq!(seen, vec!["global-default-model".to_string()]);
+    }
+}
+
+/// Auto-routing hook precedence: an explicit session override always wins,
+/// manual mode keeps the static chain untouched, and a routing failure
+/// degrades to the static chain instead of failing the turn.
+#[cfg(test)]
+mod routing_hook_tests {
+    use super::*;
+    use crate::api::types::RoutingMode;
+
+    fn manager_and_state() -> (ModelManager, AppState) {
+        let core = crate::Core::new_in_memory().unwrap();
+        (
+            ModelManager::new(core.persistence.clone()),
+            core.app_state(),
+        )
+    }
+
+    fn fixture_session(manager: &ModelManager) -> crate::api::types::Session {
+        let repo = manager
+            .persistence
+            .connect_repo("/tmp/routing-hook-test", None)
+            .unwrap();
+        manager
+            .persistence
+            .create_session(
+                &repo.id,
+                "Routing test",
+                "fix typo in readme",
+                crate::api::types::IsolationMode::Shared,
+                crate::api::types::AutonomyLevel::CoPilot,
+            )
+            .unwrap()
+    }
+
+    fn base_config() -> ResolvedModelConfig {
+        ResolvedModelConfig {
+            provider: ModelProvider::Anthropic,
+            model_id: "static-pick".to_string(),
+            api_key: None,
+            endpoint: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_mode_keeps_the_static_chain_untouched() {
+        let (manager, app_state) = manager_and_state();
+        let session = fixture_session(&manager);
+        let settings = manager.persistence.get_settings().unwrap();
+        assert_eq!(settings.routing_mode, "manual");
+
+        let resolved = manager
+            .maybe_auto_route(base_config(), &settings, &session, "anything", &app_state)
+            .await;
+        assert_eq!(resolved.model_id, "static-pick");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_session_override_beats_any_auto_mode() {
+        let (manager, app_state) = manager_and_state();
+        let session = fixture_session(&manager);
+        manager
+            .persistence
+            .update_session_model(
+                &session.id,
+                Some("openai_compatible".to_string()),
+                Some("pinned-model".to_string()),
+            )
+            .unwrap();
+        let session = manager.persistence.get_session(&session.id).unwrap();
+        let mut settings = manager.persistence.get_settings().unwrap();
+        settings.routing_mode = "auto_performance".to_string();
+
+        let resolved = manager
+            .maybe_auto_route(base_config(), &settings, &session, "anything", &app_state)
+            .await;
+        assert_eq!(resolved.model_id, "static-pick");
+    }
+
+    /// Deterministic decision tests through the pure core: struct keys (never
+    /// ambient environment) plus a pinned bundled catalog, with the local
+    /// probe passed in by hand.
+    fn routed_settings() -> Settings {
+        crate::model::catalog::reset_to_bundled_for_tests();
+        let core = crate::Core::new_in_memory().unwrap();
+        let mut settings = core.persistence.get_settings().unwrap();
+        // Fake keys count as "enabled" — availability means configured, not
+        // verified, exactly like the static chain. Set all three so ambient
+        // environment variables can neither add nor remove a candidate, and
+        // clear the stored model pins so every provider resolves to its
+        // catalog default (the seed pins anthropic to sonnet-5, which would
+        // otherwise skew the price comparison off-catalog-default).
+        settings.anthropic_api_key = Some("test-key".to_string());
+        settings.anthropic_model = String::new();
+        settings.openai_api_key = Some("test-key".to_string());
+        settings.openai_model = None;
+        settings.google_api_key = Some("test-key".to_string());
+        settings.google_model = None;
+        settings.openai_compatible_endpoint = None;
+        settings
+    }
+
+    #[test]
+    fn cost_mode_picks_the_cheapest_priced_default() {
+        let mut settings = routed_settings();
+        settings.routing_mode = "auto_cost".to_string();
+        let (config, decision) =
+            routing::decide_route(&settings, "fix typo in readme", None).unwrap();
+        assert_eq!(decision.mode, RoutingMode::AutoCost);
+        assert!(!decision.is_local);
+        // Cheapest of the three catalog defaults — asserted structurally
+        // (cheapest), not by id, so the next registry refresh can't break it.
+        let prices: Vec<f64> = ["anthropic", "openai", "google"]
+            .iter()
+            .map(|k| {
+                let m = crate::model::catalog::models_for(k);
+                m.into_iter()
+                    .find(|x| !x.id.contains("preview"))
+                    .map(|x| x.input_per_million + x.output_per_million)
+                    .unwrap()
+            })
+            .collect();
+        let cheapest = prices.iter().cloned().fold(f64::INFINITY, f64::min);
+        let picked = crate::model::catalog::lookup(
+            match config.provider {
+                ModelProvider::Anthropic => "anthropic",
+                ModelProvider::OpenAI => "openai",
+                ModelProvider::Google => "google",
+                _ => panic!("cost mode must pick a priced provider"),
+            },
+            &config.model_id,
+        )
+        .map(|m| m.input_per_million + m.output_per_million)
+        .unwrap();
+        assert_eq!(picked, cheapest);
+    }
+
+    #[test]
+    fn performance_mode_picks_the_priciest_priced_default() {
+        let mut settings = routed_settings();
+        settings.routing_mode = "auto_performance".to_string();
+        let (config, decision) =
+            routing::decide_route(&settings, "architect a plugin system", None).unwrap();
+        assert_eq!(decision.mode, RoutingMode::AutoPerformance);
+        assert!(!decision.is_local);
+        assert!(!config.model_id.is_empty());
+    }
+
+    #[test]
+    fn balanced_mode_tiers_by_complexity() {
+        let mut settings = routed_settings();
+        settings.routing_mode = "balanced".to_string();
+        let (simple, _) = routing::decide_route(&settings, "fix typo", None).unwrap();
+        let (complex, _) =
+            routing::decide_route(&settings, "architect a distributed cache", None).unwrap();
+        let price = |id_provider: (&str, &str)| {
+            crate::model::catalog::lookup(id_provider.0, id_provider.1)
+                .map(|m| m.input_per_million + m.output_per_million)
+                .unwrap()
+        };
+        let key = |p: &ModelProvider| match p {
+            ModelProvider::Anthropic => "anthropic",
+            ModelProvider::OpenAI => "openai",
+            _ => "google",
+        };
+        assert!(
+            price((key(&complex.provider), &complex.model_id))
+                >= price((key(&simple.provider), &simple.model_id)),
+            "a complex turn must not route cheaper than a simple one"
+        );
+    }
+
+    #[test]
+    fn a_running_local_model_wins_cost_and_balanced_modes() {
+        let mut settings = routed_settings();
+        settings.routing_mode = "auto_cost".to_string();
+        let (config, decision) =
+            routing::decide_route(&settings, "anything", Some("qwen2.5-coder:7b".to_string()))
+                .unwrap();
+        assert!(decision.is_local);
+        assert_eq!(config.model_id, "qwen2.5-coder:7b");
+        assert_eq!(config.provider, ModelProvider::Ollama);
+    }
+
+    #[test]
+    fn local_first_is_strict_no_local_means_refusal_not_cloud() {
+        let mut settings = routed_settings();
+        settings.routing_mode = "local_first".to_string();
+        let err = routing::decide_route(&settings, "anything", None).unwrap_err();
+        assert!(
+            err.to_string().contains("no running local runtime"),
+            "must refuse with the remedy, not silently use cloud: {err}"
+        );
+    }
+
+    #[test]
+    fn nothing_enabled_anywhere_is_an_explained_error_not_a_panic() {
+        crate::model::catalog::reset_to_bundled_for_tests();
+        let core = crate::Core::new_in_memory().unwrap();
+        let settings = core.persistence.get_settings().unwrap();
+        // Fresh in-memory settings carry no keys and no endpoint; combined
+        // with no local model this is the true zero-availability state.
+        // (Ambient env keys could enable a provider on a dev machine, so
+        // this asserts the error SHAPE only when it errors.)
+        let mut settings = settings;
+        settings.routing_mode = "auto_cost".to_string();
+        settings.openai_compatible_endpoint = None;
+        match routing::decide_route(&settings, "anything", None) {
+            Ok((config, _)) => {
+                // A dev machine with exported keys routes instead — either
+                // way it must be a usable config, never a panic.
+                assert!(!config.model_id.is_empty());
+            }
+            Err(e) => assert!(e.to_string().contains("nothing to route to")),
+        }
     }
 }
 

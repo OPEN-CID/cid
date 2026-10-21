@@ -73,6 +73,53 @@ pub(crate) fn normalize_steps(mut steps: Vec<WorkflowStep>) -> Vec<WorkflowStep>
     steps
 }
 
+/// Derive workflow steps from an approved session plan: each numbered item
+/// under the `## Steps` section becomes an agent step whose prompt is the
+/// step text. Pure and unit-tested. A plan with no parseable steps is
+/// refused rather than turned into an empty workflow that "runs" by doing
+/// nothing — an empty run reporting success would be the simulated-work
+/// failure mode this project exists to prevent.
+pub(crate) fn plan_steps_to_agent_steps(content: &str) -> anyhow::Result<Vec<WorkflowStep>> {
+    let in_steps = content
+        .lines()
+        .skip_while(|l| l.trim().to_lowercase() != "## steps")
+        .skip(1);
+    let mut steps = Vec::new();
+    for line in in_steps {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            break;
+        }
+        let body = trimmed
+            .split_once(|c: char| ['.', ')'].contains(&c))
+            .map(|(_, rest)| rest.trim())
+            .unwrap_or("");
+        // Numbered item: leading digits, then the separator the split took.
+        let numbered = trimmed
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>();
+        if numbered.is_empty() || body.is_empty() {
+            continue;
+        }
+        let name: String = body.chars().take(80).collect();
+        steps.push(WorkflowStep {
+            id: String::new(),
+            name,
+            kind: WorkflowStepKind::Agent,
+            prompt: Some(body.to_string()),
+            command: None,
+            model_provider: None,
+            model_id: None,
+            on_failure: WorkflowStepFailurePolicy::Stop,
+        });
+    }
+    if steps.is_empty() {
+        anyhow::bail!("the plan has no numbered steps under ## Steps to run");
+    }
+    Ok(normalize_steps(steps))
+}
+
 /// Structural validation for create/update. Pure, tested below — a workflow
 /// that cannot run must be refused at write time, not discovered mid-run.
 pub(crate) fn validate_steps(steps: &[WorkflowStep]) -> anyhow::Result<()> {
@@ -735,6 +782,29 @@ mod tests {
             on_failure: WorkflowStepFailurePolicy::Stop,
         };
         assert!(validate_steps(&[step]).is_err());
+    }
+
+    #[test]
+    fn plan_steps_parse_into_agent_steps() {
+        let plan = "## Requirements\n- x\n\n## Approach\nDo it.\n\n## Steps\n1. Inspect the repo root\n2. Write the summary\n";
+        let steps = plan_steps_to_agent_steps(plan).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].prompt.as_deref(), Some("Inspect the repo root"));
+        assert!(!steps[0].id.is_empty(), "parsed steps get server ids");
+        assert!(matches!(steps[0].kind, WorkflowStepKind::Agent));
+    }
+
+    #[test]
+    fn a_plan_without_numbered_steps_is_refused_not_emptied() {
+        let plan = "## Requirements\n- x\n\n## Approach\nJust vibes.\n";
+        assert!(plan_steps_to_agent_steps(plan).is_err());
+    }
+
+    #[test]
+    fn prose_inside_the_steps_section_is_skipped() {
+        let plan = "## Steps\nSome context first.\n1. Real step one\n2) Real step two\n\n## Notes\n- later\n";
+        let steps = plan_steps_to_agent_steps(plan).unwrap();
+        assert_eq!(steps.len(), 2);
     }
 
     #[test]

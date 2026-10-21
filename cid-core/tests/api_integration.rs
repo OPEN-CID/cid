@@ -3509,6 +3509,49 @@ async fn session_model_set_switches_and_clears_a_sessions_model_override() {
 }
 
 #[tokio::test]
+async fn model_routing_mode_round_trips_and_rejects_garbage() {
+    let base = start_core().await;
+
+    let mode = rpc_ok(&base, "model.routing.get", json!({})).await;
+    assert_eq!(mode["mode"], "manual", "fresh installs route manually");
+
+    let mode = rpc_ok(&base, "model.routing.set", json!({ "mode": "balanced" })).await;
+    assert_eq!(mode["mode"], "auto_balanced");
+    let mode = rpc_ok(&base, "model.routing.get", json!({})).await;
+    assert_eq!(mode["mode"], "auto_balanced", "the mode must persist");
+
+    // Unknown strings degrade to manual rather than storing garbage that a
+    // later reader would have to interpret.
+    let mode = rpc_ok(&base, "model.routing.set", json!({ "mode": "turbo" })).await;
+    assert_eq!(mode["mode"], "manual");
+}
+
+#[tokio::test]
+async fn model_route_recommend_explains_its_pick() {
+    let base = start_core().await;
+
+    // Enable exactly one provider via the settings RPC so the recommendation
+    // is deterministic: with one candidate there is nothing to optimize
+    // between, whatever else the machine happens to export.
+    let mut settings = rpc_ok(&base, "settings.get", json!({})).await;
+    settings["openai_api_key"] = json!("test-key");
+    settings["routing_mode"] = json!("auto_balanced");
+    rpc_ok(&base, "settings.update", settings).await;
+
+    let decision = rpc_ok(
+        &base,
+        "model.route.recommend",
+        json!({ "task": "Add a small button to the panel" }),
+    )
+    .await;
+    assert_eq!(decision["mode"], "auto_balanced");
+    assert_eq!(decision["complexity"], "standard");
+    assert!(!decision["model_id"].as_str().unwrap_or("").is_empty());
+    assert!(!decision["reason"].as_str().unwrap_or("").is_empty());
+    assert_eq!(decision["is_local"], false);
+}
+
+#[tokio::test]
 async fn session_tool_calls_pending_lists_a_sessions_waiting_approvals() {
     // Shape + wiring test: a fresh session has nothing waiting. The live
     // approval flow itself is exercised by the chat-thread approval tests;
@@ -3522,6 +3565,70 @@ async fn session_tool_calls_pending_lists_a_sessions_waiting_approvals() {
     )
     .await;
     assert!(pending.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn workflow_from_plan_turns_approved_steps_into_agent_steps() {
+    let (base, _dir, session_id) = session_fixture("manual").await;
+    let token = owner_session(&base).await;
+    rpc_ok(
+        &base,
+        "session.plan.update",
+        json!({ "session_id": session_id, "content": "## Steps\n1. Inspect the repo\n2. Write the summary" }),
+    )
+    .await;
+    rpc_ok(
+        &base,
+        "session.plan.approve",
+        json!({ "session_id": session_id, "session_token": token }),
+    )
+    .await;
+
+    let workflow = rpc_ok(
+        &base,
+        "workflow.from_plan",
+        json!({ "session_id": session_id }),
+    )
+    .await;
+    assert_eq!(workflow["steps"].as_array().unwrap().len(), 2);
+    assert_eq!(workflow["steps"][0]["kind"], "agent");
+    assert!(workflow["steps"][0]["prompt"]
+        .as_str()
+        .unwrap()
+        .contains("Inspect the repo"));
+
+    // A draft plan must be refused with guidance, not turned into a run.
+    let dir = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir.path()).unwrap();
+    let channel = rpc_ok(
+        &base,
+        "repo.connect",
+        json!({ "path": dir.path().to_string_lossy() }),
+    )
+    .await;
+    let draft = rpc_ok(
+        &base,
+        "session.create",
+        json!({ "repo_channel_id": channel["id"], "title": "Draft", "task": "x",
+            "isolation_mode": "shared", "autonomy_level": "manual" }),
+    )
+    .await;
+    rpc_ok(
+        &base,
+        "session.plan.update",
+        json!({ "session_id": draft["id"], "content": "## Steps\n1. Do it" }),
+    )
+    .await;
+    let body = rpc(
+        &base,
+        "workflow.from_plan",
+        json!({ "session_id": draft["id"] }),
+    )
+    .await;
+    assert!(
+        body.get("error").is_some(),
+        "a draft plan must be refused: {body}"
+    );
 }
 
 #[tokio::test]

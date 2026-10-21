@@ -369,6 +369,75 @@ pub enum SkillScope {
     Repo,
 }
 
+/// Model routing policy. `manual` is today's behavior verbatim (role pins,
+/// then global availability); the `auto_*` modes let the router pick per
+/// turn from what is actually enabled. An explicit per-session or per-step
+/// model override always wins over every mode — auto never overrules a
+/// choice a human already made.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    Manual,
+    AutoCost,
+    AutoBalanced,
+    AutoPerformance,
+    AutoLocal,
+}
+
+impl RoutingMode {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "auto_cost" | "auto-cost" | "cost" => RoutingMode::AutoCost,
+            "auto_balanced" | "auto-balanced" | "balanced" | "auto" => RoutingMode::AutoBalanced,
+            "auto_performance" | "auto-performance" | "performance" => RoutingMode::AutoPerformance,
+            "auto_local" | "auto-local" | "local" | "local_first" | "local-first" => {
+                RoutingMode::AutoLocal
+            }
+            _ => RoutingMode::Manual,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RoutingMode::Manual => "manual",
+            RoutingMode::AutoCost => "auto_cost",
+            RoutingMode::AutoBalanced => "auto_balanced",
+            RoutingMode::AutoPerformance => "auto_performance",
+            RoutingMode::AutoLocal => "auto_local",
+        }
+    }
+
+    pub fn is_auto(&self) -> bool {
+        !matches!(self, RoutingMode::Manual)
+    }
+}
+
+/// Task complexity for routing: which tier of model a turn deserves.
+/// Deliberately a coarse heuristic over the task text (length + signal
+/// words), not a model call — spending a model call to decide which model
+/// to call would defeat the cost purpose on every single turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskComplexity {
+    Simple,
+    Standard,
+    Complex,
+}
+
+/// Why a turn went to a particular model. Returned by
+/// `model.route.recommend` and shown in the UI routing badge, so an
+/// automatic choice is always inspectable rather than mysterious.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingDecision {
+    pub provider: ModelProvider,
+    pub model_id: String,
+    pub mode: RoutingMode,
+    pub complexity: TaskComplexity,
+    pub reason: String,
+    /// True when the pick costs nothing beyond electricity.
+    pub is_local: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub anthropic_api_key: Option<String>,
@@ -390,6 +459,8 @@ pub struct Settings {
     pub reviewer_provider: Option<String>,
     pub reviewer_model: Option<String>,
     pub github_token: Option<String>,
+    /// Routing policy id (`manual` default) — see `RoutingMode`.
+    pub routing_mode: String,
 }
 
 // Phase 1 Model Provider Types
@@ -1014,6 +1085,10 @@ pub struct SubagentSpawnParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentCancelParams {
     pub subagent_id: String,
+    // `JSON.stringify` drops `undefined`, so a caller that omits the reason
+    // sends no field at all — without this default that is a deserialization
+    // error rather than a cancellation.
+    #[serde(default)]
     pub reason: Option<String>,
 }
 

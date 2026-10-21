@@ -172,6 +172,20 @@ const MIGRATIONS: &[&str] = &[
      WHERE implementer_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
     "UPDATE settings SET reviewer_model = 'gemini-4-argon' \
      WHERE reviewer_model IN ('gemini-3.1-pro-preview', 'gemini-robotics-er-1.6-preview')",
+    // Model routing policy. Appended — never inserted earlier in this array:
+    // `run_migrations` applies only entries newer than the DB's stamped
+    // version, so a mid-array ALTER silently never runs on existing
+    // databases (found live: settings.update 500'd on an older cid.db with
+    // "no such column"). Fresh databases get the column from the base schema.
+    "ALTER TABLE settings ADD COLUMN routing_mode TEXT",
+    // Intentional duplicate of the entry above, and the reason migrations
+    // are append-only: that ALTER was first added in the *middle* of this
+    // array, which changed no version number, so every database already
+    // stamped at that version skipped it forever. Appending it again bumps
+    // the version, which is what actually makes existing databases pick it
+    // up; on fresh databases the second apply fails with "duplicate column"
+    // and is tolerated like every other already-present base-schema column.
+    "ALTER TABLE settings ADD COLUMN routing_mode TEXT",
 ];
 
 /// Rename the pre-2026-08-21 "Mission" schema to "Session", *before* the base
@@ -453,7 +467,8 @@ impl Persistence {
                 implementer_model TEXT,
                 reviewer_provider TEXT,
                 reviewer_model TEXT,
-                github_token TEXT
+                github_token TEXT,
+                routing_mode TEXT NOT NULL DEFAULT 'manual'
             );
 
             INSERT OR IGNORE INTO settings (id, anthropic_model, theme) VALUES (1, 'claude-sonnet-5', 'dark');
@@ -1269,7 +1284,7 @@ impl Persistence {
         let conn = self.conn.lock().unwrap();
 
         // Try full column set first; if fails due to missing columns (old DB without migration), fallback
-        let full_sql = "SELECT anthropic_api_key, anthropic_model, openai_api_key, openai_model, google_api_key, google_model, openai_compatible_endpoint, openai_compatible_api_key, openai_compatible_model, worktree_root, theme, planner_provider, planner_model, implementer_provider, implementer_model, reviewer_provider, reviewer_model, github_token FROM settings WHERE id = 1";
+        let full_sql = "SELECT anthropic_api_key, anthropic_model, openai_api_key, openai_model, google_api_key, google_model, openai_compatible_endpoint, openai_compatible_api_key, openai_compatible_model, worktree_root, theme, planner_provider, planner_model, implementer_provider, implementer_model, reviewer_provider, reviewer_model, github_token, routing_mode FROM settings WHERE id = 1";
 
         let attempt = conn.prepare(full_sql);
         let settings = if let Ok(mut stmt) = attempt {
@@ -1293,6 +1308,9 @@ impl Persistence {
                     reviewer_provider: row.get(15)?,
                     reviewer_model: row.get(16)?,
                     github_token: row.get(17)?,
+                    routing_mode: row
+                        .get::<_, Option<String>>(18)?
+                        .unwrap_or_else(|| "manual".to_string()),
                 })
             })
         } else {
@@ -1318,6 +1336,7 @@ impl Persistence {
                     reviewer_provider: None,
                     reviewer_model: None,
                     github_token: None,
+                    routing_mode: "manual".to_string(),
                 })
             })
         };
@@ -1328,7 +1347,7 @@ impl Persistence {
     pub fn update_settings(&self, settings: &Settings) -> Result<Settings> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE settings SET anthropic_api_key = ?1, anthropic_model = ?2, openai_api_key = ?3, openai_model = ?4, google_api_key = ?5, google_model = ?6, openai_compatible_endpoint = ?7, openai_compatible_api_key = ?8, openai_compatible_model = ?9, worktree_root = ?10, theme = ?11, planner_provider = ?12, planner_model = ?13, implementer_provider = ?14, implementer_model = ?15, reviewer_provider = ?16, reviewer_model = ?17, github_token = ?18 WHERE id = 1",
+            "UPDATE settings SET anthropic_api_key = ?1, anthropic_model = ?2, openai_api_key = ?3, openai_model = ?4, google_api_key = ?5, google_model = ?6, openai_compatible_endpoint = ?7, openai_compatible_api_key = ?8, openai_compatible_model = ?9, worktree_root = ?10, theme = ?11, planner_provider = ?12, planner_model = ?13, implementer_provider = ?14, implementer_model = ?15, reviewer_provider = ?16, reviewer_model = ?17, github_token = ?18, routing_mode = ?19 WHERE id = 1",
             params![
                 settings.anthropic_api_key,
                 settings.anthropic_model,
@@ -1348,6 +1367,7 @@ impl Persistence {
                 settings.reviewer_provider,
                 settings.reviewer_model,
                 settings.github_token,
+                settings.routing_mode,
             ],
         )?;
         drop(conn);
@@ -2502,6 +2522,46 @@ mod tests {
         assert_eq!(version, MIGRATIONS.len() as i64);
     }
 
+    #[test]
+    fn an_upgrading_database_gains_the_routing_column() {
+        // Regression test for a real failure: the routing ALTER was first
+        // added in the *middle* of MIGRATIONS, where the version check made
+        // it silently never run on existing databases — `settings.update`
+        // then failed with "no such column". Migrations are positional: new
+        // entries must be appended, and this pins that the newest entry is
+        // the one an upgrading database actually receives.
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), anthropic_api_key TEXT, anthropic_model TEXT NOT NULL DEFAULT 'claude-sonnet-5');",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO settings (id) VALUES (1)", [])
+            .unwrap();
+        let stamped = MIGRATIONS.len() as i64 - 1;
+        conn.pragma_update(None, "user_version", stamped).unwrap();
+
+        run_migrations(&mut conn).unwrap();
+
+        let has_column: bool = conn
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = 'routing_mode'",
+            )
+            .unwrap()
+            .query_row([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            > 0;
+        assert!(
+            has_column,
+            "an upgrade must apply the newest migration entry, wherever it sits"
+        );
+        // The exact statement that failed live must now run.
+        conn.execute(
+            "UPDATE settings SET routing_mode = ?1 WHERE id = 1",
+            ["auto_balanced"],
+        )
+        .unwrap();
+    }
+
     /// The version stamped on a database written just before the retired-model
     /// UPDATE migrations were added. Derived rather than hardcoded so appending
     /// a later migration can't silently move these tests off the case they pin.
@@ -2797,6 +2857,17 @@ mod tests {
         assert_eq!(repo.path, "/tmp/test-repo");
         let list = p.list_repo_channels().unwrap();
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn routing_mode_defaults_to_manual_and_round_trips() {
+        let p = Persistence::new_in_memory().unwrap();
+        assert_eq!(p.get_settings().unwrap().routing_mode, "manual");
+
+        let mut settings = p.get_settings().unwrap();
+        settings.routing_mode = "auto_balanced".to_string();
+        p.update_settings(&settings).unwrap();
+        assert_eq!(p.get_settings().unwrap().routing_mode, "auto_balanced");
     }
 
     #[test]
