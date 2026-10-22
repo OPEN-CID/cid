@@ -422,8 +422,14 @@ function SessionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
 }
 
 function BottomStatus() {
-  const { connected, selectedSessionId, sessions } = useCid();
+  const { connected, selectedSessionId, sessions, selectSession } = useCid();
   const session = sessions.find((m) => m.id === selectedSessionId);
+  // Sessions parked on approval are invisible from everywhere except their
+  // own thread — a real install here accumulated 15 of them while the user
+  // thought the app was broken. One global count with a jump-to action.
+  const blocked = sessions.filter(
+    (m) => m.status === "blocked_on_approval" && m.id !== selectedSessionId
+  );
   // Previously this read settings and defaulted the provider to "anthropic" and
   // the id to the schema default, so it displayed `claude-sonnet-5 (anthropic)`
   // on an install with no Anthropic key — asserting a working configuration
@@ -454,6 +460,18 @@ function BottomStatus() {
           <span>
             Isolation: <span className="text-foreground">{session.isolation_mode}</span>
           </span>
+        </>
+      )}
+      {blocked.length > 0 && (
+        <>
+          <span>•</span>
+          <button
+            onClick={() => selectSession(blocked[0].id)}
+            className="text-amber-400 hover:text-amber-300"
+            title={blocked.map((m) => m.title).join(", ")}
+          >
+            {blocked.length} session{blocked.length === 1 ? "" : "s"} need{blocked.length === 1 ? "s" : ""} attention
+          </button>
         </>
       )}
       <span className="ml-auto">Tauri v2 • Rust core • SQLite • git2-rs • portable-pty • MCP 2026-07-28 • ACP host</span>

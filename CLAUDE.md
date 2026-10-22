@@ -758,3 +758,46 @@ client (thin client over a Core you run yourself — CID has no multi-tenant hos
 backend), **`doc.opencid.dev`** is documentation/blog/community, built as a separate
 standalone repo. Read that file's §0 before touching either — it corrects an earlier,
 superseded draft that had the domains the other way around (marketing site vs. product).
+
+## Product pass — pipelines, auto-routing, review/agents surfaces (2026-10)
+
+Built because the test suites kept passing while real use stalled: 15/16 real
+sessions sat `blocked_on_approval` on draft plans and the app gave no
+hint. Three rules hardened along the way:
+
+- **Workflows** (`cid-core/src/workflow`, `session.*`/`workflow.*` RPCs,
+  `WorkflowPanel`): linear agent/command/manual-gate chains on a Session,
+  persisted per-step, crash-safe (a restart marks in-flight runs Failed with
+  a retry path; parked gates survive). A run can never silently touch a file
+  outside its worktree — every step reuses the session's confinement,
+  autonomy gate, and checkpoints. Plan → workflow bridge: an approved plan's
+  `## Steps` become agent steps (`workflow.from_plan` refuses drafts).
+  **Two traps hit while building it, both now regression-tested:** (1) a new
+  `workflow_runs` FK broke `repo.disconnect` — every new session-scoped table
+  must join `SESSION_SCOPED_TABLES`; (2) a mid-array `MIGRATIONS` insert
+  never ran on stamped DBs — append-only, always.
+- **Auto routing** (`model/routing.rs`, `RoutingMode`): manual default =
+  today's behavior verbatim. Auto modes pick per Implementer/subagent turn
+  from enabled providers by cost tier and task complexity, preferring a
+  running local runtime; explicit session/step overrides always win;
+  Planner/Reviewer stay manual (planning quality dominates, planning is
+  infrequent). Every pick carries a `RoutingDecision` with a plain-language
+  reason — surfaced in Providers → Auto routing (with a preview box) and in
+  the thread's model bar. Tests are hermetic via `reset_to_bundled_for_tests`
+  (a stale disk cache masked retirements on the dev machine while CI saw the
+  snapshot — same cache-is-a-second-code-path lesson as `docs/053` §1).
+- **Reviews tab** (PR/change-request list + statuses + release log) and
+  **Agents tab** (live subagents with working cancel, background tasks,
+  one-click isolated sandbox pre-pinned to a local model when one runs).
+  Building the Agents tab exposed that `subagent.get`/`cancel` clients sent
+  `{id}` where the server requires `subagent_id` — broken since introduction
+  because nothing ever called them. The 041 §4 `comm` check now includes
+  `api.ts` client shapes, not just RPC names.
+- **Small honesty fixes from the same pass**: `session.model.set` (per-turn
+  override finally changeable mid-conversation, with a SessionModelBar
+  switcher), `session.tool_calls.pending` surfaced as inline Approve/Deny in
+  the WorkflowPanel run view (a parked command step was invisible outside
+  ChatThread), MCP calls render server/tool identity in History, a terminal
+  Reconnect affordance for dead server-side PTYs, and a global "N sessions
+  need attention" status-bar indicator that jumps to the first blocked one.
+

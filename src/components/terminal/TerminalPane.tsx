@@ -47,6 +47,32 @@ export function TerminalPane() {
   const [isConnected, setIsConnected] = useState(false);
   const [cwd, setCwd] = useState<string | null>(null);
   const [target, setTarget] = useState<TerminalTarget | null>(null);
+  // A dead server-side PTY (Core restarted, PTY killed elsewhere) otherwise
+  // looks exactly like a working terminal that ignores input — the worst
+  // possible failure mode for a shell. Surface it with a one-click fix.
+  const [ptyDead, setPtyDead] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+
+  const markDead = useCallback(() => {
+    setPtyDead(true);
+    setIsConnected(false);
+  }, []);
+
+  const reconnect = useCallback(async () => {
+    // Best-effort cleanup of the dead PTY first so reconnects don't leak
+    // server-side shells one per click.
+    if (ptyId) {
+      try {
+        await api.pty.kill(ptyId);
+      } catch {
+        /* already gone — that is the point */
+      }
+    }
+    setPtyId(null);
+    setCwd(null);
+    setPtyDead(false);
+    setReconnectNonce((n) => n + 1);
+  }, [ptyId]);
 
   // Follow the selected Session by default; an explicit choice sticks until the
   // user selects a different Session.
@@ -103,6 +129,7 @@ export function TerminalPane() {
 
   useEffect(() => {
     if (!target || !termRef.current) return;
+    setPtyDead(false);
 
     // Both handlers are torn down when the target changes. They used to be
     // registered inside the async body and their disposers returned from *it*,
@@ -129,7 +156,10 @@ export function TerminalPane() {
         // hasn't committed yet).
         onDataDisposable =
           termRef.current?.onData((data) => {
-            api.pty.write(pty.id, data).catch(console.error);
+            api.pty.write(pty.id, data).catch((e) => {
+              console.error(e);
+              if (!disposed) markDead();
+            });
           }) ?? null;
 
         unsub = api.onNotification((notif) => {
@@ -149,7 +179,7 @@ export function TerminalPane() {
       onDataDisposable?.dispose();
       unsub?.();
     };
-  }, [target]);
+  }, [target, reconnectNonce, markDead]);
 
   const handleResize = useCallback(async () => {
     if (!fitRef.current || !ptyId) return;
@@ -171,9 +201,12 @@ export function TerminalPane() {
         await api.pty.resize(ptyId, dims.cols, dims.rows);
       } catch (e) {
         console.warn("[CID] PTY resize failed:", e);
+        // A resize against a dead PTY fails the same way a write does —
+        // surface the reconnect affordance rather than degrading silently.
+        markDead();
       }
     }
-  }, [ptyId]);
+  }, [ptyId, markDead]);
 
   useEffect(() => {
     const interval = setInterval(handleResize, 1000);
@@ -231,8 +264,20 @@ export function TerminalPane() {
         </span>
 
         <span className="ml-auto shrink-0 flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-yellow-500"}`} />
-          {isConnected ? "Connected" : "Connecting"}
+          {ptyDead ? (
+            <button
+              onClick={reconnect}
+              className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[11px]"
+              title="The server-side shell is gone (usually a Core restart). Start a fresh one in this directory."
+            >
+              Reconnect
+            </button>
+          ) : (
+            <>
+              <span className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-yellow-500"}`} />
+              {isConnected ? "Connected" : "Connecting"}
+            </>
+          )}
         </span>
       </div>
       <div ref={containerRef} className="flex-1" />

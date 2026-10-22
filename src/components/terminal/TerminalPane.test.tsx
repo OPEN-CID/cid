@@ -42,7 +42,7 @@ let notificationHandler: ((notif: unknown) => void) | null = null;
 
 vi.mock("@/lib/api", () => ({
   api: {
-    pty: { create: vi.fn(), write: vi.fn(), resize: vi.fn() },
+    pty: { create: vi.fn(), write: vi.fn(), resize: vi.fn(), kill: vi.fn() },
     onNotification: vi.fn((handler: (notif: unknown) => void) => {
       notificationHandler = handler;
       return () => {
@@ -66,7 +66,9 @@ describe("TerminalPane", () => {
     vi.mocked(api.pty.create).mockReset();
     vi.mocked(api.pty.write).mockReset();
     vi.mocked(api.pty.resize).mockReset();
+    vi.mocked(api.pty.kill).mockReset();
     vi.mocked(api.pty.write).mockResolvedValue(undefined);
+    vi.mocked(api.pty.kill).mockResolvedValue(undefined);
   });
 
   it("prompts to select a session when none is selected, and creates no PTY", () => {
@@ -195,6 +197,40 @@ describe("TerminalPane", () => {
     render(<TerminalPane />);
 
     await waitFor(() => expect(writelnCalls.some((s) => s.includes("Failed to create PTY"))).toBe(true));
+  });
+
+  // A dead server-side PTY used to look exactly like a working terminal
+  // that ignores input — keystrokes vanished into a rejected promise only
+  // visible in the console. Now the failure surfaces a Reconnect affordance.
+  it("a failed write surfaces a Reconnect button instead of swallowing input", async () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
+    vi.mocked(api.pty.create).mockResolvedValueOnce({ id: "pty-dead", cwd: "/wt" });
+    vi.mocked(api.pty.write).mockRejectedValueOnce(new Error("PTY not found"));
+    render(<TerminalPane />);
+    await waitFor(() => expect(onDataHandler).not.toBeNull());
+
+    onDataHandler?.("ls\n");
+
+    expect(await screen.findByText("Reconnect")).toBeInTheDocument();
+  });
+
+  it("reconnect kills the dead PTY and creates a fresh one", async () => {
+    vi.mocked(useCid).mockReturnValue({ selectedSessionId: "session-1" } as any);
+    vi.mocked(api.pty.create)
+      .mockResolvedValueOnce({ id: "pty-dead", cwd: "/wt" })
+      .mockResolvedValueOnce({ id: "pty-fresh", cwd: "/wt" });
+    vi.mocked(api.pty.write).mockRejectedValueOnce(new Error("PTY not found"));
+    render(<TerminalPane />);
+    await waitFor(() => expect(onDataHandler).not.toBeNull());
+
+    onDataHandler?.("ls\n");
+    fireEvent.click(await screen.findByText("Reconnect"));
+
+    await waitFor(() => expect(api.pty.kill).toHaveBeenCalledWith("pty-dead"));
+    await waitFor(() =>
+      expect(api.pty.create).toHaveBeenCalledWith("session-1", 120, 30, "session")
+    );
+    expect(screen.queryByText("Reconnect")).not.toBeInTheDocument();
   });
 
   it("disposes the xterm instance on unmount", async () => {

@@ -302,4 +302,45 @@ describe("App", () => {
 
     expect(await screen.findByText("Keyboard shortcuts")).toBeInTheDocument();
   });
+
+  it("flags sessions parked on approval in the status bar and jumps to the first", async () => {
+    const selectSession = vi.fn();
+    vi.mocked(useCid).mockReturnValue({
+      setConnected: vi.fn(),
+      connected: true,
+      selectedRepoId: "repo-1",
+      selectedSessionId: "session-1",
+      repos: [{ id: "repo-1", name: "cid" }],
+      sessions: [
+        { id: "session-1", title: "Active", autonomy_level: "co_pilot", isolation_mode: "worktree", status: "running" },
+        { id: "session-2", title: "Stuck A", autonomy_level: "co_pilot", isolation_mode: "worktree", status: "blocked_on_approval" },
+        { id: "session-3", title: "Stuck B", autonomy_level: "co_pilot", isolation_mode: "worktree", status: "blocked_on_approval" },
+      ],
+      loadSessions: vi.fn(),
+      selectSession,
+    } as any);
+
+    render(<App />);
+    expect(await screen.findByText("2 sessions need attention")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("2 sessions need attention"));
+    expect(selectSession).toHaveBeenCalledWith("session-2");
+  });
+
+  it("shows no attention flag when nothing is blocked", async () => {
+    vi.mocked(useCid).mockReturnValue({
+      setConnected: vi.fn(),
+      connected: true,
+      selectedRepoId: "repo-1",
+      selectedSessionId: "session-1",
+      repos: [{ id: "repo-1", name: "cid" }],
+      sessions: [{ id: "session-1", title: "S", autonomy_level: "co_pilot", isolation_mode: "worktree", status: "running" }],
+      loadSessions: vi.fn(),
+      selectSession: vi.fn(),
+    } as any);
+
+    render(<App />);
+    await screen.findByText("EditorPaneStub");
+    expect(screen.queryByText(/need attention/)).not.toBeInTheDocument();
+  });
 });
