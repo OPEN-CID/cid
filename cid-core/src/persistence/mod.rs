@@ -360,6 +360,10 @@ impl Persistence {
             conn: Mutex::new(conn),
         };
         persistence.init_schema()?;
+        // Crash recovery lives here, not in `Core::new`, so every opener of
+        // the database — Core, tests, tools — gets the same guarantee. See
+        // `fail_interrupted_workflow_runs` for the single-writer assumption.
+        persistence.fail_interrupted_workflow_runs()?;
         Ok(persistence)
     }
 
@@ -369,6 +373,7 @@ impl Persistence {
             conn: Mutex::new(conn),
         };
         persistence.init_schema()?;
+        persistence.fail_interrupted_workflow_runs()?;
         Ok(persistence)
     }
 
@@ -808,6 +813,44 @@ impl Persistence {
         )?;
         drop(conn);
         self.get_workflow_run(run_id)
+    }
+
+    /// Crash recovery for workflow runs. A run in `running` status is driven
+    /// by an in-memory tokio task that dies with the process — after a
+    /// restart nothing will ever advance it again, so leaving the status
+    /// would display "Running" forever with no way forward. Mark it failed
+    /// with the remedy; `retry` resumes from the last completed step, so
+    /// nothing that actually executed runs twice. `waiting_approval` runs
+    /// are left alone: approving one spawns a fresh driver, so they are
+    /// still resumable without any intervention.
+    ///
+    /// Assumes one Core per database (a second Core opening the same db
+    /// would fail another process's live runs — the same reason E2E runs
+    /// against a disposable database rather than the real install's).
+    pub fn fail_interrupted_workflow_runs(&self) -> Result<usize> {
+        let runs = self.list_workflow_runs(None)?;
+        let mut failed = 0;
+        for run in runs {
+            if run.status != crate::api::types::WorkflowRunStatus::Running {
+                continue;
+            }
+            let mut steps = run.steps.clone();
+            if let Some(step) = steps.get_mut(run.current_index) {
+                step.status = crate::api::types::WorkflowStepRunStatus::Failed;
+                step.error = Some(
+                    "Core restarted while this run was in flight — retry resumes from the last completed step".to_string(),
+                );
+                step.completed_at = Some(chrono::Utc::now());
+            }
+            self.update_workflow_run_step(
+                &run.id,
+                run.current_index,
+                &crate::api::types::WorkflowRunStatus::Failed,
+                &steps,
+            )?;
+            failed += 1;
+        }
+        Ok(failed)
     }
 
     // Workspace
@@ -2964,6 +3007,91 @@ mod tests {
         assert!(
             p.list_messages(&session.id).unwrap().is_empty(),
             "session-scoped rows must not be orphaned"
+        );
+    }
+
+    #[test]
+    fn reopening_after_a_crash_fails_running_runs_but_keeps_waiting_ones() {
+        use crate::api::types::{
+            WorkflowRunStatus, WorkflowStep, WorkflowStepFailurePolicy, WorkflowStepKind,
+            WorkflowStepRun, WorkflowStepRunStatus,
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("crash.db");
+        let step = || WorkflowStep {
+            id: "s1".to_string(),
+            name: "step".to_string(),
+            kind: WorkflowStepKind::Command,
+            prompt: None,
+            command: Some("echo hi".to_string()),
+            model_provider: None,
+            model_id: None,
+            on_failure: WorkflowStepFailurePolicy::Stop,
+        };
+        let pending = || WorkflowStepRun {
+            step_id: "s1".to_string(),
+            status: WorkflowStepRunStatus::Pending,
+            output: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+        };
+        let (run_id, waiting_id) = {
+            let p = Persistence::new(Some(path.clone())).unwrap();
+            let repo = p.connect_repo("/tmp/crash-repo", None).unwrap();
+            let session = p
+                .create_session(
+                    &repo.id,
+                    "t",
+                    "t",
+                    IsolationMode::Shared,
+                    AutonomyLevel::CoPilot,
+                )
+                .unwrap();
+            let wf = p.create_workflow(&repo.id, "w", "", &[step()]).unwrap();
+            // create_workflow_run always starts Running — the crash state.
+            let run = p
+                .create_workflow_run(&wf.id, &session.id, &[pending()])
+                .unwrap();
+            // ...while a parked gate is legitimately resumable.
+            let mut waiting = p
+                .create_workflow_run(&wf.id, &session.id, &[pending()])
+                .unwrap();
+            waiting = p
+                .update_workflow_run_step(
+                    &waiting.id,
+                    0,
+                    &WorkflowRunStatus::WaitingApproval,
+                    &[pending()],
+                )
+                .unwrap();
+            (run.id.clone(), waiting.id.clone())
+        };
+
+        // "Restart": reopening must sweep the orphaned run, and only it.
+        let reopened = Persistence::new(Some(path)).unwrap();
+        let run = reopened.get_workflow_run(&run_id).unwrap();
+        assert_eq!(run.status, WorkflowRunStatus::Failed);
+        assert_eq!(
+            run.steps[0].status,
+            WorkflowStepRunStatus::Failed,
+            "the in-flight step must say failed, not linger as running"
+        );
+        assert!(
+            run.steps[0]
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("retry"),
+            "the failure must name the remedy: {:?}",
+            run.steps[0].error
+        );
+        let waiting = reopened.get_workflow_run(&waiting_id).unwrap();
+        assert_eq!(
+            waiting.status,
+            WorkflowRunStatus::WaitingApproval,
+            "a parked gate survives restarts — approving it still works"
         );
     }
 
