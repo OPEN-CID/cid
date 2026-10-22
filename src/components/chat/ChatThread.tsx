@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCid, type PendingApproval } from "@/hooks/useCid";
 import { api } from "@/lib/api";
+import { extractMentions, mentionQueryAt } from "@/lib/mentions";
+
+type McpToolOption = { server: string; serverId: string; tool: string; description?: string };
 import { PlanCard } from "./PlanCard";
 import { SessionModelBar } from "./SessionModelBar";
 import { ReviewCard } from "./ReviewCard";
@@ -25,6 +28,112 @@ export function ChatThread() {
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // @mention MCP tools: autocomplete options plus the open query.
+  const [toolOptions, setToolOptions] = useState<McpToolOption[]>([]);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionIndex, setMentionIndex] = useState(0);
+
+  const loadToolOptions = useCallback(async () => {
+    try {
+      const servers = (await api.mcp.list()) as { id: string; name: string }[] | null;
+      if (!Array.isArray(servers)) return;
+      const all: McpToolOption[] = [];
+      for (const s of servers) {
+        try {
+          const tools = (await api.mcp.tools(s.id)) as { name: string; description?: string }[];
+          for (const t of Array.isArray(tools) ? tools : []) {
+            all.push({ server: s.name, serverId: s.id, tool: t.name, description: t.description });
+          }
+        } catch {
+          // One unreachable server must not hide every other server's tools.
+        }
+      }
+      setToolOptions(all);
+    } catch {
+      // No MCP servers configured — the @ menu simply stays empty.
+    }
+  }, []);
+
+  const mentionMatches = useMemo(() => {
+    const q = mentionQuery.toLowerCase();
+    return toolOptions
+      .filter((t) => !q || `${t.server}.${t.tool}`.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [toolOptions, mentionQuery]);
+
+  const closeMention = useCallback(() => {
+    setMentionOpen(false);
+    setMentionIndex(0);
+  }, []);
+
+  const completeMention = useCallback(
+    (opt: McpToolOption) => {
+      const el = textareaRef.current;
+      if (!el) return;
+      const caret = el.selectionStart ?? input.length;
+      const at = input.slice(0, caret).lastIndexOf("@");
+      if (at < 0) return;
+      const completed = `${input.slice(0, at)}@${opt.server}.${opt.tool} ${input.slice(caret)}`;
+      setInput(completed);
+      closeMention();
+      requestAnimationFrame(() => {
+        el.focus();
+        const pos = at + opt.server.length + opt.tool.length + 2;
+        el.setSelectionRange(pos, pos);
+      });
+    },
+    [input, closeMention]
+  );
+
+  // Resolve @server.tool mentions by actually calling the tool, and append
+  // each result to the outgoing message. Only mentions matching a connected
+  // server's real tool run — anything else stays plain text, never a call.
+  // A trailing JSON object supplies arguments; without one the tool is
+  // called with {} and a failure is reported inline rather than hidden.
+  const resolveMentions = useCallback(
+    async (content: string): Promise<string> => {
+      const mentions = extractMentions(content);
+      if (mentions.length === 0) return content;
+      if (toolOptions.length === 0) await loadToolOptions();
+      // Re-read: loadToolOptions sets state asynchronously.
+      let known = toolOptions;
+      if (known.length === 0) {
+        try {
+          const servers = (await api.mcp.list()) as { id: string; name: string }[];
+          const all: McpToolOption[] = [];
+          for (const s of Array.isArray(servers) ? servers : []) {
+            try {
+              const tools = (await api.mcp.tools(s.id)) as { name: string }[];
+              for (const t of Array.isArray(tools) ? tools : []) {
+                all.push({ server: s.name, serverId: s.id, tool: t.name });
+              }
+            } catch {
+              /* per-server best effort, as above */
+            }
+          }
+          known = all;
+        } catch {
+          return content;
+        }
+      }
+      const blocks: string[] = [];
+      for (const m of mentions) {
+        const opt = known.find((t) => t.server === m.server && t.tool === m.tool);
+        if (!opt) continue;
+        try {
+          const result = await api.mcp.callTool(opt.serverId, opt.tool, m.args ?? {});
+          blocks.push(`[Tool @${m.server}.${m.tool} result: ${JSON.stringify(result).slice(0, 4000)}]`);
+        } catch (e) {
+          blocks.push(`[Tool @${m.server}.${m.tool} failed: ${e}]`);
+        }
+      }
+      if (blocks.length === 0) return content;
+      return `${content}\n\n${blocks.join("\n")}`;
+    },
+    [toolOptions, loadToolOptions]
+  );
 
   const sessionMessages = useMemo(
     () => (selectedSessionId ? messages[selectedSessionId] || [] : []),
@@ -114,7 +223,14 @@ export function ChatThread() {
 
   const handleSend = async () => {
     if (!input.trim() || !selectedSessionId) return;
-    const content = input.trim();
+    const raw = input.trim();
+    setInput("");
+    setIsSending(true);
+    closeMention();
+    // @mentions are resolved before the turn starts so the model receives
+    // tool outputs as message content, not as a promise the agent loop
+    // cannot keep (it has no MCP tool to call itself).
+    const content = await resolveMentions(raw).catch(() => raw);
 
     // `/compact` — the manual trigger for context compaction (review_prompt.md
     // §3.1); everything else still goes to the Session as a normal message.
@@ -122,9 +238,6 @@ export function ChatThread() {
       await handleCompactCommand(selectedSessionId);
       return;
     }
-
-    setInput("");
-    setIsSending(true);
 
     try {
       const userMsg = {
@@ -295,14 +408,69 @@ export function ChatThread() {
       </div>
 
       {/* Composer */}
-      <div className="p-3 border-t bg-card/50">
+      <div className="p-3 border-t bg-card/50 relative">
+        {mentionOpen && mentionMatches.length > 0 && (
+          <div className="absolute bottom-full left-3 right-3 mb-1 bg-popover border rounded-lg shadow-lg max-h-48 overflow-y-auto text-xs z-10">
+            {mentionMatches.map((opt, i) => (
+              <button
+                key={`${opt.server}.${opt.tool}`}
+                onClick={() => completeMention(opt)}
+                onMouseEnter={() => setMentionIndex(i)}
+                className={`w-full text-left px-3 py-1.5 flex gap-2 items-center ${i === mentionIndex ? "bg-accent" : ""}`}
+              >
+                <span className="font-mono font-medium">@{opt.server}.{opt.tool}</span>
+                {opt.description && (
+                  <span className="text-muted-foreground truncate">{opt.description}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2 items-end">
           <textarea
+            ref={textareaRef}
             className="flex-1 bg-background border rounded-lg px-3 py-2 text-sm resize-none min-h-[44px] max-h-32 outline-none focus:ring-1 focus:ring-ring"
             placeholder="Type a task, question, or @mention an MCP tool..."
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setInput(v);
+              const q = mentionQueryAt(v, e.target.selectionStart ?? v.length);
+              if (q === null) {
+                closeMention();
+              } else {
+                if (toolOptions.length === 0) loadToolOptions();
+                setMentionQuery(q);
+                setMentionIndex(0);
+                setMentionOpen(true);
+              }
+            }}
             onKeyDown={(e) => {
+              if (mentionOpen && mentionMatches.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMentionIndex((i) => (i + 1) % mentionMatches.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeMention();
+                  return;
+                }
+                if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                  const opt = mentionMatches[mentionIndex] ?? mentionMatches[0];
+                  if (opt) {
+                    e.preventDefault();
+                    completeMention(opt);
+                    return;
+                  }
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleSend();

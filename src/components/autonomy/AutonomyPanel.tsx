@@ -3,6 +3,7 @@ import { api } from "../../lib/api";
 import { useCid } from "../../hooks/useCid";
 import { Plus, Save, Trash2, RotateCcw } from "lucide-react";
 import { RoleProfilesPanel } from "./RoleProfilesPanel";
+import { GovernancePanel } from "./GovernancePanel";
 
 type AllowedCommand = { pattern: string; description?: string | null; requires_approval: boolean };
 type AutonomyAllowlist = {
@@ -211,6 +212,8 @@ export function AutonomyPanel() {
       )}
 
       <RoleProfilesPanel />
+
+      <GovernancePanel />
     </div>
   );
 }

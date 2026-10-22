@@ -10,7 +10,7 @@ import { useCid } from "@/hooks/useCid";
 
 vi.mock("@/lib/api", () => ({
   api: {
-    github: { prs: vi.fn(), prStatus: vi.fn() },
+    github: { prs: vi.fn(), prStatus: vi.fn(), createPr: vi.fn() },
     forge: { changeRequests: vi.fn() },
     deployment: { list: vi.fn() },
   },
@@ -34,6 +34,7 @@ describe("ReviewsPanel", () => {
     localStorage.clear();
     vi.mocked(api.github.prs).mockReset().mockResolvedValue([]);
     vi.mocked(api.github.prStatus).mockReset();
+    vi.mocked(api.github.createPr).mockReset();
     vi.mocked(api.forge.changeRequests).mockReset().mockResolvedValue([]);
     vi.mocked(api.deployment.list).mockReset().mockResolvedValue([]);
     vi.mocked(useCid).mockReturnValue(state as any);
@@ -77,6 +78,24 @@ describe("ReviewsPanel", () => {
 
     expect(await screen.findByText("production")).toBeInTheDocument();
     expect(screen.getByText("staging")).toBeInTheDocument();
+  });
+
+  it("opening a PR sends repo, title, and branches", async () => {
+    vi.mocked(api.github.prs).mockResolvedValue([]);
+    vi.mocked(api.github.createPr).mockResolvedValueOnce({ id: 1, number: 12 });
+    render(<ReviewsPanel />);
+    await screen.findByText(/No open pull requests/);
+
+    fireEvent.click(screen.getByText("Open PR"));
+    fireEvent.change(screen.getByPlaceholderText("PR title"), { target: { value: "Add model switcher" } });
+    fireEvent.change(screen.getByPlaceholderText(/Head branch/), { target: { value: "feat/switcher" } });
+    fireEvent.click(screen.getByText("Create pull request"));
+
+    await waitFor(() =>
+      expect(api.github.createPr).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Add model switcher", head_branch: "feat/switcher" })
+      )
+    );
   });
 
   it("checking a PR's status calls through with repo and number", async () => {

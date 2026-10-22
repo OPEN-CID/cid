@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/dialog";
 import { useCid } from "@/hooks/useCid";
-import { GitPullRequest, Rocket, ExternalLink, RefreshCw } from "lucide-react";
+import { GitPullRequest, Rocket, ExternalLink, RefreshCw, Plus } from "lucide-react";
 
 type PullRequest = {
   id?: number | string;
@@ -47,6 +47,11 @@ export function ReviewsPanel() {
   const [releases, setReleases] = useState<Release[]>([]);
   const [statusByPr, setStatusByPr] = useState<Record<string, PrStatus>>({});
   const [loading, setLoading] = useState(false);
+  const [showPrForm, setShowPrForm] = useState(false);
+  const [prTitle, setPrTitle] = useState("");
+  const [prHead, setPrHead] = useState("");
+  const [prBase, setPrBase] = useState("");
+  const [prBody, setPrBody] = useState("");
 
   const load = useCallback(async () => {
     if (!repo) return;
@@ -83,6 +88,28 @@ export function ReviewsPanel() {
     setStatusByPr({});
     load();
   }, [load]);
+
+  const createPr = async () => {
+    if (!repo || !prTitle.trim() || !prHead.trim()) return;
+    try {
+      await api.github.createPr({
+        repo_path: repo.path,
+        title: prTitle.trim(),
+        head_branch: prHead.trim(),
+        base_branch: prBase.trim() || undefined,
+        body: prBody.trim() || undefined,
+      });
+      setPrTitle("");
+      setPrHead("");
+      setPrBase("");
+      setPrBody("");
+      setShowPrForm(false);
+      toast.success("Pull request opened");
+      await load();
+    } catch (e) {
+      toast.error(`Failed to open pull request: ${e}`);
+    }
+  };
 
   const loadPrStatus = async (pr: PullRequest) => {
     if (!repo) return;
@@ -155,14 +182,60 @@ export function ReviewsPanel() {
         <div className="flex items-center gap-1 font-medium text-sm">
           <GitPullRequest className="w-3.5 h-3.5" /> Reviews · {repo.name}
         </div>
-        <button
-          onClick={load}
-          aria-label="Refresh reviews"
-          className="px-1.5 py-0.5 rounded bg-secondary flex items-center gap-1"
-        >
-          <RefreshCw className="w-3 h-3" /> Refresh
-        </button>
+        <div className="flex gap-1">
+          <button
+            onClick={() => setShowPrForm((v) => !v)}
+            className="px-1.5 py-0.5 rounded bg-primary text-primary-foreground flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> Open PR
+          </button>
+          <button
+            onClick={load}
+            aria-label="Refresh reviews"
+            className="px-1.5 py-0.5 rounded bg-secondary flex items-center gap-1"
+          >
+            <RefreshCw className="w-3 h-3" /> Refresh
+          </button>
+        </div>
       </div>
+      {showPrForm && (
+        <div className="p-2 border rounded bg-background space-y-1.5">
+          <input
+            className="w-full bg-background border rounded px-2 py-1 text-[11px]"
+            placeholder="PR title"
+            value={prTitle}
+            onChange={(e) => setPrTitle(e.target.value)}
+          />
+          <div className="flex gap-1.5">
+            <input
+              className="flex-1 bg-background border rounded px-2 py-1 text-[11px] font-mono"
+              placeholder="Head branch (e.g. feature/login)"
+              value={prHead}
+              onChange={(e) => setPrHead(e.target.value)}
+            />
+            <input
+              className="flex-1 bg-background border rounded px-2 py-1 text-[11px] font-mono"
+              placeholder="Base branch (default: main)"
+              value={prBase}
+              onChange={(e) => setPrBase(e.target.value)}
+            />
+          </div>
+          <textarea
+            className="w-full bg-background border rounded px-2 py-1 text-[11px]"
+            placeholder="Description (optional)"
+            rows={2}
+            value={prBody}
+            onChange={(e) => setPrBody(e.target.value)}
+          />
+          <button
+            onClick={createPr}
+            disabled={!prTitle.trim() || !prHead.trim()}
+            className="px-3 py-1 rounded bg-primary text-primary-foreground disabled:opacity-50"
+          >
+            Create pull request
+          </button>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <div className="font-medium">Pull requests</div>

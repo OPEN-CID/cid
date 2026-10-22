@@ -23,7 +23,8 @@ import { useFocusTrap } from "./lib/useFocusTrap";
 import { t } from "./lib/i18n";
 import { DialogHost } from "./components/ui/DialogHost";
 import { CommandPalette, type Command } from "./components/ui/CommandPalette";
-import { Plus, GripVertical, Maximize2, Minimize2 } from "lucide-react";
+import { Plus, GripVertical, Maximize2, Minimize2, User } from "lucide-react";
+import { AuthDialog } from "./components/auth/AuthDialog";
 
 // review_prompt.md §7 follow-up (Gemini checklist item #5): monaco-editor and
 // xterm are already split into separate chunks by vite.config.ts's
@@ -421,7 +422,7 @@ function SessionCreationModal({ onClose, onCreated }: { onClose: () => void; onC
   );
 }
 
-function BottomStatus() {
+function BottomStatus({ onOpenAuth }: { onOpenAuth: () => void }) {
   const { connected, selectedSessionId, sessions, selectSession } = useCid();
   const session = sessions.find((m) => m.id === selectedSessionId);
   // Sessions parked on approval are invisible from everywhere except their
@@ -474,7 +475,10 @@ function BottomStatus() {
           </button>
         </>
       )}
-      <span className="ml-auto">Tauri v2 • Rust core • SQLite • git2-rs • portable-pty • MCP 2026-07-28 • ACP host</span>
+        <button onClick={onOpenAuth} title="Sign in / accounts" className="shrink-0 flex items-center gap-1 hover:text-foreground" aria-label="Sign in">
+          <User className="w-3.5 h-3.5" />
+        </button>
+        <span className="ml-auto">Tauri v2 • Rust core • SQLite • git2-rs • portable-pty • MCP 2026-07-28 • ACP host</span>
     </div>
   );
 }
@@ -487,6 +491,7 @@ export default function App() {
   const { setConnected, selectedRepoId, selectedSessionId, repos, sessions } = useCid();
   const [rightTab, setRightTab] = useState<RightTab>("editor");
   const [showNewSession, setShowNewSession] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
   // 051-Editor-Excellence-Roadmap.md Wave 4.6: the fixed 520px right panel
   // was the real constraint on the editor being usable at all — no drag
   // resize meant no way to see more than a sliver of a wide file.
@@ -750,7 +755,8 @@ export default function App() {
         </div>
       </div>
 
-      <BottomStatus />
+      <BottomStatus onOpenAuth={() => setShowAuth(true)} />
+      {showAuth && <AuthDialog onClose={() => setShowAuth(false)} />}
 
       {showNewSession && <SessionCreationModal onClose={() => setShowNewSession(false)} onCreated={() => {}} />}
       {showShortcuts && <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />}

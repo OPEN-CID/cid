@@ -25,6 +25,7 @@ vi.mock("./components/WebShell", () => ({
 vi.mock("./components/health/RepoHealthPanel", () => ({ RepoHealthPanel: () => <div>RepoHealthPanelStub</div> }));
 vi.mock("./components/autonomy/AutonomyPanel", () => ({ AutonomyPanel: () => <div>AutonomyPanelStub</div> }));
 vi.mock("./components/chat/DecisionsPanel", () => ({ DecisionsPanel: () => <div>DecisionsPanelStub</div> }));
+vi.mock("./components/auth/AuthDialog", () => ({ AuthDialog: () => <div>AuthDialogStub</div> }));
 vi.mock("./components/chat/ReviewsPanel", () => ({ ReviewsPanel: () => <div>ReviewsPanelStub</div> }));
 vi.mock("./components/chat/AgentsPanel", () => ({ AgentsPanel: () => <div>AgentsPanelStub</div> }));
 vi.mock("./components/chat/WorkflowPanel", () => ({ WorkflowPanel: () => <div>WorkflowPanelStub</div> }));
@@ -301,6 +302,14 @@ describe("App", () => {
     fireEvent.keyDown(window, { key: "?" });
 
     expect(await screen.findByText("Keyboard shortcuts")).toBeInTheDocument();
+  });
+
+  it("opens the sign-in dialog from the status bar", async () => {
+    render(<App />);
+    await screen.findByText("EditorPaneStub");
+
+    fireEvent.click(screen.getByLabelText("Sign in"));
+    expect(await screen.findByText("AuthDialogStub")).toBeInTheDocument();
   });
 
   it("flags sessions parked on approval in the status bar and jumps to the first", async () => {
