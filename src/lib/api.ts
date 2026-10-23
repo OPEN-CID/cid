@@ -488,6 +488,9 @@ class CidApiClient {
     status: () => this.call("local.runtime.status"),
     start: () => this.call("local.runtime.start"),
     stop: () => this.call("local.runtime.stop"),
+    /// Long-running: progress arrives as `local.runtime.install.progress`
+    /// notifications, and the promise settles when the installer exits.
+    install: () => this.call("local.runtime.install"),
     /// Long-running: progress arrives as `local.model.pull.progress`
     /// notifications, and the promise settles when the download finishes.
     pull: (model_id: string) => this.call("local.model.pull", { model_id }),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { toast } from "@/lib/dialog";
+import { toast, confirmDialog } from "@/lib/dialog";
 import { Loader2, Play, Square, Download, Check, RefreshCw } from "lucide-react";
 
 type GpuInfo = { name: string; vram_mb: number | null };
@@ -36,6 +36,7 @@ type RuntimeStatus = {
   endpoint: string;
   installed_models: string[];
   install_url: string;
+  installer: string | null;
 };
 
 function gb(mb: number): string {
@@ -61,6 +62,7 @@ export function LocalModelsPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [pulling, setPulling] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>("");
+  const [installProgress, setInstallProgress] = useState<string>("");
 
   const refresh = useCallback(async (force = false) => {
     try {
@@ -80,10 +82,13 @@ export function LocalModelsPanel() {
     refresh();
   }, [refresh]);
 
-  // The runtime's own progress lines, streamed while a pull runs.
+  // The runtime's own progress lines, streamed while a pull or install runs.
   useEffect(() => {
     const unsub = api.onNotification((n) => {
       if (n.method === "local.model.pull.progress") setProgress(n.params?.line ?? "");
+      if (n.method === "local.runtime.install.progress") {
+        setInstallProgress(n.params?.line ?? "");
+      }
     });
     return () => unsub();
   }, []);
@@ -98,6 +103,24 @@ export function LocalModelsPanel() {
       toast.error(String(e));
     } finally {
       setBusy(null);
+    }
+  };
+
+  // One click, the platform's own installer. Confirmed first because it
+  // changes the machine, and never run silently.
+  const install = async () => {
+    setBusy("install");
+    setInstallProgress("starting…");
+    try {
+      const next = (await api.localRuntime.install()) as RuntimeStatus;
+      setStatus(next);
+      toast.success("Ollama installed — press Start");
+      await refresh();
+    } catch (e) {
+      toast.error(`Install failed: ${e}`);
+    } finally {
+      setBusy(null);
+      setInstallProgress("");
     }
   };
 
@@ -210,18 +233,52 @@ export function LocalModelsPanel() {
         </div>
 
         {!status?.installed && (
-          <p className="text-[11px] text-muted-foreground">
-            CID does not install software on your machine. Install Ollama from{" "}
-            <a
-              href={status?.install_url ?? "https://ollama.com/download"}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              ollama.com/download
-            </a>
-            , then come back and press Start.
-          </p>
+          <div className="space-y-2">
+            {status?.installer ? (
+              <>
+                <button
+                  onClick={async () => {
+                    if (
+                      await confirmDialog(
+                        `Install Ollama using ${status.installer}? This runs the official installer on your machine.`
+                      )
+                    ) {
+                      install();
+                    }
+                  }}
+                  disabled={busy !== null}
+                  className="flex items-center gap-1.5 text-xs bg-primary text-primary-foreground px-3 py-1.5 rounded disabled:opacity-50"
+                >
+                  {busy === "install" ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  Install Ollama
+                </button>
+                <p className="text-[11px] text-muted-foreground">
+                  Runs the official installer via {status.installer} — the same command you would run
+                  yourself, with its output shown here. CID never installs anything without this click.
+                </p>
+              </>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                No package manager found to install with. Get Ollama from{" "}
+                <a
+                  href={status?.install_url ?? "https://ollama.com/download"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  ollama.com/download
+                </a>
+                , then come back and press Start.
+              </p>
+            )}
+            {busy === "install" && installProgress && (
+              <div className="text-[10px] text-muted-foreground truncate font-mono">{installProgress}</div>
+            )}
+          </div>
         )}
         {status?.running && (
           <p className="text-[11px] text-muted-foreground">

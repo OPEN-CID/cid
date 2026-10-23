@@ -1,10 +1,17 @@
 //! Starting, stopping and provisioning a local model runtime.
 //!
 //! Scope boundary, stated rather than blurred: this manages a runtime that is
-//! **already installed**. It does not download and run an installer — that is
-//! software installation on someone's machine, and it belongs to the user, not
-//! to an agent. When the binary is absent the UI says so and links to the
-//! official download instead of silently acquiring it.
+//! **already installed**, and can install it **only on an explicit click**.
+//!
+//! `install_blocking` runs the platform's *own* package manager — winget on
+//! Windows, Homebrew on macOS, Ollama's published script on Linux — which is
+//! exactly what a user would run by hand, with output streamed into the UI.
+//! It is never automatic and never silent: nothing here is invoked except in
+//! response to `local.runtime.install`, and a platform with no known package
+//! manager reports `installer: None` so the UI shows the download link
+//! instead of a button that cannot work. The earlier "CID never installs"
+//! rule was the right instinct about *silent* acquisition and the wrong
+//! answer for a one-click setup, so it was narrowed rather than dropped.
 //!
 //! The property worth being careful about is ownership of the server process.
 //! Many people already have `ollama serve` running as a system service. Killing
@@ -14,6 +21,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +49,53 @@ pub struct RuntimeStatus {
     pub installed_models: Vec<String>,
     /// Where to get it, for the not-installed case.
     pub install_url: &'static str,
+    /// The package manager a one-click install would use, when this platform
+    /// has one. `None` means the UI must fall back to the download link
+    /// rather than offering a button that cannot succeed.
+    pub installer: Option<&'static str>,
+}
+
+/// Run a command, forwarding every stdout/stderr line to `on_line` as it
+/// arrives. Both pipes are drained on their own threads so a chatty installer
+/// cannot fill a pipe buffer and deadlock against the reader.
+fn run_streamed(program: &str, args: &[&str], on_line: &mut impl FnMut(String)) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to launch `{program}`"))?;
+
+    let stdout = child.stdout.take().context("no stdout pipe")?;
+    let stderr = child.stderr.take().context("no stderr pipe")?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let tx_err = tx.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            let _ = tx_err.send(line);
+        }
+    });
+
+    // Ends when both sender threads drop, i.e. when the child closes its pipes.
+    for line in rx {
+        on_line(line);
+    }
+
+    let status = child
+        .wait()
+        .with_context(|| format!("`{program}` did not run to completion"))?;
+    if !status.success() {
+        bail!("`{program}` exited with {status}");
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -55,9 +110,93 @@ impl LocalRuntimeManager {
     }
 
     fn binary() -> Option<String> {
-        which::which("ollama")
-            .ok()
+        if let Ok(p) = which::which("ollama") {
+            return Some(p.to_string_lossy().to_string());
+        }
+        // A just-completed install lands in a known directory that is not yet
+        // on this process's PATH (Windows and macOS both resolve PATH at
+        // process start), so without this the runtime would report "not
+        // installed" until Core was restarted — the exact moment a user is
+        // most likely to check.
+        Self::fallback_paths()
+            .into_iter()
+            .find(|p| p.exists())
             .map(|p| p.to_string_lossy().to_string())
+    }
+
+    /// Where each platform's installer puts the binary.
+    fn fallback_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if cfg!(windows) {
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                paths.push(PathBuf::from(local).join("Programs/Ollama/ollama.exe"));
+            }
+            if let Ok(pf) = std::env::var("ProgramFiles") {
+                paths.push(PathBuf::from(pf).join("Ollama/ollama.exe"));
+            }
+        } else if cfg!(target_os = "macos") {
+            paths.push(PathBuf::from("/opt/homebrew/bin/ollama"));
+            paths.push(PathBuf::from("/usr/local/bin/ollama"));
+            paths.push(PathBuf::from(
+                "/Applications/Ollama.app/Contents/Resources/ollama",
+            ));
+        } else {
+            paths.push(PathBuf::from("/usr/local/bin/ollama"));
+            paths.push(PathBuf::from("/usr/bin/ollama"));
+        }
+        paths
+    }
+
+    /// Which official installer this platform offers, if any. Surfaced to the
+    /// UI so a one-click button only appears where it can actually work.
+    pub fn installer_kind() -> Option<&'static str> {
+        if cfg!(windows) {
+            which::which("winget").ok().map(|_| "winget")
+        } else if cfg!(target_os = "macos") {
+            which::which("brew").ok().map(|_| "homebrew")
+        } else if which::which("curl").is_ok() {
+            Some("official script")
+        } else {
+            None
+        }
+    }
+
+    /// Install the runtime through the platform's own package manager,
+    /// streaming its output so a multi-minute install does not look frozen.
+    /// Only ever called from the explicit `local.runtime.install` RPC.
+    pub fn install_blocking(mut on_line: impl FnMut(String)) -> Result<()> {
+        match Self::installer_kind() {
+            Some("winget") => run_streamed(
+                "winget",
+                &[
+                    "install",
+                    "--id",
+                    "Ollama.Ollama",
+                    "-e",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ],
+                &mut on_line,
+            ),
+            Some("homebrew") => run_streamed("brew", &["install", "ollama"], &mut on_line),
+            Some("official script") => {
+                // Download first, then run — not `curl | sh`. A truncated
+                // download then fails loudly instead of being piped into a
+                // shell, and the script is left on disk to inspect.
+                let script = std::env::temp_dir().join("ollama-install.sh");
+                let script_arg = script.to_string_lossy().to_string();
+                run_streamed(
+                    "curl",
+                    &["-fsSL", "https://ollama.com/install.sh", "-o", &script_arg],
+                    &mut on_line,
+                )?;
+                run_streamed("sh", &[&script_arg], &mut on_line)
+            }
+            _ => bail!(
+                "No supported installer on this platform. Install Ollama from \
+                 https://ollama.com/download, then press Start."
+            ),
+        }
     }
 
     async fn is_serving(client: &reqwest::Client) -> bool {
@@ -128,6 +267,7 @@ impl LocalRuntimeManager {
                 Vec::new()
             },
             install_url: "https://ollama.com/download",
+            installer: Self::installer_kind(),
         }
     }
 
@@ -263,6 +403,44 @@ mod tests {
         // When nothing is running this is a no-op rather than an error.
         if status.ownership == RuntimeOwnership::NotRunning {
             assert!(mgr.stop().await.is_ok());
+        }
+    }
+
+    /// An empty fallback list would make the just-installed-binary lookup
+    /// silently do nothing, leaving a fresh install reporting "not installed"
+    /// until Core restarted — the bug those paths exist to prevent.
+    #[test]
+    fn every_platform_has_at_least_one_known_install_location() {
+        assert!(
+            !LocalRuntimeManager::fallback_paths().is_empty(),
+            "a platform with no known install location can never see a fresh install"
+        );
+    }
+
+    /// The UI decides between a one-click button and a download link from
+    /// this value, so it must be a known manager name or `None` — never a
+    /// name the installer dispatch would not recognise.
+    #[test]
+    fn installer_kind_is_either_none_or_a_dispatchable_name() {
+        match LocalRuntimeManager::installer_kind() {
+            None => {}
+            Some(kind) => assert!(
+                matches!(kind, "winget" | "homebrew" | "official script"),
+                "install_blocking has no arm for {kind:?}"
+            ),
+        }
+    }
+
+    /// With no installer available the command must fail with guidance, not
+    /// pretend to have installed anything.
+    #[test]
+    fn install_without_a_package_manager_is_a_clear_error() {
+        if LocalRuntimeManager::installer_kind().is_none() {
+            let err = LocalRuntimeManager::install_blocking(|_| {}).unwrap_err();
+            assert!(
+                err.to_string().contains("ollama.com/download"),
+                "got: {err}"
+            );
         }
     }
 

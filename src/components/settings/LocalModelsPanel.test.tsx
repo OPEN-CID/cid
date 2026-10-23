@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { LocalModelsPanel } from "./LocalModelsPanel";
 import { api } from "@/lib/api";
+import { confirmDialog } from "@/lib/dialog";
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -11,6 +12,7 @@ vi.mock("@/lib/api", () => ({
       start: vi.fn(),
       stop: vi.fn(),
       pull: vi.fn(),
+      install: vi.fn(),
     },
     onNotification: vi.fn(() => () => {}),
   },
@@ -18,6 +20,7 @@ vi.mock("@/lib/api", () => ({
 
 vi.mock("@/lib/dialog", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
+  confirmDialog: vi.fn(),
 }));
 
 const system = {
@@ -72,6 +75,7 @@ function mockState(status: Record<string, unknown>) {
     endpoint: "http://localhost:11434",
     installed_models: [],
     install_url: "https://ollama.com/download",
+    installer: null,
     ...status,
   } as never);
 }
@@ -145,16 +149,54 @@ describe("LocalModelsPanel", () => {
     expect(screen.getByRole("button", { name: /Stop/ })).toBeDisabled();
   });
 
-  it("tells you to install the runtime rather than pretending to do it", async () => {
-    mockState({ installed: false, running: false });
+  it("falls back to the download link when no installer exists on the platform", async () => {
+    mockState({ installed: false, running: false, installer: null });
     render(<LocalModelsPanel />);
     await flush();
 
-    expect(screen.getByText(/does not install software/)).toBeInTheDocument();
+    expect(screen.getByText(/No package manager found/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /ollama.com/ })).toHaveAttribute(
       "href",
       "https://ollama.com/download",
     );
+    expect(screen.queryByRole("button", { name: /Install Ollama/ })).not.toBeInTheDocument();
+  });
+
+  it("offers one-click install when a platform installer exists, and runs it after confirming", async () => {
+    mockState({ installed: false, running: false, installer: "winget" });
+    vi.mocked(confirmDialog).mockResolvedValueOnce(true);
+    vi.mocked(api.localRuntime.install).mockResolvedValue({
+      installed: true,
+      binary_path: "C:\\Users\\me\\AppData\\Local\\Programs\\Ollama\\ollama.exe",
+      running: false,
+      ownership: "not_running",
+      endpoint: "http://localhost:11434",
+      installed_models: [],
+      install_url: "https://ollama.com/download",
+      installer: "winget",
+    } as never);
+
+    render(<LocalModelsPanel />);
+    await flush();
+
+    const button = screen.getByRole("button", { name: /Install Ollama/ });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(api.localRuntime.install).toHaveBeenCalled());
+  });
+
+  it("does not install anything if the confirmation is declined", async () => {
+    mockState({ installed: false, running: false, installer: "winget" });
+    vi.mocked(confirmDialog).mockResolvedValueOnce(false);
+    vi.mocked(api.localRuntime.install).mockClear();
+
+    render(<LocalModelsPanel />);
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: /Install Ollama/ }));
+
+    await flush();
+    expect(api.localRuntime.install).not.toHaveBeenCalled();
   });
 
   it("shows an already-downloaded model as installed instead of offering it again", async () => {

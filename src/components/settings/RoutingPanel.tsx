@@ -17,7 +17,7 @@ const MODES: { id: string; label: string; blurb: string }[] = [
   { id: "auto_cost", label: "Auto · cost", blurb: "Cheapest capable route per turn — a running local model first, else the cheapest priced default." },
   { id: "auto_balanced", label: "Auto · balanced", blurb: "Task complexity picks the tier: cheap models for small turns, stronger ones as work grows. Local first when running." },
   { id: "auto_performance", label: "Auto · performance", blurb: "Strongest priced default every turn. Never routes local." },
-  { id: "auto_local", label: "Auto · local only", blurb: "Ollama on this machine or nothing — refuses with guidance rather than silently using cloud." },
+  { id: "auto_local", label: "Auto · local only", blurb: "Ollama on this machine or nothing — refuses with guidance rather than silently using cloud. Needs a local model downloaded and running (Local models tab)." },
 ];
 
 // Install-wide automatic model routing. Explicit choices always win: a
@@ -79,9 +79,16 @@ export function RoutingPanel() {
       <div className="flex items-center gap-1 font-medium text-sm">
         <Zap className="w-3.5 h-3.5" /> Automatic model routing
       </div>
-      <div className="text-[11px] text-muted-foreground">
-        Applies to Implementer and subagent turns. A session or step with an explicitly chosen model always keeps it —
-        auto never overrules a human choice.
+      <div className="text-[11px] text-muted-foreground space-y-1">
+        <div>
+          Auto routing picks <span className="text-foreground">which</span> of your configured models each turn runs
+          on — it does not add or download models. Whatever you set up under Cloud providers or Local models is the
+          pool it chooses from.
+        </div>
+        <div>
+          Applies to Implementer and subagent turns. A session or step with an explicitly chosen model always keeps
+          it — auto never overrules a human choice. Planner and Reviewer stay manual.
+        </div>
       </div>
 
       <div className="space-y-1.5" role="radiogroup" aria-label="Routing mode">

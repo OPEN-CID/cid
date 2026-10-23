@@ -395,6 +395,7 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "local.runtime.status" => handle_local_runtime_status(state).await,
         "local.runtime.start" => handle_local_runtime_start(state).await,
         "local.runtime.stop" => handle_local_runtime_stop(state).await,
+        "local.runtime.install" => handle_local_runtime_install(state).await,
         "local.model.pull" => handle_local_model_pull(params, state).await,
         "local.runtime.list" => handle_local_runtime_list(state).await,
         "local.runtime.detect" => handle_local_runtime_detect(params, state).await,
@@ -2075,6 +2076,31 @@ async fn handle_local_runtime_start(state: &AppState) -> anyhow::Result<serde_js
 async fn handle_local_runtime_stop(state: &AppState) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::to_value(
         state.local_runtime_manager.stop().await?,
+    )?)
+}
+
+/// Install the local runtime through the platform's package manager. Explicit
+/// and user-triggered only; output streams as notifications because a winget
+/// or Homebrew install takes minutes.
+async fn handle_local_runtime_install(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    let event_tx = state.event_tx.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::local_models::manager::LocalRuntimeManager::install_blocking(|line| {
+            let notif = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "local.runtime.install.progress",
+                "params": { "line": line },
+            });
+            let _ = event_tx.send(notif.to_string());
+        })
+    })
+    .await?;
+
+    result?;
+    // Report the post-install state so the UI can flip straight to Start
+    // rather than asking the user to rescan.
+    Ok(serde_json::to_value(
+        state.local_runtime_manager.status().await,
     )?)
 }
 

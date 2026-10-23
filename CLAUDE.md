@@ -699,12 +699,21 @@ detection-only: three HTTP probes and a list. Now split into `Cloud providers` /
   size, which is the usual way these recommendations go wrong.
 - `local_models::manager` — start/stop and `ollama pull` with streamed progress.
 
-**Two boundaries here are deliberate and should not be "improved" away.** First,
-CID does **not** install the runtime: that is software installation on someone's
-machine and it belongs to the user, so an absent binary links to the official
-download instead. Second, `stop` only ever kills a child *this process* spawned —
-a server already running as a service is reported `External` and refused, with
-the reason shown in the UI. Both have tests.
+**Two boundaries here are deliberate and should not be "improved" away.**
+First, CID never installs the runtime **silently or automatically** — but it
+does offer a one-click install (`local.runtime.install`) that runs the
+platform's *own* package manager (winget / Homebrew / Ollama's published
+script), behind a confirmation, with output streamed into the panel. That
+narrowed an earlier absolute "CID never installs" rule, which was right about
+silent acquisition and wrong as an answer to "why is there no button". A
+platform with no known package manager reports `installer: None` and shows the
+download link rather than a button that cannot work. Two related fixes came
+with it: `binary()` now also checks the platforms' known install directories
+(a fresh install is not on the running process's PATH, so it used to report
+"not installed" until Core restarted), and install progress streams as
+`local.runtime.install.progress`. Second, `stop` only ever kills a child *this
+process* spawned — a server already running as a service is reported
+`External` and refused, with the reason shown in the UI. Both have tests.
 
 ## Why "most things don't work" — the root cause (2026-08-22)
 
