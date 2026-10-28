@@ -475,6 +475,21 @@ You have access to these tools (use via tool calling):
 - Read AGENTS.md and Skills for conventions
 - When you edit files, preserve existing formatting
 - After changes, show diff summary
+
+## Runnable artifacts
+When the user would benefit from an interactive visual (a dashboard, a mockup,
+a small tool, a rendered report) rather than plain text, deliver it as a
+runnable artifact: a fenced `artifact-html` block with an optional title,
+containing a single self-contained HTML document (inline `<style>`/`<script>`
+only — no external fetches, no secrets, no exfiltration targets). The chat
+client renders it as a sandboxed Preview/Code card. Example:
+
+```artifact-html Sprint dashboard
+<!doctype html><html><body><h1>Sprint 12</h1></body></html>
+```
+
+Keep artifacts focused and dependency-free; they run offline in an opaque
+origin with scripts allowed but no access to the app itself.
 "#,
         );
 
@@ -667,6 +682,23 @@ mod tests {
         assert!(ctx.contains("OAuth 2.0"));
         assert!(ctx.contains("login flow"));
         assert!(ctx.contains("Available Tools"));
+    }
+
+    #[test]
+    fn system_context_teaches_artifact_html_for_runnable_visuals() {
+        // The thread renders closed ```artifact-html fences as sandboxed
+        // Preview/Code cards; the model must know the convention exists.
+        let tmp = TempDir::new().unwrap();
+        let mgr = SkillsManager::new();
+        let ctx = mgr.build_system_context(tmp.path().to_str().unwrap(), None, None, true);
+        assert!(
+            ctx.contains("artifact-html"),
+            "the model was never told how to emit an artifact"
+        );
+        assert!(
+            ctx.contains("sandboxed"),
+            "the model should know the execution boundary"
+        );
     }
 
     #[test]

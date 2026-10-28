@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { sanitizeInlineHtml } from "@/lib/sanitize";
 import {
   ExternalLink,
   RefreshCw,
@@ -180,12 +181,16 @@ export function McpAppCard({ serverId, serverName, content }: McpAppProps) {
 
       {expanded && (
         <div className="p-3">
-          {/* HTML/Markdown Content */}
+          {/* HTML/Markdown Content — server-supplied markup is sanitized
+              before it touches the DOM: a connected MCP server is
+              third-party content and must never get script execution in
+              the app's origin. Fully interactive apps belong in an
+              ArtifactCard's sandboxed iframe, not here. */}
           {(content.type === "html" || content.type === "markdown") && (
             <div
               className="prose prose-sm max-w-none dark:prose-invert"
               dangerouslySetInnerHTML={{
-                __html: content.html || content.body || "",
+                __html: sanitizeInlineHtml(content.html || content.body || ""),
               }}
             />
           )}

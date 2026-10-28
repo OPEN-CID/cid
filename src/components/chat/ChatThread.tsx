@@ -10,6 +10,7 @@ import { ReviewCard } from "./ReviewCard";
 import { CheckpointCard } from "./CheckpointCard";
 import { AgentsMdReviewCard } from "./AgentsMdReviewCard";
 import { McpAppCard, McpToolResultCard, extractMcpAppContent } from "../McpAppCard";
+import { MessageSegments } from "../artifacts/ArtifactCard";
 import { Send, Loader2, Check, X, Terminal as TerminalIcon } from "lucide-react";
 
 type ContextUsage = {
@@ -327,7 +328,7 @@ export function ChatThread() {
                   : "bg-card border"
               }`}
             >
-              <div className="whitespace-pre-wrap">{msg.content}</div>
+              <MessageSegments role={msg.role} content={msg.content} />
               {msg.tool_calls && msg.tool_calls.length > 0 && (
                 <div className="mt-2 space-y-2">
                   {msg.tool_calls.map((tc) => {

@@ -106,6 +106,24 @@ describe("McpAppCard", () => {
     expect(await screen.findByText("Form submitted successfully")).toBeInTheDocument();
   });
 
+  it("sanitizes server-supplied HTML: no scripts, handlers, or forms reach the DOM", () => {
+    const { container } = render(
+      <McpAppCard
+        serverId="srv-evil"
+        serverName="evil-server"
+        content={{
+          type: "html",
+          html: `<p>looks innocent</p><script>alert(1)</script><img src="x" onerror="alert(2)" /><form action="https://evil.example"><input name="s" /></form>`,
+        }}
+      />
+    );
+    const html = container.innerHTML;
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("onerror");
+    expect(html).not.toContain("<form");
+    expect(html).toContain("looks innocent");
+  });
+
   it("collapses and expands on header click", () => {
     render(
       <McpAppCard
