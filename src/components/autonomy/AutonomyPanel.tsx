@@ -18,8 +18,10 @@ type AutonomyAllowlist = {
  * Autonomous-mode command controls (Part 14): which command patterns an
  * Autonomous Session may run without a per-step approval, and which always
  * stop for a human — e.g. `git commit` auto-approved, `git push`/PR-opening
- * commands always asked for. Scoped per repo, matching how the backend
- * allow-list is scoped (`autonomy.allowlist.*`, repo_channel id as scope_id).
+ * commands always asked for. Scoped per repo by repo **path**
+ * (`autonomy.allowlist.*`, path as scope_id) — the same key the backend's
+ * enforcement looks up (`check_command(ctx.repo_path, ...)`). Keying this
+ * panel by repo-channel id stored rules nothing ever consulted at runtime.
  */
 export function AutonomyPanel() {
   const { repos, selectedRepoId } = useCid();
@@ -30,33 +32,35 @@ export function AutonomyPanel() {
   const [newDescription, setNewDescription] = useState("");
   const [newRequiresApproval, setNewRequiresApproval] = useState(true);
 
+  const repoPath = repos.find((r) => r.id === selectedRepoId)?.path;
+
   const load = useCallback(async () => {
-    if (!selectedRepoId) return;
+    if (!repoPath) return;
     setLoading(true);
     try {
-      const existing = await api.autonomy.allowlistGet(selectedRepoId);
+      const existing = await api.autonomy.allowlistGet(repoPath);
       setList(
         existing && existing.exists !== false
           ? existing
-          : await api.autonomy.allowlistDefault(selectedRepoId)
+          : await api.autonomy.allowlistDefault(repoPath)
       );
     } catch (e) {
       setStatus(String(e));
     } finally {
       setLoading(false);
     }
-  }, [selectedRepoId]);
+  }, [repoPath]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const save = async (next: AutonomyAllowlist) => {
-    if (!selectedRepoId) return;
+    if (!repoPath) return;
     setStatus(null);
     try {
       const saved = await api.autonomy.allowlistSet({
-        scope_id: selectedRepoId,
+        scope_id: repoPath,
         allowed_commands: next.allowed_commands,
         allowed_paths: next.allowed_paths,
         denied_paths: next.denied_paths,
@@ -69,8 +73,8 @@ export function AutonomyPanel() {
   };
 
   const resetToDefault = async () => {
-    if (!selectedRepoId) return;
-    const def = await api.autonomy.allowlistDefault(selectedRepoId);
+    if (!repoPath) return;
+    const def = await api.autonomy.allowlistDefault(repoPath);
     setList(def);
     setStatus("Reset to default");
   };
@@ -109,8 +113,6 @@ export function AutonomyPanel() {
     setNewDescription("");
     setNewRequiresApproval(true);
   };
-
-  const repoPath = repos.find((r) => r.id === selectedRepoId)?.path;
 
   if (!selectedRepoId) {
     return <div className="p-4 text-xs text-muted-foreground">Select a repo channel to manage its Autonomous-mode command controls.</div>;

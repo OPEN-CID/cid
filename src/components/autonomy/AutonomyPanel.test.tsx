@@ -23,6 +23,7 @@ vi.mock("@/hooks/useCid", () => ({
 }));
 
 type AllowlistPayload = {
+  scope_id: string;
   allowed_commands: Array<{ pattern: string; description: string; requires_approval: boolean }>;
 };
 
@@ -40,7 +41,7 @@ const selectedRepo = {
 };
 
 const list = {
-  scope_id: "repo-1",
+  scope_id: "/tmp/repo",
   allowed_commands: [
     { pattern: "^git commit", description: "commit", requires_approval: false },
     { pattern: "^git push", description: "push", requires_approval: true },
@@ -83,7 +84,10 @@ describe("AutonomyPanel", () => {
     render(<AutonomyPanel />);
     await flushAsyncWork();
 
-    expect(vi.mocked(api.autonomy.allowlistDefault)).toHaveBeenCalledWith("repo-1");
+    // Scoped by repo path, not channel id: enforcement looks the allow-list
+    // up by path, so id-keyed rules would never apply at runtime.
+    expect(vi.mocked(api.autonomy.allowlistGet)).toHaveBeenCalledWith("/tmp/repo");
+    expect(vi.mocked(api.autonomy.allowlistDefault)).toHaveBeenCalledWith("/tmp/repo");
     expect(screen.getByText("^git commit")).toBeInTheDocument();
   });
 
@@ -98,6 +102,7 @@ describe("AutonomyPanel", () => {
     await flushAsyncWork();
 
     const saved = vi.mocked(api.autonomy.allowlistSet).mock.calls[0][0] as AllowlistPayload;
+    expect(saved.scope_id).toBe("/tmp/repo");
     const commit = saved.allowed_commands.find((c) => c.pattern === "^git commit");
     expect(commit?.requires_approval).toBe(true);
   });

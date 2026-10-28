@@ -3272,6 +3272,61 @@ async fn autonomous_echo_fixture() -> (String, tempfile::TempDir, String, String
     (base, dir, channel_id, session_id)
 }
 
+/// Whether this host can actually isolate a trivial command. Mirrors the
+/// probe in `sandbox/mod.rs`'s own tests: probe the tool, never the wrapper
+/// under test. Command steps run sandboxed and the sandbox deliberately
+/// refuses rather than run unconfined, so on a host whose tooling cannot
+/// isolate (GitHub's Ubuntu runners disable unprivileged user namespaces,
+/// which makes bwrap fail with "setting up uid map: Permission denied") a
+/// command-step test cannot pass — skip it there instead of failing it.
+/// Hosts that can sandbox (dev machines, macOS/Windows runners) still run
+/// these tests in full.
+#[cfg(target_os = "linux")]
+fn sandbox_capability_works() -> bool {
+    let (tool, args): (&str, &[&str]) = if which::which("bwrap").is_ok() {
+        ("bwrap", &["--unshare-all", "--ro-bind", "/", "/", "true"])
+    } else {
+        ("unshare", &["--mount", "--map-root-user", "true"])
+    };
+    std::process::Command::new(tool)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_capability_works() -> bool {
+    std::process::Command::new("sandbox-exec")
+        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Job Objects are part of the Windows kernel — no optional tool to miss.
+#[cfg(windows)]
+fn sandbox_capability_works() -> bool {
+    true
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+fn sandbox_capability_works() -> bool {
+    false
+}
+
+/// Early-return guard for tests that need command steps to really run.
+fn skip_if_sandbox_unavailable(test: &str) -> bool {
+    if sandbox_capability_works() {
+        return false;
+    }
+    eprintln!(
+        "skipping {test}: this host cannot sandbox commands \
+         (sandbox tooling missing or user namespaces disabled)"
+    );
+    true
+}
+
 fn command_step(id: &str, name: &str, command: &str) -> Value {
     json!({
         "id": id, "name": name, "kind": "command",
@@ -3321,6 +3376,9 @@ async fn workflow_create_rejects_an_unrunnable_definition() {
 
 #[tokio::test]
 async fn workflow_command_chain_runs_to_completion() {
+    if skip_if_sandbox_unavailable("workflow_command_chain_runs_to_completion") {
+        return;
+    }
     let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
 
     let workflow = rpc_ok(
@@ -3357,6 +3415,9 @@ async fn workflow_command_chain_runs_to_completion() {
 
 #[tokio::test]
 async fn workflow_failing_command_halts_by_default() {
+    if skip_if_sandbox_unavailable("workflow_failing_command_halts_by_default") {
+        return;
+    }
     let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
 
     // `rm` is not on the default allow-list, so the gate denies it — the
@@ -3389,6 +3450,9 @@ async fn workflow_failing_command_halts_by_default() {
 
 #[tokio::test]
 async fn workflow_manual_gate_parks_until_approved() {
+    if skip_if_sandbox_unavailable("workflow_manual_gate_parks_until_approved") {
+        return;
+    }
     let (base, _dir, channel_id, session_id) = autonomous_echo_fixture().await;
 
     let workflow = rpc_ok(

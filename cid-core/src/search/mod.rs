@@ -139,11 +139,11 @@ impl Sink for Collector<'_> {
             match_end: end,
         });
 
-        // `fetch_update` rather than a plain decrement: several worker threads
+        // `try_update` rather than a plain decrement: several worker threads
         // share this budget and it must not wrap below zero.
         let still_wanted = self
             .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok();
         Ok(still_wanted)
     }

@@ -43,10 +43,32 @@ impl AutonomyManager {
     // Allow-list management
     // -----------------------------------------------------------------------
 
-    /// Get the allowlist for a given scope (workspace/repo id).
+    /// One key for one repo, whichever spelling the caller used.
+    ///
+    /// Enforcement looks allow-lists up by repo path (`model/mod.rs` passes
+    /// `ctx.repo_path`, which is the canonicalized path `repo.connect`
+    /// stored), while registration has arrived as a raw tempdir/user-typed
+    /// spelling — on macOS `/var/...` vs the stored `/private/var/...`, on
+    /// Windows plain vs `\\?\`-prefixed. Keyed as opaque strings those never
+    /// met, so a registered allow-list silently did not exist at check time.
+    /// Normalizing both sides at this storage boundary (the same
+    /// `normalize_stored_path` `repo_channels.path` uses) makes every
+    /// spelling of one directory share one entry. Only absolute paths are
+    /// normalized: opaque scopes like `"repo-1"` must pass through untouched,
+    /// and a relative string canonicalized against the process CWD could
+    /// collide with an unrelated directory.
+    fn normalize_scope(scope_id: &str) -> String {
+        if std::path::Path::new(scope_id).is_absolute() {
+            crate::path_confine::normalize_stored_path(scope_id)
+        } else {
+            scope_id.to_string()
+        }
+    }
+
+    /// Get the allowlist for a given scope (a repo path, or an opaque id).
     pub fn get_allowlist(&self, scope_id: &str) -> Option<AutonomyAllowlist> {
         let map = self.allowlists.read().ok()?;
-        map.get(scope_id).cloned()
+        map.get(&Self::normalize_scope(scope_id)).cloned()
     }
 
     /// Set or update the allowlist for a scope.
@@ -58,8 +80,9 @@ impl AutonomyManager {
         denied_paths: Vec<String>,
         max_tool_calls: Option<usize>,
     ) -> AutonomyAllowlist {
+        let key = Self::normalize_scope(scope_id);
         let mut map = self.allowlists.write().unwrap();
-        let existing = map.get(scope_id);
+        let existing = map.get(&key);
         let now = Utc::now();
 
         let allowlist = AutonomyAllowlist {
@@ -67,7 +90,7 @@ impl AutonomyManager {
                 .map(|e| e.id.clone())
                 .unwrap_or_else(crate::api::types::new_id),
             scope: "repo".to_string(),
-            scope_id: scope_id.to_string(),
+            scope_id: key.clone(),
             allowed_commands,
             allowed_paths,
             denied_paths,
@@ -76,14 +99,14 @@ impl AutonomyManager {
             updated_at: now,
         };
 
-        map.insert(scope_id.to_string(), allowlist.clone());
+        map.insert(key, allowlist.clone());
         allowlist
     }
 
     /// Remove an allowlist for a scope.
     pub fn remove_allowlist(&self, scope_id: &str) -> bool {
         let mut map = self.allowlists.write().unwrap();
-        map.remove(scope_id).is_some()
+        map.remove(&Self::normalize_scope(scope_id)).is_some()
     }
 
     /// List all allowlists.
@@ -463,6 +486,52 @@ mod tests {
         let al = mgr.get_allowlist("repo-1").unwrap();
         assert_eq!(al.allowed_commands.len(), 1);
         assert_eq!(al.max_tool_calls, Some(100));
+        assert_eq!(
+            al.scope_id, "repo-1",
+            "opaque scopes pass through unchanged"
+        );
+    }
+
+    /// Regression for the macOS/Windows CI failures: the fixture registered
+    /// under a raw tempdir spelling while enforcement looked up the
+    /// canonicalized stored path, so the allow-list "did not exist". Both
+    /// spellings of one directory must share one entry, at get and at check.
+    #[test]
+    fn path_scopes_hit_regardless_of_spelling() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let plain = dir.path().to_string_lossy().to_string();
+        let canonical = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let mgr = AutonomyManager::new();
+        mgr.set_allowlist(
+            &plain,
+            vec![AllowedCommand {
+                pattern: r"^echo ".to_string(),
+                description: None,
+                requires_approval: false,
+            }],
+            vec![],
+            vec![],
+            None,
+        );
+
+        let al = mgr
+            .get_allowlist(&canonical)
+            .expect("the canonical spelling must find the raw-spelling entry");
+        assert_eq!(
+            al.scope_id,
+            crate::path_confine::normalize_stored_path(&plain),
+            "the stored scope_id is the one normalized spelling"
+        );
+        assert!(
+            mgr.check_command(&canonical, "echo hi", None).allowed,
+            "enforcement (which passes the stored canonical path) must hit"
+        );
+        assert!(mgr.remove_allowlist(&canonical));
+        assert!(mgr.get_allowlist(&plain).is_none());
     }
 
     #[test]
