@@ -1,5 +1,7 @@
 import { memo, useMemo, useState } from "react";
-import { Code2, Eye, Copy, Download, Check, FileBox } from "lucide-react";
+import { Code2, Eye, Copy, Download, Check, FileBox, FolderDown } from "lucide-react";
+import { api } from "@/lib/api";
+import { useSessionRepoPath } from "@/hooks/useSessionRepoPath";
 
 export type MessageSegment =
   | { kind: "text"; text: string }
@@ -95,6 +97,68 @@ export const ArtifactCard = memo(function ArtifactCard({
 }) {
   const [tab, setTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
+  // Save-to-session state: filename row, two-step overwrite, result status.
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const repoPath = useSessionRepoPath();
+  const defaultFileName = useMemo(
+    () => `${title.replace(/[^\w-]+/g, "_").slice(0, 60) || "artifact"}.html`,
+    [title]
+  );
+
+  /**
+   * Save the artifact as a real file in the Session's working tree, so it
+   * enters the normal review pipeline: Diff → per-hunk review → checkpoint
+   * → merge. The path is resolved through the session worktree (never the
+   * main checkout when a worktree Session is selected) and the backend
+   * confines the write to connected repos — `..` escapes and absolute
+   * paths outside any repo are refused server-side. Overwriting an existing
+   * file takes an explicit second click, never a blind write.
+   */
+  const saveToSession = async () => {
+    const base = repoPath;
+    if (!base) {
+      setSaveStatus("No session repo available — select a Session first.");
+      return;
+    }
+    const name = (fileName || defaultFileName).trim();
+    if (!name) {
+      setSaveStatus("Enter a file name first.");
+      return;
+    }
+    const target = /^[a-zA-Z]:[\\/]|^\//.test(name) ? name : `${base.replace(/[\\/]+$/, "")}/${name}`;
+    setSaveBusy(true);
+    setSaveStatus(null);
+    try {
+      if (!confirmOverwrite) {
+        // Readable means it exists: arm the second click instead of writing.
+        // Unreadable means absent (or unreadable, in which case the write
+        // below fails loudly with the real reason) — proceed to write.
+        let exists = false;
+        try {
+          await api.file.read(target);
+          exists = true;
+        } catch {
+          exists = false;
+        }
+        if (exists) {
+          setConfirmOverwrite(true);
+          setSaveStatus(`"${name}" already exists — Save again to overwrite it.`);
+          return;
+        }
+      }
+      await api.file.write(target, code);
+      setConfirmOverwrite(false);
+      setSaveStatus(`Saved to ${target} — see the Diff panel to review it.`);
+    } catch (e) {
+      setSaveStatus(`Save failed: ${e}`);
+    } finally {
+      setSaveBusy(false);
+    }
+  };
 
   // The download URL is minted on click, not during render: minting per
   // render would leak a blob URL for every artifact in a long thread (and
@@ -167,7 +231,47 @@ export const ArtifactCard = memo(function ArtifactCard({
         >
           <Download className="w-3.5 h-3.5" />
         </button>
+        <button
+          onClick={() => {
+            setSaveOpen((s) => !s);
+            setSaveStatus(null);
+            setConfirmOverwrite(false);
+          }}
+          aria-label={`Save ${title} to session files`}
+          className="p-1 rounded text-muted-foreground hover:text-foreground"
+          title="Save into the Session's working tree (reviewable in Diff)"
+        >
+          <FolderDown className="w-3.5 h-3.5" />
+        </button>
       </div>
+      {saveOpen && (
+        <div className="px-3 py-2 border-b bg-accent/30 space-y-1.5 text-xs">
+          <div className="flex gap-2 items-center">
+            <input
+              className="flex-1 bg-background border rounded px-2 py-1 text-[11px] font-mono"
+              placeholder={defaultFileName}
+              value={fileName}
+              onChange={(e) => {
+                setFileName(e.target.value);
+                setConfirmOverwrite(false);
+              }}
+              aria-label="File name for saved artifact"
+            />
+            <button
+              onClick={saveToSession}
+              disabled={saveBusy}
+              className="px-2 py-1 rounded bg-primary text-primary-foreground disabled:opacity-50"
+            >
+              {saveBusy ? "Saving…" : confirmOverwrite ? "Overwrite" : "Save"}
+            </button>
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            Saved into the Session&apos;s working tree (never the main checkout), as a real file you can diff,
+            review, and merge. Escapes outside connected repos are refused.
+          </div>
+          {saveStatus && <div className="text-muted-foreground">{saveStatus}</div>}
+        </div>
+      )}
       {tab === "preview" ? (
         <iframe
           title={`${title} preview`}
