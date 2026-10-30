@@ -419,6 +419,14 @@ async fn handle_rpc(req: JsonRpcRequest, state: &AppState) -> JsonRpcResponse {
         "autonomy.command.check" => handle_autonomy_command_check(params, state).await,
         "autonomy.budget.check" => handle_autonomy_budget_check(params, state).await,
 
+        // Auction watch (official Indian auction/tender ingestion) — primary
+        // sources only; third parties are cross-check targets, never feeds.
+        "auction.sources.list" => handle_auction_sources_list().await,
+        "auction.refresh" => handle_auction_refresh(state).await,
+        "auction.listings.search" => handle_auction_listings_search(params, state).await,
+        "auction.listing.get" => handle_auction_listing_get(params, state).await,
+        "auction.crosscheck" => handle_auction_crosscheck(params, state).await,
+
         // Context Engine G�� Structural (Phase 1, off by default per Repo Channel)
         "context_engine.status" => handle_context_engine_status(params, state).await,
         "context_engine.enable" => handle_context_engine_enable(params, state).await,
@@ -2769,6 +2777,110 @@ async fn handle_autonomy_budget_check(
 
     let result = state.autonomy_manager.check_budget(&scope_id, current);
     Ok(serde_json::to_value(result)?)
+}
+
+// ============ Auction watch (official Indian auction/tender ingestion) ============
+
+async fn handle_auction_sources_list() -> anyhow::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "official": crate::auctions::official_sources(),
+        "crosscheck": crate::auctions::crosscheck_sources(),
+    }))
+}
+
+async fn handle_auction_refresh(state: &AppState) -> anyhow::Result<serde_json::Value> {
+    // One shared client for the whole sweep: a daily manual poll, not a
+    // hot loop, so per-call construction would also do — but sharing is
+    // trivial here and keeps connection reuse honest.
+    let client = reqwest::Client::new();
+    let mut outcomes = Vec::new();
+    for source in crate::auctions::official_sources() {
+        if !source.listing_feed {
+            continue;
+        }
+        match crate::auctions::poll_source(&client, &source, None).await {
+            Ok((outcome, rows)) => {
+                for row in &rows {
+                    // A single unparseable row must not abort the sweep —
+                    // record what stored and say what did not in the note.
+                    let record = crate::auctions::NewAuctionListing {
+                        source_id: source.id,
+                        external_id: row.external_id.as_str(),
+                        title: row.title.as_str(),
+                        url: row.url.as_str(),
+                        bank: row.bank.as_deref(),
+                        location: row.location.as_deref(),
+                        reserve_price: row.reserve_price.as_deref(),
+                        emd: row.emd.as_deref(),
+                        auction_start: row.auction_start.as_deref(),
+                        notice_url: None,
+                        source_url: outcome.source_url.as_str(),
+                        fetched_at: outcome.fetched_at.as_str(),
+                    };
+                    if let Err(e) = state.persistence.upsert_auction_listing(&record) {
+                        tracing::warn!("auction upsert failed for {}: {e}", row.external_id);
+                    }
+                }
+                let _ = state.persistence.record_auction_refresh(
+                    source.id,
+                    &outcome.fetched_at,
+                    rows.len(),
+                    outcome.note.as_deref(),
+                );
+                outcomes.push(outcome);
+            }
+            Err(e) => {
+                // Refused (JS/protected venue) or unreachable: named gap in
+                // the coverage matrix, recorded like any other outcome.
+                let fetched_at = chrono::Utc::now().to_rfc3339();
+                let _ = state.persistence.record_auction_refresh(
+                    source.id,
+                    &fetched_at,
+                    0,
+                    Some(&e.to_string()),
+                );
+                outcomes.push(crate::auctions::PollOutcome {
+                    source_id: source.id.to_string(),
+                    source_url: crate::auctions::listing_page_url(&source, None),
+                    fetched_at,
+                    listing_count: 0,
+                    note: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    Ok(serde_json::to_value(outcomes)?)
+}
+
+async fn handle_auction_listings_search(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::AuctionListingsSearchParams = serde_json::from_value(params)?;
+    let listings = state
+        .persistence
+        .search_auction_listings(p.query.as_deref(), p.source_id.as_deref())?;
+    Ok(serde_json::to_value(listings)?)
+}
+
+async fn handle_auction_listing_get(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::AuctionListingGetParams = serde_json::from_value(params)?;
+    let listing = state.persistence.get_auction_listing(&p.id)?;
+    Ok(serde_json::to_value(listing)?)
+}
+
+async fn handle_auction_crosscheck(
+    params: serde_json::Value,
+    state: &AppState,
+) -> anyhow::Result<serde_json::Value> {
+    let p: crate::api::types::AuctionCrosscheckParams = serde_json::from_value(params)?;
+    let listing = state.persistence.get_auction_listing(&p.listing_id)?;
+    let client = reqwest::Client::new();
+    let report = crate::auctions::compare_crosscheck(&client, &listing, &p.third_party_url).await?;
+    Ok(serde_json::to_value(report)?)
 }
 
 // ============ Phase 2: Background Model Router Handlers ============

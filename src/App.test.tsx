@@ -31,6 +31,7 @@ vi.mock("./components/chat/AgentsPanel", () => ({ AgentsPanel: () => <div>Agents
 vi.mock("./components/chat/WorkflowPanel", () => ({ WorkflowPanel: () => <div>WorkflowPanelStub</div> }));
 vi.mock("./components/editor/EditorPane", () => ({ EditorPane: () => <div>EditorPaneStub</div> }));
 vi.mock("./components/terminal/TerminalPane", () => ({ TerminalPane: () => <div>TerminalPaneStub</div> }));
+vi.mock("./components/auctions/AuctionsPanel", () => ({ AuctionsPanel: () => <div>AuctionsPanelStub</div> }));
 
 vi.mock("./lib/api", () => ({
   api: {

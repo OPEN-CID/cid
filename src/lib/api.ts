@@ -677,6 +677,16 @@ class CidApiClient {
       this.call("workflow.from_plan", { session_id, name }),
   };
 
+  auction = {
+    sources: () => this.call("auction.sources.list", {}),
+    refresh: () => this.call("auction.refresh", {}),
+    search: (query?: string, source_id?: string) =>
+      this.call("auction.listings.search", { query: query ?? null, source_id: source_id ?? null }),
+    get: (id: string) => this.call("auction.listing.get", { id }),
+    crosscheck: (listing_id: string, third_party_url: string) =>
+      this.call("auction.crosscheck", { listing_id, third_party_url }),
+  };
+
   governance = {
     getPolicy: (workspace_id?: string) => this.call("governance.policy.get", { workspace_id }),
     setPolicy: (session_token: string, policy: unknown) =>

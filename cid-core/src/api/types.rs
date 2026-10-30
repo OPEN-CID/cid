@@ -1511,6 +1511,23 @@ pub fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuctionListingsSearchParams {
+    pub query: Option<String>,
+    pub source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuctionListingGetParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuctionCrosscheckParams {
+    pub listing_id: String,
+    pub third_party_url: String,
+}
+
 pub fn now_utc() -> DateTime<Utc> {
     Utc::now()
 }

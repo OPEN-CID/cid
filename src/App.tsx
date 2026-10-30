@@ -14,6 +14,7 @@ import { DecisionsPanel } from "./components/chat/DecisionsPanel";
 import { ReviewsPanel } from "./components/chat/ReviewsPanel";
 import { AgentsPanel } from "./components/chat/AgentsPanel";
 import { WorkflowPanel } from "./components/chat/WorkflowPanel";
+import { AuctionsPanel } from "./components/auctions/AuctionsPanel";
 import { useCid } from "./hooks/useCid";
 import { useModelReadiness } from "./hooks/useModelReadiness";
 import { useTheme } from "./theme/useTheme";
@@ -81,7 +82,8 @@ type RightTab =
   | "models"
   | "autonomy"
   | "health"
-  | "server";
+  | "server"
+  | "auctions";
 
 const ALL_TABS: RightTab[] = [
   "editor",
@@ -99,6 +101,7 @@ const ALL_TABS: RightTab[] = [
   "autonomy",
   "health",
   "server",
+  "auctions",
 ];
 
 // Titles rather than `capitalize` on the raw key, which rendered the acronym
@@ -119,6 +122,7 @@ const TAB_LABELS: Record<RightTab, string> = {
   autonomy: "Automation",
   health: "Repo health",
   server: "Server",
+  auctions: "Auctions",
 };
 
 /// Showing all twelve panels by default buried the three that the core loop
@@ -750,6 +754,7 @@ export default function App() {
                   <AccessControlPanel />
                 </div>
               )}
+              {rightTab === "auctions" && <AuctionsPanel />}
             </Suspense>
           </div>
         </div>

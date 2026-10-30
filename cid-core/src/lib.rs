@@ -2,6 +2,7 @@ pub mod access;
 pub mod acp;
 pub mod analyzer;
 pub mod api;
+pub mod auctions;
 pub mod auth;
 pub mod autonomy;
 pub mod background_model;

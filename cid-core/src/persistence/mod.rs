@@ -1,7 +1,7 @@
 use crate::api::types::*;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::PathBuf, sync::Mutex};
 
 pub struct Persistence {
@@ -186,6 +186,28 @@ const MIGRATIONS: &[&str] = &[
     // up; on fresh databases the second apply fails with "duplicate column"
     // and is tolerated like every other already-present base-schema column.
     "ALTER TABLE settings ADD COLUMN routing_mode TEXT",
+    // Auction watch (official Indian auction/tender ingestion): listings with
+    // per-row provenance plus a refresh log per source. Appended, never
+    // inserted earlier — see the routing_mode comment above for why order
+    // here is load-bearing on existing databases.
+    "CREATE TABLE IF NOT EXISTS auction_listings (\
+        id TEXT PRIMARY KEY, \
+        source_id TEXT NOT NULL, \
+        external_id TEXT NOT NULL, \
+        title TEXT NOT NULL, \
+        url TEXT NOT NULL, \
+        bank TEXT, location TEXT, reserve_price TEXT, emd TEXT, \
+        auction_start TEXT, notice_url TEXT, \
+        origin TEXT NOT NULL DEFAULT 'primary', \
+        source_url TEXT NOT NULL DEFAULT '', \
+        fetched_at TEXT NOT NULL, \
+        UNIQUE(source_id, external_id))",
+    "CREATE TABLE IF NOT EXISTS auction_refresh_log (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, \
+        source_id TEXT NOT NULL, \
+        fetched_at TEXT NOT NULL, \
+        listing_count INTEGER NOT NULL DEFAULT 0, \
+        note TEXT)",
 ];
 
 /// Rename the pre-2026-08-21 "Mission" schema to "Session", *before* the base
@@ -851,6 +873,131 @@ impl Persistence {
             failed += 1;
         }
         Ok(failed)
+    }
+
+    // Auction watch (official Indian auction/tender ingestion — see
+    // auctions/mod.rs). Listings carry per-row provenance (source_url,
+    // fetched_at); origin is always Primary on this write path because only
+    // the poller calls it and the poller only polls Tier::Primary venues.
+    pub fn upsert_auction_listing(
+        &self,
+        listing: &crate::auctions::NewAuctionListing,
+    ) -> Result<crate::auctions::AuctionListing> {
+        let id = format!("{}:{}", listing.source_id, listing.external_id);
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO auction_listings (id, source_id, external_id, title, url, bank, location, reserve_price, emd, auction_start, notice_url, origin, source_url, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'primary', ?12, ?13) \
+             ON CONFLICT(source_id, external_id) DO UPDATE SET title=excluded.title, url=excluded.url, bank=excluded.bank, location=excluded.location, reserve_price=excluded.reserve_price, emd=excluded.emd, auction_start=excluded.auction_start, notice_url=excluded.notice_url, source_url=excluded.source_url, fetched_at=excluded.fetched_at",
+            params![id, listing.source_id, listing.external_id, listing.title, listing.url, listing.bank, listing.location, listing.reserve_price, listing.emd, listing.auction_start, listing.notice_url, listing.source_url, listing.fetched_at],
+        )?;
+        drop(conn);
+        self.get_auction_listing(&id)
+    }
+
+    pub fn get_auction_listing(&self, id: &str) -> Result<crate::auctions::AuctionListing> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_id, external_id, title, url, bank, location, reserve_price, emd, auction_start, notice_url, origin, source_url, fetched_at FROM auction_listings WHERE id = ?",
+        )?;
+        let listing = stmt
+            .query_row(params![id], parse_auction_listing_row)
+            .with_context(|| format!("No auction listing with id {id}"))?;
+        Ok(listing)
+    }
+
+    pub fn search_auction_listings(
+        &self,
+        query: Option<&str>,
+        source_id: Option<&str>,
+    ) -> Result<Vec<crate::auctions::AuctionListing>> {
+        let conn = self.conn.lock().unwrap();
+        let base = "SELECT id, source_id, external_id, title, url, bank, location, reserve_price, emd, auction_start, notice_url, origin, source_url, fetched_at FROM auction_listings";
+        let pattern = query.map(|q| format!("%{q}%"));
+        let rows: Vec<crate::auctions::AuctionListing> = match (&pattern, source_id) {
+            (Some(pat), Some(s)) => {
+                let sql = format!("{base} WHERE (title LIKE ?1 OR bank LIKE ?1 OR location LIKE ?1) AND source_id = ?2 ORDER BY fetched_at DESC");
+                let mut stmt = conn.prepare(&sql)?;
+                let out: Vec<crate::auctions::AuctionListing> = stmt
+                    .query_map(params![pat, s], parse_auction_listing_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                out
+            }
+            (Some(pat), None) => {
+                let sql = format!("{base} WHERE title LIKE ?1 OR bank LIKE ?1 OR location LIKE ?1 ORDER BY fetched_at DESC");
+                let mut stmt = conn.prepare(&sql)?;
+                let out: Vec<crate::auctions::AuctionListing> = stmt
+                    .query_map(params![pat], parse_auction_listing_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                out
+            }
+            (None, Some(s)) => {
+                let sql = format!("{base} WHERE source_id = ?1 ORDER BY fetched_at DESC");
+                let mut stmt = conn.prepare(&sql)?;
+                let out: Vec<crate::auctions::AuctionListing> = stmt
+                    .query_map(params![s], parse_auction_listing_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                out
+            }
+            (None, None) => {
+                let sql = format!("{base} ORDER BY fetched_at DESC LIMIT 200");
+                let mut stmt = conn.prepare(&sql)?;
+                let out: Vec<crate::auctions::AuctionListing> = stmt
+                    .query_map([], parse_auction_listing_row)?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                out
+            }
+        };
+        Ok(rows)
+    }
+
+    pub fn record_auction_refresh(
+        &self,
+        source_id: &str,
+        fetched_at: &str,
+        listing_count: usize,
+        note: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO auction_refresh_log (source_id, fetched_at, listing_count, note) VALUES (?1, ?2, ?3, ?4)",
+            params![source_id, fetched_at, listing_count as i64, note],
+        )?;
+        Ok(())
+    }
+
+    pub fn latest_auction_refresh(
+        &self,
+        source_id: &str,
+    ) -> Result<Option<crate::auctions::PollOutcome>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT source_id, fetched_at, listing_count, note FROM auction_refresh_log WHERE source_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let row: Option<crate::auctions::PollOutcome> = stmt
+            .query_row(params![source_id], |row| {
+                let id: String = row.get(0)?;
+                // The refresh log predates the source_url column idea — the
+                // URL is derivable from the registry for every known source.
+                let source_url = crate::auctions::official_sources()
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| crate::auctions::listing_page_url(s, None))
+                    .unwrap_or_default();
+                Ok(crate::auctions::PollOutcome {
+                    source_id: id,
+                    source_url,
+                    fetched_at: row.get(1)?,
+                    listing_count: row.get::<_, i64>(2)? as usize,
+                    note: row.get(3)?,
+                })
+            })
+            .optional()?;
+        Ok(row)
     }
 
     // Workspace
@@ -2404,6 +2551,32 @@ fn parse_workflow_run_row(row: &rusqlite::Row) -> rusqlite::Result<crate::api::t
     })
 }
 
+fn parse_auction_listing_row(
+    row: &rusqlite::Row,
+) -> rusqlite::Result<crate::auctions::AuctionListing> {
+    let origin_str: String = row.get(11)?;
+    let origin = match origin_str.as_str() {
+        "unverified" => crate::auctions::ListingOrigin::Unverified,
+        _ => crate::auctions::ListingOrigin::Primary,
+    };
+    Ok(crate::auctions::AuctionListing {
+        id: row.get(0)?,
+        source_id: row.get(1)?,
+        external_id: row.get(2)?,
+        title: row.get(3)?,
+        url: row.get(4)?,
+        bank: row.get(5)?,
+        location: row.get(6)?,
+        reserve_price: row.get(7)?,
+        emd: row.get(8)?,
+        auction_start: row.get(9)?,
+        notice_url: row.get(10)?,
+        origin,
+        source_url: row.get(12)?,
+        fetched_at: row.get(13)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2571,8 +2744,10 @@ mod tests {
         // added in the *middle* of MIGRATIONS, where the version check made
         // it silently never run on existing databases — `settings.update`
         // then failed with "no such column". Migrations are positional: new
-        // entries must be appended, and this pins that the newest entry is
-        // the one an upgrading database actually receives.
+        // entries must be appended, so this stamps at the routing ALTER
+        // itself and asserts everything after it — including the duplicate
+        // entry and every later append (currently the auction tables) —
+        // actually applies to an upgrading database.
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), anthropic_api_key TEXT, anthropic_model TEXT NOT NULL DEFAULT 'claude-sonnet-5');",
@@ -2580,7 +2755,10 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO settings (id) VALUES (1)", [])
             .unwrap();
-        let stamped = MIGRATIONS.len() as i64 - 1;
+        let stamped = MIGRATIONS
+            .iter()
+            .position(|m| m.contains("ADD COLUMN routing_mode"))
+            .expect("the routing migration must still exist") as i64;
         conn.pragma_update(None, "user_version", stamped).unwrap();
 
         run_migrations(&mut conn).unwrap();
@@ -2603,6 +2781,18 @@ mod tests {
             ["auto_balanced"],
         )
         .unwrap();
+        // And every migration appended after the stamp point — currently the
+        // auction-watch tables — must exist too, not just the entry the test
+        // was originally written for.
+        for table in ["auction_listings", "auction_refresh_log"] {
+            let exists: bool = conn
+                .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1")
+                .unwrap()
+                .query_row([table], |row| row.get::<_, i64>(0))
+                .unwrap()
+                > 0;
+            assert!(exists, "upgrade must create {table}");
+        }
     }
 
     /// The version stamped on a database written just before the retired-model
@@ -3255,5 +3445,64 @@ mod tests {
             "stored path should be simplified, got {}",
             repo.path
         );
+    }
+
+    #[test]
+    fn auction_listings_upsert_search_and_carry_provenance() {
+        let p = Persistence::new_in_memory().unwrap();
+        let l1 = p
+            .upsert_auction_listing(&crate::auctions::NewAuctionListing {
+                source_id: "bankeauctions-c1",
+                external_id: "AUC1",
+                title: "Individual House in Jaipur",
+                url: "https://bankeauctions.com/auction/1",
+                bank: Some("State Bank of India"),
+                location: Some("Jaipur"),
+                reserve_price: Some("Rs. 2.05 Cr"),
+                emd: None,
+                auction_start: None,
+                notice_url: Some("https://bankeauctions.com/notice/1.pdf"),
+                source_url: "https://bankeauctions.com/",
+                fetched_at: "2026-01-01T00:00:00Z",
+            })
+            .unwrap();
+        assert_eq!(l1.id, "bankeauctions-c1:AUC1");
+        assert_eq!(l1.origin, crate::auctions::ListingOrigin::Primary);
+
+        // A refresh of the same row updates fields, keeps one row.
+        let l1b = p
+            .upsert_auction_listing(&crate::auctions::NewAuctionListing {
+                source_id: "bankeauctions-c1",
+                external_id: "AUC1",
+                title: "Individual House in Jaipur (revised)",
+                url: "https://bankeauctions.com/auction/1",
+                bank: Some("State Bank of India"),
+                location: Some("Jaipur"),
+                reserve_price: Some("Rs. 1.95 Cr"),
+                emd: None,
+                auction_start: None,
+                notice_url: Some("https://bankeauctions.com/notice/1.pdf"),
+                source_url: "https://bankeauctions.com/",
+                fetched_at: "2026-01-02T00:00:00Z",
+            })
+            .unwrap();
+        assert_eq!(l1b.id, l1.id);
+        assert_eq!(l1b.reserve_price.as_deref(), Some("Rs. 1.95 Cr"));
+
+        let hits = p.search_auction_listings(Some("Jaipur"), None).unwrap();
+        assert_eq!(hits.len(), 1);
+        let misses = p.search_auction_listings(Some("Chennai"), None).unwrap();
+        assert!(misses.is_empty());
+        let scoped = p.search_auction_listings(None, Some("mstc")).unwrap();
+        assert!(scoped.is_empty());
+
+        p.record_auction_refresh("bankeauctions-c1", "2026-01-02T00:00:00Z", 1, None)
+            .unwrap();
+        let latest = p
+            .latest_auction_refresh("bankeauctions-c1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.listing_count, 1);
+        assert!(p.latest_auction_refresh("mstc").unwrap().is_none());
     }
 }

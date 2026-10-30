@@ -3758,3 +3758,83 @@ async fn workflow_cancel_stops_a_waiting_run() {
     let run = rpc_ok(&base, "workflow.run.cancel", json!({ "run_id": run_id })).await;
     assert_eq!(run["status"], "cancelled");
 }
+
+// ---- Auction watch (official Indian auction/tender ingestion) ----
+
+#[tokio::test]
+async fn auction_sources_list_names_the_primary_registry_including_c1() {
+    let base = start_core().await;
+    let sources = rpc_ok(&base, "auction.sources.list", json!({})).await;
+
+    let official = sources["official"].as_array().unwrap();
+    let ids: Vec<&str> = official.iter().filter_map(|s| s["id"].as_str()).collect();
+    for required in [
+        "baanknet",
+        "mstc",
+        "bankeauctions-c1",
+        "cppp",
+        "ireps",
+        "gem",
+        "drt",
+    ] {
+        assert!(ids.contains(&required), "{required} missing: {ids:?}");
+    }
+
+    // The C1 venue the registry missed at first: primary tier, but its
+    // result rows hydrate client-side (proven by a live zero-row poll), so
+    // the poller refuses it with a named reason instead of pretending.
+    let c1 = official
+        .iter()
+        .find(|s| s["id"] == "bankeauctions-c1")
+        .unwrap();
+    assert_eq!(c1["tier"], "primary");
+    assert_eq!(c1["access"], "js_app");
+
+    // Authority-only venues are covered but marked as non-feeds.
+    let ibbi = official.iter().find(|s| s["id"] == "ibbi").unwrap();
+    assert_eq!(ibbi["listing_feed"], false);
+
+    // Third parties are corroboration-only, never feeds.
+    let cross = sources["crosscheck"].as_array().unwrap();
+    assert!(cross.iter().all(|s| s["tier"] == "cross_check"));
+    assert!(cross.iter().all(|s| s["listing_feed"] == false));
+}
+
+#[tokio::test]
+async fn auction_listings_search_is_empty_before_any_refresh() {
+    let base = start_core().await;
+    let listings = rpc_ok(
+        &base,
+        "auction.listings.search",
+        json!({ "query": "Jaipur" }),
+    )
+    .await;
+    assert_eq!(listings.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn auction_listing_get_refuses_an_unknown_id() {
+    let base = start_core().await;
+    let body = rpc(
+        &base,
+        "auction.listing.get",
+        json!({ "id": "no-such-listing" }),
+    )
+    .await;
+    assert!(body.get("error").is_some(), "unknown id must error: {body}");
+}
+
+#[tokio::test]
+async fn auction_crosscheck_refuses_official_urls_without_network() {
+    let base = start_core().await;
+    // No listing exists, so this must fail on the missing record first —
+    // the point is the official-URL guard never lets a primary venue be
+    // treated as a cross-check target; that check runs before any fetch.
+    let body = rpc(
+        &base,
+        "auction.crosscheck",
+        json!({ "listing_id": "no-such-listing", "third_party_url": "https://bankeauctions.com/x" }),
+    )
+    .await;
+    assert!(body.get("error").is_some(), "must refuse: {body}");
+}
