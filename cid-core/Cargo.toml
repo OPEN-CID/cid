@@ -90,8 +90,20 @@ tree-sitter-javascript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-json = "0.24"
+# Held, not forgotten (cargo audit, 2026-10-30): tantivy 0.22 pulls
+# zstd 0.13.3, flagged by RUSTSEC-2026-0391 (fix: zstd >= 0.14.3, only via
+# a tantivy bump). That bump is an on-disk search-index format change, so
+# every indexed repo would need a rebuild, and it was already dispositioned
+# as a bad trade for a transitive warning. Revisit when tantivy moves and
+# the advisories demand it, not on each audit cycle.
 tantivy = "0.22"
 argon2 = "0.5"
+# Held, not forgotten (cargo audit, 2026-10-30): candle-core 0.11.0 is the
+# latest published release and hard-depends on zip 8.6.0 (non-optional),
+# flagged by RUSTSEC-2026-0367/0368/0369 (fix: zip >= 9.0.0). There is no
+# upstream candle release carrying zip 9 yet, so this cannot be fixed by a
+# version bump — only by forking candle or dropping real embeddings, both
+# worse than the finding. Re-check on every candle release.
 candle-core = { version = "0.11.0", default-features = false }
 candle-nn = { version = "0.11.0", default-features = false }
 candle-transformers = { version = "0.11.0", default-features = false }
