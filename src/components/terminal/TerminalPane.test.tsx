@@ -16,26 +16,33 @@ let onDataHandler: ((data: string) => void) | null = null;
 let disposeCalled = false;
 
 vi.mock("@xterm/xterm", () => ({
-  Terminal: vi.fn().mockImplementation(() => ({
-    options: {},
-    open: vi.fn(),
-    loadAddon: vi.fn(),
-    writeln: vi.fn((s: string) => writelnCalls.push(s)),
-    write: vi.fn((s: string) => writeCalls.push(s)),
-    onData: vi.fn((handler: (data: string) => void) => {
-      onDataHandler = handler;
-    }),
-    dispose: vi.fn(() => {
-      disposeCalled = true;
-    }),
-  })),
+  // A real (non-arrow) constructor: `new Terminal()` must work, and under
+  // vitest 5 a mock that cannot be constructed fails loudly instead of
+  // silently producing a broken instance as before.
+  Terminal: vi.fn().mockImplementation(function () {
+    return {
+      options: {},
+      open: vi.fn(),
+      loadAddon: vi.fn(),
+      writeln: vi.fn((s: string) => writelnCalls.push(s)),
+      write: vi.fn((s: string) => writeCalls.push(s)),
+      onData: vi.fn((handler: (data: string) => void) => {
+        onDataHandler = handler;
+      }),
+      dispose: vi.fn(() => {
+        disposeCalled = true;
+      }),
+    };
+  }),
 }));
 
 vi.mock("@xterm/addon-fit", () => ({
-  FitAddon: vi.fn().mockImplementation(() => ({
-    fit: vi.fn(),
-    proposeDimensions: vi.fn(() => ({ cols: 80, rows: 24 })),
-  })),
+  FitAddon: vi.fn().mockImplementation(function () {
+    return {
+      fit: vi.fn(),
+      proposeDimensions: vi.fn(() => ({ cols: 80, rows: 24 })),
+    };
+  }),
 }));
 
 let notificationHandler: ((notif: unknown) => void) | null = null;

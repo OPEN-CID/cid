@@ -90,14 +90,14 @@ describe("CidApiClient authentication", () => {
     api.setAuthToken("s3cret-token");
     api.connect();
 
-    const socket = FakeWebSocket.instances.at(-1);
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     expect(socket?.protocols).toEqual([wsBearerProtocol("s3cret-token")]);
   });
 
   it("omits the subprotocol entirely when there is no token", () => {
     api.connect();
 
-    const socket = FakeWebSocket.instances.at(-1);
+    const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     expect(socket?.protocols).toBeUndefined();
   });
 
