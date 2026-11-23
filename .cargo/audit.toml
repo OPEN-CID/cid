@@ -1,0 +1,32 @@
+# cargo-audit ignores. Each entry names a specific advisory ID (never a crate),
+# so any *new* advisory still fails the gate. Re-check every entry on each
+# dependency bump — an ignore is a dated claim, not a permanent exemption.
+#
+# Reviewed 2026-10-30. `cargo audit` runs in CI's dependency-audit job
+# (continue-on-error by design); these entries keep that signal about new
+# findings instead of drowning it in seven repeats of one unreachable path.
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0367/0368/0369/0429/0545/0546/0547/0548: all eight target
+    # `ZipArchive::extract*` / `ZipStreamReader::extract` writing
+    # attacker-controlled symlinks/SUID bits outside the destination.
+    # Unreachable in this binary:
+    # - zip's only consumer in our graph is candle-core 0.11.0 (verified via
+    #   `cargo tree -i zip`); our own code never touches zip.
+    # - candle-core 0.11 calls `ZipArchive::new` + `by_name*` (reads: npy,
+    #   pickle model loading) and `ZipWriter` (npy save). It contains zero
+    #   calls to `extract` (verified by grepping the vendored source).
+    # - Extraction writes files; nothing in our call graph extracts archives.
+    # Unfixable by version bump today: candle-core 0.11.0 is the latest
+    # published release and hard-depends zip 8 (non-optional), while every
+    # advisory requires zip >= 9.0.0. Revisit on each candle release — see
+    # the comment at candle-core in cid-core/Cargo.toml.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0546",
+    "RUSTSEC-2026-0547",
+    "RUSTSEC-2026-0548",
+]

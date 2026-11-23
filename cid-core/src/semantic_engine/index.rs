@@ -19,6 +19,7 @@ use tantivy::{
     schema::{Field, Schema, Value, FAST, STORED, STRING, TEXT},
     Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term,
 };
+use tracing::warn;
 
 /// Field handles for the code-chunk schema, resolved once at construction.
 #[derive(Clone, Copy)]
@@ -71,15 +72,46 @@ fn build_schema() -> (Schema, Fields) {
 
 impl SearchIndex {
     /// Open (or create) the on-disk index for a repository.
+    ///
+    /// `.cid/index` is a pure derived cache — every row comes from a repo
+    /// scan — so a failure to open a non-empty one heals by wiping and
+    /// recreating; the next scan repopulates it. That is what makes index
+    /// format bumps (e.g. the tantivy 0.22 -> 0.27 upgrade) a slow first
+    /// scan rather than a bricked install: the old format logs here and is
+    /// replaced, and a genuinely broken directory still fails the recreate
+    /// below just as loudly as before.
     pub fn open(repo_path: &str) -> Result<Self> {
         let dir = Path::new(repo_path).join(".cid").join("index");
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("creating index directory {}", dir.display()))?;
 
         let (schema, fields) = build_schema();
-        let mmap = MmapDirectory::open(&dir)
-            .with_context(|| format!("opening index directory {}", dir.display()))?;
-        let index = Index::open_or_create(mmap, schema)?;
+        let open_fresh = |dir: &Path| -> Result<Index> {
+            let mmap = MmapDirectory::open(dir)
+                .with_context(|| format!("opening index directory {}", dir.display()))?;
+            Ok(Index::open_or_create(mmap, schema.clone())?)
+        };
+        let index = match open_fresh(&dir) {
+            Ok(index) => index,
+            Err(first) => {
+                let non_empty = std::fs::read_dir(&dir)
+                    .map(|mut entries| entries.next().is_some())
+                    .unwrap_or(false);
+                if !non_empty {
+                    return Err(first);
+                }
+                warn!(
+                    "wiping stale search index at {} ({}); a rescan will rebuild it",
+                    dir.display(),
+                    first
+                );
+                std::fs::remove_dir_all(&dir)
+                    .with_context(|| format!("removing stale index directory {}", dir.display()))?;
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("recreating index directory {}", dir.display()))?;
+                open_fresh(&dir)?
+            }
+        };
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -197,7 +229,9 @@ impl SearchIndex {
             .parse_query(query)
             .or_else(|_| parser.parse_query(&escape_query(query)))?;
 
-        let top = searcher.search(&parsed, &TopDocs::with_limit(limit))?;
+        // tantivy 0.27: TopDocs is a builder, not a Collector itself — the
+        // terminal order_by_* call produces the actual collector.
+        let top = searcher.search(&parsed, &TopDocs::with_limit(limit).order_by_score())?;
         let mut hits = Vec::with_capacity(top.len());
         for (score, addr) in top {
             let doc: TantivyDocument = searcher.doc(addr)?;
@@ -407,5 +441,25 @@ mod tests {
             "the index must survive a Core restart"
         );
         assert!(reopened.location().is_some());
+    }
+
+    #[test]
+    fn an_unreadable_index_directory_heals_by_wiping_not_failing() {
+        // Simulates what a tantivy format bump leaves behind: a `.cid/index`
+        // the current library cannot open. The index is a pure derived
+        // cache, so open must replace it (empty, ready for the next scan)
+        // rather than fail and strand the install on the fallback forever.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_string_lossy().to_string();
+        let index_dir = dir.path().join(".cid").join("index");
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(index_dir.join("meta.json"), b"{ not a real index }").unwrap();
+
+        let idx = SearchIndex::open(&repo).unwrap();
+        assert_eq!(idx.document_count(), 0);
+        // And the healed index is fully usable.
+        idx.replace_file("src/fresh.rs", &[chunk("healed content", None)])
+            .unwrap();
+        assert_eq!(idx.search("healed", 10).unwrap().len(), 1);
     }
 }

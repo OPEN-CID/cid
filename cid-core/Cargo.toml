@@ -40,7 +40,7 @@ git2 = { version = "0.21", features = ["https", "ssh", "vendored-libgit2", "vend
 portable-pty = "0.9"
 
 # SQLite
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 
 # MCP / HTTP
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -90,13 +90,11 @@ tree-sitter-javascript = "0.23"
 tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 tree-sitter-json = "0.24"
-# Held, not forgotten (cargo audit, 2026-10-30): tantivy 0.22 pulls
-# zstd 0.13.3, flagged by RUSTSEC-2026-0391 (fix: zstd >= 0.14.3, only via
-# a tantivy bump). That bump is an on-disk search-index format change, so
-# every indexed repo would need a rebuild, and it was already dispositioned
-# as a bad trade for a transitive warning. Revisit when tantivy moves and
-# the advisories demand it, not on each audit cycle.
-tantivy = "0.22"
+# 2026-10: bumped 0.22 -> 0.27 for RUSTSEC-2026-0391/0398/0403 (zstd >= 0.14.3
+# only ships via newer tantivy). The on-disk index format changed, so
+# `SemanticIndex::open` wipes and rescans a stale `.cid/index` instead of
+# failing — the index is a pure cache, rebuildable from repo content.
+tantivy = "0.27"
 argon2 = "0.5"
 # Held, not forgotten (cargo audit, 2026-10-30): candle-core 0.11.0 is the
 # latest published release and hard-depends on zip 8.6.0 (non-optional),
