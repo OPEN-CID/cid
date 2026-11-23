@@ -824,11 +824,6 @@ impl SandboxManager {
         cmd.arg("--unshare-all");
         cmd.arg("--share-net"); // Need network for git, npm, etc.
 
-        // Bind mount the worktree as restricted root
-        cmd.arg("--bind")
-            .arg(&config.worktree_path)
-            .arg(&config.worktree_path);
-
         // Bind mount /usr for system binaries
         cmd.arg("--ro-bind").arg("/usr").arg("/usr");
         cmd.arg("--ro-bind").arg("/bin").arg("/bin");
@@ -844,6 +839,17 @@ impl SandboxManager {
 
         // /tmp for temp files
         cmd.arg("--tmpfs").arg("/tmp");
+
+        // Bind mount the worktree as restricted root. This MUST come after
+        // every mount that could cover the worktree's own path — bwrap
+        // applies mounts in argv order, so binding the worktree first and
+        // then mounting a tmpfs over /tmp hides a worktree that lives under
+        // /tmp (every TempDir-based test, and any real repo checked out
+        // there), and the --chdir below fails with ENOENT. Binding last is
+        // correct under both old and new bwrap chdir semantics.
+        cmd.arg("--bind")
+            .arg(&config.worktree_path)
+            .arg(&config.worktree_path);
 
         // Set working directory
         cmd.arg("--chdir").arg(workdir);
