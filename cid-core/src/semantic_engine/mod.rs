@@ -224,13 +224,23 @@ impl SemanticEngine {
         let embedding_model = self.embedding_model.clone();
         let http_client = self.http_client.clone();
         tokio::spawn(async move {
-            // Awaited here, inside the background task — not before
-            // `enable()` returns to its caller — so the very first scan for
-            // a repo already benefits from real embeddings when the model
-            // is available, without making the RPC caller wait for a
-            // multi-second (or, on first-ever use, multi-tens-of-seconds
-            // download) model load.
-            Self::ensure_embedding_model_static(&embedding_model, &http_client).await;
+            // The model load is awaited here, inside the background task —
+            // not before `enable()` returns — but only when it is already
+            // cached locally (a fast disk load). On a cold cache the ~90MB
+            // download must NOT gate the scan: it would stall every first
+            // scan for tens of seconds (and silently break the status-poll
+            // contract tests rely on), so it warms in the background for
+            // future scans while this one proceeds immediately with the
+            // documented hash-projection fallback.
+            if embeddings::is_model_cached() {
+                Self::ensure_embedding_model_static(&embedding_model, &http_client).await;
+            } else {
+                let em = embedding_model.clone();
+                let hc = http_client.clone();
+                tokio::spawn(async move {
+                    Self::ensure_embedding_model_static(&em, &hc).await;
+                });
+            }
 
             let outcome = tokio::task::spawn_blocking({
                 let repo = repo.clone();

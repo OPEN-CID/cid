@@ -910,7 +910,13 @@ async fn test_impact_and_doc_graphs_populate_after_enabling_the_semantic_engine(
     .await;
 
     // The scan runs in the background; poll status until indexing completes.
-    // Use a generous timeout (500 × 20ms = 10s) for slow CI runners.
+    // Use a generous timeout (500 × 20ms = 10s) for slow CI runners. The
+    // completion assert below is load-bearing, not boilerplate: without it
+    // a timed-out poll falls through silently and the graph assertions
+    // below fail with a confusing empty result instead of naming the
+    // unfinished scan. (The scan itself never waits on the embedding-model
+    // download — see `enable` — so 10s is a hang detector, not a budget.)
+    let mut completed = false;
     for _ in 0..500 {
         let status = rpc_ok(
             &base,
@@ -919,10 +925,15 @@ async fn test_impact_and_doc_graphs_populate_after_enabling_the_semantic_engine(
         )
         .await;
         if status["indexing"] == false && status["indexed_files"].as_u64().unwrap_or(0) > 0 {
+            completed = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    assert!(
+        completed,
+        "the background scan did not finish within 10s; graphs cannot be asserted"
+    );
 
     let impact = rpc_ok(
         &base,
