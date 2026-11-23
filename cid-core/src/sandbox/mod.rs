@@ -960,19 +960,15 @@ impl SandboxManager {
     }
 
     fn path_within_boundary(target: &str, boundary: &str) -> bool {
-        let target_path = if let Ok(canonical) = std::path::Path::new(target).canonicalize() {
-            canonical
-        } else {
-            std::path::Path::new(target).to_path_buf()
-        };
-
-        let boundary_path = if let Ok(canonical) = std::path::Path::new(boundary).canonicalize() {
-            canonical
-        } else {
-            std::path::Path::new(boundary).to_path_buf()
-        };
-
-        target_path.starts_with(&boundary_path)
+        // The shared confinement primitive, not a string prefix check: it
+        // canonicalizes (resolving symlinks), handles not-yet-existing paths
+        // by walking to the deepest existing ancestor, and denies `..`
+        // escapes. A lexical starts_with on the raw string passes
+        // `<worktree>/../escape` whenever the target does not exist yet —
+        // exactly the not-yet-created-file case — because the prefix matches.
+        // That hole stayed hidden while Layer 2 failed closed first; now
+        // that it runs, Layer 1 must actually hold its "fails closed" claim.
+        crate::path_confine::resolve_confined_path(std::path::Path::new(boundary), target).is_ok()
     }
 
     // Windows-only by design, not by oversight: Job Objects constrain process
@@ -1106,22 +1102,28 @@ mod tests {
 
     #[test]
     fn test_path_within_boundary() {
-        assert!(SandboxManager::path_within_boundary(
-            "/tmp/test/subdir",
-            "/tmp/test"
-        ));
-        assert!(SandboxManager::path_within_boundary(
-            "/tmp/test",
-            "/tmp/test"
-        ));
-        assert!(!SandboxManager::path_within_boundary(
-            "/tmp/other",
-            "/tmp/test"
-        ));
-        assert!(SandboxManager::path_within_boundary(
-            "/tmp/test/deep/nested",
-            "/tmp/test"
-        ));
+        // Real directories, not string fixtures: the old version of this
+        // test asserted prefix behavior on paths that do not exist, which
+        // pinned the `..`-on-a-missing-file hole instead of the guarantee.
+        let root = TempDir::new().unwrap();
+        let base = root.path().to_string_lossy().to_string();
+        let inside = root.path().join("subdir").to_string_lossy().to_string();
+        let missing = root
+            .path()
+            .join("not_yet_created.txt")
+            .to_string_lossy()
+            .to_string();
+        let traversal = format!("{}/../escape.txt", root.path().to_string_lossy());
+        let outside = TempDir::new().unwrap().path().to_string_lossy().to_string();
+
+        assert!(SandboxManager::path_within_boundary(&inside, &base));
+        assert!(SandboxManager::path_within_boundary(&base, &base));
+        assert!(SandboxManager::path_within_boundary(&missing, &base));
+        assert!(
+            !SandboxManager::path_within_boundary(&traversal, &base),
+            "a `..` escape must fail even when the target does not exist yet"
+        );
+        assert!(!SandboxManager::path_within_boundary(&outside, &base));
     }
 
     #[test]
