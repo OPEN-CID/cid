@@ -8,10 +8,12 @@
 // exported `./matchers` subpath rather than re-declared here, so matcher
 // signatures stay single-sourced.
 import type { TestingLibraryMatchers } from "@testing-library/jest-dom/matchers";
-
 declare global {
   namespace Chai {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // Both disables are the augmentation mechanism, not sloppiness: the
+    // interface must stay memberless to merge with Chai.Assertion, and the
+    // `any`s mirror TestingLibraryMatchers' own variance (<any, any>).
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type, @typescript-eslint/no-explicit-any
     interface Assertion extends TestingLibraryMatchers<any, any> {}
   }
 }
