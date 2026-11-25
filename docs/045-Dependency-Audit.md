@@ -88,14 +88,37 @@ Re-researching every dependency from scratch, as if the original Part 18 table d
 exist — this audit verifies and extends prior research, per the Phase 5 prompt's own
 framing, rather than repeating it.
 
-## Recommendation
+## Status update, 2026-11-23 (appended, not rewritten — the above is the
+July record)
 
-1. Do the promised MCP final-spec validation pass on or after July 28, 2026.
-2. Schedule a dedicated `rusqlite`/`tantivy`/`axum` major-version-bump pass, each with its
-   own full `cargo test --workspace` regression run and manual review of the specific
-   breaking-change surface identified above — not bundled with unrelated feature work.
-3. Update `027-Mobile.md` and ADR 0010 to reflect Tauri v2 Mobile's improved maturity
-   characterization found here, without re-opening the already-settled framework choice.
+Recommendation 2 is now partly done, each with its own full-suite run:
+- `rusqlite` 0.32 → 0.43: clean build, zero API fallout, persistence suite
+  green. Clears the bundled-SQLite CVE that later appeared (RUSTSEC-2026-0459).
+- `tantivy` 0.22 → 0.27: one real break (`TopDocs` is now a builder needing
+  `order_by_score()`), fixed; the feared index-format change is absorbed by
+  a new `open()` recovery (stale `.cid/index` wipes and rescans — the index
+  is a pure derived cache). Clears RUSTSEC-2026-0391/0398/0403 (zstd 0.14).
+- `axum` 0.7 → still held, unchanged: the extractor/WebSocket-message-type
+  review above still stands.
+- Frontend majors done alongside: vitest 3 → 5, `@typescript-eslint` 7 → 8,
+  `@types/node` 20 → 24; `npm audit` reports 0 vulnerabilities.
+- GitHub Actions unstuck from the Node 20 runtime deprecation:
+  `actions/checkout` v4 → v7, `actions/setup-node` v4 → v7,
+  `extractions/setup-just` v2 → v4 (tested Node stays 20 — only the action
+  runtimes moved).
+- `cargo audit` is 0 vulnerabilities with per-ID ignores recorded in
+  `.cargo/audit.toml` (project root did not apply — the config must live
+  under `.cargo/`). Every ignore names the exact advisory ID plus the
+  reachability justification and re-check condition, so new advisories
+  still fail the gate. The remaining ignores are all `zip` 8.6.0
+  (`extract`-family, RUSTSEC-2026-0367/0368/0369/0429/0545-0548): candle-core
+  0.11.0 is the latest published release and hard-deps zip 8, so no bump
+  exists; its only zip use is `ZipArchive::new`/`by_name` reads and
+  `ZipWriter` writes (verified by grepping the vendored source) — no
+  `extract` call anywhere in the graph, making the flagged code dead in
+  this binary.
+- Warning counts move with the DB: treat any single number here as
+  stale on sight and re-run the tool.
 
 ## AI Coding Rules
 

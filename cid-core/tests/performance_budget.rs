@@ -165,12 +165,17 @@ fn one_hundred_concurrent_rpc_calls_all_complete() {
             let _core = core;
             let _ = axum::serve(listener, app.into_make_service()).await;
         });
+        // Fail loudly (like api_integration's start_core) rather than
+        // benchmarking against a dead server and failing on the numbers.
+        let mut reachable = false;
         for _ in 0..50 {
             if reqwest::get(format!("http://{addr}/health")).await.is_ok() {
+                reachable = true;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        assert!(reachable, "the perf-budget Core never became reachable");
 
         let start = Instant::now();
         let client = reqwest::Client::new();

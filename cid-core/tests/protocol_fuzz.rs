@@ -31,7 +31,7 @@ async fn start_core() -> String {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    panic!("core did not start");
+    panic!("fuzz-target core did not start");
 }
 
 /// POST a raw body and return the HTTP status plus parsed body, if any.

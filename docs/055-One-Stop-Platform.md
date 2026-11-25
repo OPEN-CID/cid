@@ -22,22 +22,23 @@ collides with those is marked REJECT with the reason, not silently dropped.
 | Model catalog + routing | Complete (auto modes, recommend) | Mode selector + badge + preview | MAINTAIN |
 | Session model override | Complete | Creation picker + thread switcher | MAINTAIN |
 | Workflows | Complete (defs, runs, retry, crash recovery, from-plan) | Panel + plan bridge | EXTEND: schedules, see backlog |
-| Reviews (PRs + releases) | `github.pr.*`, `forge.change_request.*`, `deployment.*` complete | List/status/release log | EXTEND: open-PR form (backlog W2) |
+| Reviews (PRs + releases) | `github.pr.*`, `forge.change_request.*`, `deployment.*` complete | List/status/release log + open-PR form (BUILT, backlog W2) | MAINTAIN |
 | Agents (subagents, bg tasks) | Complete; `get`/`cancel` client shape fixed | Live view + sandbox | MAINTAIN |
 | Terminal | PTY complete + reconnect affordance | Complete | MAINTAIN |
 | Editor | Tabs, dirty tracking, binary guard | Complete | EXTEND: small items, see backlog |
 | Diff | Per-hunk accept/reject real | Complete | MAINTAIN |
-| MCP client | stdio transport real; sampling/elicitation absent (SEP-2322, low priority) | Add/remove/test; custom UI | EXTEND: @mention invocation (backlog W1) |
+| MCP client | stdio transport real; sampling/elicitation absent (SEP-2322, low priority) | Add/remove/test; custom UI; @mention invocation (BUILT, backlog W1) | MAINTAIN (sampling still out) |
 | Skills (incl. AGENTS.md gate) | Complete | Bundle CRUD + approval card | MAINTAIN |
 | Search (ripgrep engine) | Complete | Results via editor | MAINTAIN |
 | Semantic engine | Complete, opt-in per repo | Health panel tabs | MAINTAIN |
 | Context compaction + usage | Complete | Indicator + `/compact` | MAINTAIN |
 | Checkpoints | Complete | Cards + rewind | MAINTAIN |
-| Governance (caps, roles, allow-lists) | `policy.set` requires admin session; **no UI supplies one** | Allow-lists only | **GAP — backlog W3** |
-| Auth (multi-user) | Complete (Argon2id, roles, rotation) | Token box only; **no login/register UI** | **GAP — backlog W3** |
+| Governance (caps, roles, allow-lists) | `policy.set` requires admin session; GovernancePanel supplies it | Allow-lists + governance section (BUILT, backlog W3) | MAINTAIN |
+| Auth (multi-user) | Complete (Argon2id, roles, rotation) | Token box + sign-in dialog (BUILT, backlog W3) | MAINTAIN |
 | Local models | Detection, fit classes, manager | Start/stop/pull, catalog | MAINTAIN |
 | Health/observability | `/metrics`, crash log | Server tab | MAINTAIN |
-| Trackers (Jira/Linear) | Link + credential verify | Via issues panels? partial | EXTEND: link UI check (backlog) |
+| Trackers (Jira/Linear) | Link + credential verify | Via issues panels? partial | EXTEND: link UI check (still open) |
+| Auction watch (official Indian auction/tender ingestion) | Registry + pollers (MSTC, GePNIC family) + provenance store + crosscheck; JS venues named gaps | Auctions tab (sources, poll outcomes, search, verify) | MAINTAIN (renderer for JS venues still out) |
 | Slack/Teams bridges | Complete | Configure panels | MAINTAIN |
 | Mobile shell | Approval/monitoring + PWA | `?mobile=1` | MAINTAIN (native = separate project) |
 | TUI | Chat/status/approvals/diff | Complete | MAINTAIN |
@@ -45,7 +46,7 @@ collides with those is marked REJECT with the reason, not silently dropped.
 
 ## Backlog (ordered; each item is build→test→verify, no stubs)
 
-### W1 — @mention MCP tools in chat (advertised, unimplemented)
+### W1 — @mention MCP tools in chat (BUILT e2e13a7; was: advertised, unimplemented)
 The composer placeholder promises "@mention an MCP tool". Nothing parses
 `@`. Build: `@`-triggered autocomplete over `mcp.server.list` +
 `mcp.tools.list`; on send, resolve each `@server.tool` (+ optional trailing
@@ -53,12 +54,12 @@ JSON args) via `mcp.tool.call` client-side and append results to the outgoing
 message. Pure UI + existing RPCs. Tests: dropdown filters, extraction unit
 tests, arg passing, failure transparency.
 
-### W2 — Open-PR affordance (golden path says "open a PR", no button)
+### W2 — Open-PR affordance (BUILT e2e13a7; was: golden path says "open a PR", no button)
 `github.pr.create` has no caller. Build: form in Reviews tab (title, head,
 base from the session's branch) → create → link. Tests: RPC wired with
 correct shape, validation errors surfaced.
 
-### W3 — Login + governance wiring (admin RPCs unreachable from any UI)
+### W3 — Login + governance wiring (BUILT e2e13a7; was: admin RPCs unreachable from any UI)
 `auth.register/login/logout/status` have zero clients; `governance.policy.set`
 requires an admin `session_token` nothing supplies. Build: sign-in dialog
 (stores session token, shows current user/role, logout); wire the token into a
